@@ -21,12 +21,14 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build & Package Uran
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -49,7 +51,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build frontend and package zip
         run: npm run package
@@ -60,16 +62,30 @@ jobs:
           name: Uran-plugin
           path: Uran.zip
 
+  release:
+    name: Publish Uran package
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release == true)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Uran-plugin
+          path: release-package
+
       - name: Attach zip to published Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: Uran.zip
+          files: release-package/Uran.zip
 
       - name: Create Release and Upload Asset (Manual Dispatch)
         if: github.event_name == 'workflow_dispatch' && inputs.release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || format('v{0}', steps.get_version.outputs.version) }}
-          files: Uran.zip
+          tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || format('v{0}', needs.build.outputs.version) }}
+          files: release-package/Uran.zip
           generate_release_notes: true

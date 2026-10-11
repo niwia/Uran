@@ -16,9 +16,13 @@ jobs:
           URL: ${{ github.event.release.html_url }}
           BODY: ${{ github.event.release.body }}
         run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_URL is not configured; skipping notification."
+            exit 0
+          fi
           jq -n \
             --arg title "New release: ${NAME:-$TAG}" \
             --arg url "$URL" \
             --arg desc "$(echo "$BODY" | head -c 1500)" \
             '{embeds: [{title: $title, url: $url, description: $desc, color: 5814783}]}' \
-          | curl -sS -H "Content-Type: application/json" -d @- "$WEBHOOK"
+          | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"

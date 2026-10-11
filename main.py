@@ -1466,9 +1466,6 @@ def _inspect_game_depots_and_dlcs(aid: str, rec: dict) -> tuple[list[dict], list
             logger.debug("SLS config parse error: %s", e)
 
     dlc_ids: set[str] = set(rec_dlcs)
-    for did, info in sqlite_depots.items():
-        if info.get("is_dlc") or "[dlc" in info.get("name", "").lower():
-            dlc_ids.add(did)
 
     dlcs_list: list[dict] = []
     for did in sorted(dlc_ids, key=lambda x: int(x) if x.isdigit() else 0):
@@ -1486,7 +1483,7 @@ def _inspect_game_depots_and_dlcs(aid: str, rec: dict) -> tuple[list[dict], list
         dname = enrich.get("name") or rec_names.get(did) or _depot_name_cache.get(did) or f"Depot {did}"
         in_config = did in live_depots
         has_key = did in live_keys or did in rec_keys
-        is_dlc = enrich.get("is_dlc", False) or did in dlc_ids or "[dlc" in dname.lower()
+        is_dlc = enrich.get("is_dlc", False) or "[dlc" in dname.lower()
         is_shared = did in SHARED_REDISTS
         oslist = enrich.get("oslist", "")
 
@@ -1500,7 +1497,7 @@ def _inspect_game_depots_and_dlcs(aid: str, rec: dict) -> tuple[list[dict], list
             "os": oslist,
         })
 
-    dlcs_injected = bool(dlcs_list and any(d["in_config"] for d in dlcs_list))
+    dlcs_injected = bool(dlcs_list and all(d["in_config"] for d in dlcs_list))
     return depots_list, dlcs_list, dlcs_injected
 
 def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
@@ -1520,20 +1517,11 @@ def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
             if sd and sd not in dlc_ids:
                 dlc_ids.append(sd)
 
-        db_path = _accela_base_path() / "db" / "steam_headers.db"
-        if db_path.exists():
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    rows = conn.cursor().execute(
-                        "SELECT depot_id FROM depot_enrichments WHERE appid = ? AND (is_dlc = 1 OR name LIKE '%[DLC%')",
-                        (aid,)
-                    ).fetchall()
-                    for r in rows:
-                        sd = _sanitize_id(r[0])
-                        if sd and sd not in dlc_ids:
-                            dlc_ids.append(sd)
-            except Exception:
-                pass
+        manifest_res = fetch_manifests(aid, persist_config=False)
+        for d in manifest_res.get("dlc_appids", []) if manifest_res.get("ok") else []:
+            sd = _sanitize_id(d)
+            if sd and sd not in dlc_ids:
+                dlc_ids.append(sd)
 
         if not dlc_ids:
             return {"ok": False, "error": f"No DLCs found for AppID {aid}"}
@@ -1542,22 +1530,56 @@ def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
         if cfg is None:
             return {"ok": False, "error": "SLSsteam config not found"}
 
-        game_name = _sanitize_comment(details.get("name") or rec.get("name") or f"App {aid}")
+        # DLC AppIDs and depot IDs are different namespaces. Use the database's
+        # depot classification to select DLC depots, then take their keys from
+        # the app bundle/library/database without registering base-game depots.
+        dlc_depot_ids: set[str] = set()
+        db_path = _accela_base_path() / "db" / "steam_headers.db"
+        if db_path.exists():
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.cursor().execute(
+                        "SELECT depot_id FROM depot_enrichments WHERE appid = ? AND (is_dlc = 1 OR name LIKE '%[DLC%')",
+                        (aid,),
+                    ).fetchall()
+                dlc_depot_ids = {str(row[0]) for row in rows}
+            except Exception as e:
+                logger.debug("DLC depot lookup failed for %s: %s", aid, e)
 
-        manifest_res = fetch_manifests(aid, persist_config=False)
-        depot_keys = manifest_res.get("depot_keys", {}) if manifest_res.get("ok") else {}
-        for did, k in (rec.get("keys") or {}).items():
-            depot_keys.setdefault(str(did), str(k))
+        all_keys = dict(manifest_res.get("depot_keys", {})) if manifest_res.get("ok") else {}
+        for did, key in (rec.get("keys") or {}).items():
+            all_keys.setdefault(str(did), str(key))
+        keys_db_path = _accela_base_path() / "db" / "depot_keys.db"
+        if keys_db_path.exists():
+            try:
+                with sqlite3.connect(keys_db_path) as conn:
+                    rows = conn.cursor().execute(
+                        "SELECT depot_id, aes_key FROM depot_keys WHERE appid = ?", (aid,)
+                    ).fetchall()
+                for did, key in rows:
+                    all_keys.setdefault(str(did), str(key))
+            except Exception as e:
+                logger.debug("DLC depot key lookup failed for %s: %s", aid, e)
+        depot_keys = {did: key for did, key in all_keys.items() if did in dlc_depot_ids}
+
+        marker = f"uran:dlc:{aid}"
 
         with _batch_config_edit() as editor:
             editor.content = _ensure_plugins_enabled(editor.content)
             editor.has_changes = True
+            existing_apps = _parse_list_section(editor.content, "AdditionalApps")
+            existing_depots = _parse_list_section(editor.content, "AdditionalDepots")
+            existing_keys, _ = _parse_key_section(editor.content, "DecryptionKeys")
             for dlc_id in dlc_ids:
-                editor.add_app(dlc_id, comment=f"{game_name} DLC ({dlc_id})")
+                # Only claim entries this feature creates. Existing user entries
+                # retain their comments and are never removed by the off toggle.
+                if dlc_id not in existing_apps:
+                    editor.add_app(dlc_id, comment=marker)
             for did, key in (depot_keys or {}).items():
-                if did != aid and did not in dlc_ids:
-                    editor.add_depot(did, comment=f"{game_name} DLC depot ({aid})")
-                    editor.add_key(did, key, comment=_depot_name_cache.get(did, ""))
+                if did != aid and did not in existing_depots:
+                    editor.add_depot(did, comment=marker)
+                if did != aid and did not in existing_keys:
+                    editor.add_key(did, key, comment=marker)
 
         if not editor.committed_successfully:
             return {"ok": False, "error": "Failed to write SLSsteam config"}
@@ -1571,38 +1593,31 @@ def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
         return {"ok": True, "count": len(dlc_ids), "dlc_ids": dlc_ids}
 
     else:
-        rec = load_plugin_library().get(aid) or {}
-        dlc_ids = set(str(d) for d in rec.get("dlc_appids", []))
-
-        cfg = _find_sls_config()
-        if cfg and cfg.exists():
-            content = cfg.read_text(encoding="utf-8", errors="ignore")
-            for line in content.splitlines():
-                m = re.match(r"^\s*-\s*(\d+)\s*#.*(?:DLC|\b" + re.escape(aid) + r"\b)", line)
-                if m:
-                    dlc_ids.add(m.group(1))
-
-        if not dlc_ids:
-            lib = load_plugin_library()
-            if aid in lib:
-                lib[aid]["dlcs_injected"] = False
-                save_plugin_library(lib)
-            return {"ok": True, "count": 0}
-
         with _batch_config_edit() as editor:
-            editor.has_changes = True
-            for dlc_id in dlc_ids:
-                editor.remove_app(dlc_id)
-                editor.remove_fake_app_id(dlc_id)
-                editor.remove_launch_option(dlc_id)
-            editor.remove_dlc(aid)
+            apps = _parse_list_section(editor.content, "AdditionalApps")
+            depots = _parse_list_section(editor.content, "AdditionalDepots")
+            _, key_comments = _parse_key_section(editor.content, "DecryptionKeys")
+            marker = f"uran:dlc:{aid}"
+            removed_apps = 0
+            for entry_id, comment in apps.items():
+                if comment == marker:
+                    removed_apps += editor.remove_app(entry_id)
+            for entry_id, comment in depots.items():
+                if comment == marker:
+                    editor.remove_depot(entry_id)
+            for entry_id, comment in key_comments.items():
+                if comment == marker:
+                    editor.remove_key(entry_id)
+
+        if not editor.committed_successfully:
+            return {"ok": False, "error": "Failed to write SLSsteam config"}
 
         lib = load_plugin_library()
         if aid in lib:
             lib[aid]["dlcs_injected"] = False
             save_plugin_library(lib)
 
-        return {"ok": True, "count": len(dlc_ids)}
+        return {"ok": True, "count": removed_apps}
 
 def get_atom_game_detail(app_id: str) -> dict:
     """Per-game state for the detail page: toggles, depots, DLCs, and install info."""
