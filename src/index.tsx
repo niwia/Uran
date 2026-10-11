@@ -9,6 +9,7 @@ import {
   ToggleField,
   Focusable,
   ConfirmModal,
+  showModal,
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
 import {
@@ -19,7 +20,7 @@ import {
   setNotificationMode,
 } from "./notify";
 import QRCode from "qrcode";
-import { initStorePatch, tagInAssellaCollection, addedAppIds, pendingAppIds } from "./StorePatch";
+import { initStorePatch, setStorePatchEnabled, tagInAssellaCollection, addedAppIds, pendingAppIds } from "./StorePatch";
 import { initContextMenuPatch } from "./LibraryPatch";
 
 const AssellaLogo: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
@@ -183,8 +184,28 @@ const previewAtomUninstall = callable<
 >("preview_atom_uninstall");
 const uninstallAtomGame = callable<
   [app_id: string],
-  { ok: boolean; removed?: string[]; failed?: string[]; error?: string }
+  {
+    ok: boolean;
+    removed?: string[];
+    failed?: string[];
+    config_cleaned?: boolean;
+    registered?: boolean;
+    error?: string;
+  }
 >("uninstall_atom_game");
+const getStoreDebugStatus = callable<
+  [refresh: boolean],
+  {
+    available: boolean;
+    port?: number | null;
+    store_tab: boolean;
+    url?: string;
+    target_count: number;
+    checked_at: number;
+    message: string;
+    logs: string[];
+  }
+>("get_store_debug_status");
 const setSlsonline = callable<
   [app_id: string, enabled: boolean, fake_appid: string],
   { ok: boolean; error?: string }
@@ -427,10 +448,6 @@ const AtomGamesTab: React.FC = () => {
   const [games, setGames] = React.useState<AtomGame[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [detail, setDetail] = React.useState<AtomDetail | null>(null);
-  const [confirm, setConfirm] = React.useState<{
-    game: AtomGame;
-    preview: { targets: string[] };
-  } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
 
@@ -486,7 +503,43 @@ const AtomGamesTab: React.FC = () => {
     setBusy(true);
     try {
       const p = await previewAtomUninstall(g.app_id);
-      if (p?.ok) setConfirm({ game: g, preview: p });
+      if (p?.ok) {
+        const targets = p.targets || [];
+        let modal: ReturnType<typeof showModal>;
+        modal = showModal(
+          <ConfirmModal
+            strTitle={`Uninstall ${g.name}?`}
+            strOKButtonText="Uninstall"
+            strCancelButtonText="Cancel"
+            bDestructiveWarning
+            bDisableBackgroundDismiss
+            onCancel={() => modal.Close()}
+            onOK={() => {
+              modal.Close();
+              void doUninstall(g);
+            }}
+          >
+            <div style={{ maxHeight: "45vh", overflowY: "auto", fontSize: "12px" }}>
+              <p>This permanently deletes these files and folders:</p>
+              {targets.length ? (
+                <ul style={{ margin: "6px 0", paddingLeft: "18px" }}>
+                  {targets.map((target) => (
+                    <li key={target} style={{ fontSize: "11px", wordBreak: "break-all" }}>
+                      {target}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>No game files were found. Uran will only remove its library and config entries.</p>
+              )}
+              <p>It will also remove this game from SLSsteam&apos;s config.</p>
+              <p style={{ color: "#e57373" }}>This cannot be undone.</p>
+            </div>
+          </ConfirmModal>,
+          undefined,
+          { strTitle: `Uninstall ${g.name}?`, bNeverPopOut: true },
+        );
+      }
       else setMsg(p?.error || "Could not prepare uninstall");
     } catch (e: any) {
       setMsg(`Error: ${e}`);
@@ -495,10 +548,7 @@ const AtomGamesTab: React.FC = () => {
     }
   };
 
-  const doUninstall = async () => {
-    if (!confirm) return;
-    const { game } = confirm;
-    setConfirm(null);
+  const doUninstall = async (game: AtomGame) => {
     setBusy(true);
     setMsg("");
     try {
@@ -509,7 +559,10 @@ const AtomGamesTab: React.FC = () => {
         setDetail(null);
         await load();
       } else {
-        setMsg(`Uninstall incomplete: ${(r?.failed || []).join("; ")}`);
+        const issues = [...(r?.failed || [])];
+        if (r?.config_cleaned === false) issues.push("SLSsteam config cleanup failed");
+        if (r?.registered) issues.push("game is still registered in Uran");
+        setMsg(`Uninstall incomplete: ${issues.join("; ") || r?.error || "unknown error"}`);
         await load();
       }
     } catch (e: any) {
@@ -851,28 +904,6 @@ const AtomGamesTab: React.FC = () => {
         </PanelSectionRow>
       )}
 
-      {confirm && (
-        <ConfirmModal
-          onCancel={() => setConfirm(null)}
-          onOk={doUninstall}
-          okButtonText="Uninstall"
-          title={`Uninstall ${confirm.game.name}?`}
-          body={
-            <>
-              <p>This will permanently delete:</p>
-              <ul style={{ margin: "6px 0", paddingLeft: "18px" }}>
-                {confirm.preview.targets.map((t) => (
-                  <li key={t} style={{ fontSize: "11px", wordBreak: "break-all" }}>
-                    {t}
-                  </li>
-                ))}
-              </ul>
-              <p>and remove the game from SLSsteam&apos;s config.</p>
-              <p style={{ color: "#e57373" }}>This cannot be undone.</p>
-            </>
-          }
-        />
-      )}
     </>
   );
 };
@@ -880,6 +911,16 @@ const AtomGamesTab: React.FC = () => {
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab: React.FC = () => {
   const [showRestartButton, setShowRestartButton] = React.useState(false);
+  const [steamStoreEnabled, setSteamStoreEnabled] = React.useState(true);
+  const [storeStatus, setStoreStatus] = React.useState<{
+    available: boolean;
+    port?: number | null;
+    store_tab: boolean;
+    target_count: number;
+    message: string;
+    logs: string[];
+  } | null>(null);
+  const [checkingStore, setCheckingStore] = React.useState(false);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
@@ -918,14 +959,19 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, mip, nm] = await Promise.all([
+        const [srb, mip, nm, storeEnabled, initialStoreStatus] = await Promise.all([
           getSetting("show_restart_button", false),
           getSetting("manifestid_pinning", false),
           getSetting("notification_mode", "auto"),
+          getSetting("steam_store_enabled", true),
+          getStoreDebugStatus(false),
         ]);
         if (!alive) return;
         setShowRestartButton(!!srb);
         setManifestIdPinning(!!mip);
+        setSteamStoreEnabled(storeEnabled !== false);
+        setStorePatchEnabled(storeEnabled !== false);
+        setStoreStatus(initialStoreStatus);
         if (nm) setNotificationModeState(nm);
       } catch {}
       loadStats();
@@ -934,6 +980,31 @@ const SettingsTab: React.FC = () => {
       alive = false;
     };
   }, [loadStats]);
+
+  const refreshStoreStatus = React.useCallback(async (force = false) => {
+    setCheckingStore(true);
+    try {
+      setStoreStatus(await getStoreDebugStatus(force));
+    } catch (e: any) {
+      setStoreStatus((previous) => previous ? {
+        ...previous,
+        message: `Could not read Steam Store status: ${e}`,
+      } : null);
+    } finally {
+      setCheckingStore(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => refreshStoreStatus(false), 10000);
+    return () => clearInterval(timer);
+  }, [refreshStoreStatus]);
+
+  const changeSteamStoreEnabled = async (enabled: boolean) => {
+    setSteamStoreEnabled(enabled);
+    setStorePatchEnabled(enabled);
+    await setSetting("steam_store_enabled", enabled);
+  };
 
   const stopQr = async () => {
     try {
@@ -1124,6 +1195,47 @@ const SettingsTab: React.FC = () => {
             selectedOption={notificationMode}
             onChange={changeNotificationMode}
           />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Steam Store">
+        <PanelSectionRow>
+          <ToggleField
+            label="Steam Store"
+            checked={steamStoreEnabled}
+            onChange={changeSteamStoreEnabled}
+            description={
+              !steamStoreEnabled
+                ? "Store button injection is turned off."
+                : storeStatus?.available
+                ? `CEF debugging detected on port ${storeStatus.port}. ${storeStatus.store_tab ? "A Store page is open." : "Open a Store page to inspect it."}`
+                : "CEF debugging is off or unreachable. Steam must expose --cef-enable-debugging for the Store button to work."
+            }
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.85 }}>
+            {storeStatus?.message || "Checking the Steam debugging port…"}
+            <div style={{ marginTop: "4px", opacity: 0.7 }}>
+              Port detection confirms CDP access, but cannot guarantee Valve&apos;s current Store layout accepts the button. Recent patch logs are shown below.
+            </div>
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={checkingStore} onClick={() => refreshStoreStatus(true)}>
+            {checkingStore ? "Checking…" : "Check Steam Store and refresh logs"}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ width: "100%", fontSize: "11px", lineHeight: 1.5, maxHeight: "140px", overflowY: "auto", opacity: 0.8 }}>
+            <div style={{ fontWeight: "bold", marginBottom: "4px" }}>Recent Store patch logs</div>
+            {storeStatus?.logs?.length ? storeStatus.logs.slice(-12).map((line, index) => (
+              <div key={`${index}-${line}`} style={{ overflowWrap: "anywhere" }}>{line}</div>
+            )) : <div>No Store patch messages yet. Keep the feature enabled and open a Store page.</div>}
+            <div style={{ marginTop: "6px", opacity: 0.7 }}>
+              For help, share the status above and any log mentioning “socket”, “purchase area”, or “injected”.
+            </div>
+          </div>
         </PanelSectionRow>
       </PanelSection>
 
@@ -1355,21 +1467,21 @@ export default definePlugin(() => {
           </Focusable>
           <Focusable
             focusClassName={
-              activeTab === "backups" ? activeFocusClass : focusClass
-            }
-            onActivate={() => selectTab("backups")}
-            style={tabStyle(activeTab === "backups")}
-          >
-            Backups
-          </Focusable>
-          <Focusable
-            focusClassName={
               activeTab === "settings" ? activeFocusClass : focusClass
             }
             onActivate={() => selectTab("settings")}
             style={tabStyle(activeTab === "settings")}
           >
             Settings
+          </Focusable>
+          <Focusable
+            focusClassName={
+              activeTab === "backups" ? activeFocusClass : focusClass
+            }
+            onActivate={() => selectTab("backups")}
+            style={tabStyle(activeTab === "backups")}
+          >
+            Backups
           </Focusable>
         </Focusable>
 

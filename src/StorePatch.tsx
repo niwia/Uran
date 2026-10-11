@@ -31,6 +31,9 @@ let storeSocket: WebSocket | null = null;
 let messageId = 1;
 let wsReady = false;
 let pollTimer: any = null;
+let storePatchEnabled: boolean | null = null;
+let stopRouteSpy: (() => void) | null = null;
+let lifecycle = 0;
 let lastInjectedAppId = "";
 let lastConsoleTs = 0;
 export const addedAppIds = new Set<string>();
@@ -67,11 +70,9 @@ const feDebug = callable<[msg: string], void>("fe_debug");
 // -- Logging ------------------------------------------------------------------
 function slog(msg: string): void {
   try {
-    feDebug(msg);
+    void feDebug(`[StorePatch] ${msg}`).catch(() => {});
   } catch {}
-  try {
-    console.log("[ASSella Store] " + msg);
-  } catch {}
+  try { console.log("[StorePatch] " + msg); } catch {}
 }
 
 // -- Collection helpers -------------------------------------------------------
@@ -299,8 +300,7 @@ function buildInjectScript(): string {
 
       function injectFallback() {
         var host = document.querySelector('.game_area_purchase')
-                || document.querySelector('#game_area_purchase')
-                || document.body;
+                || document.querySelector('#game_area_purchase');
         if (!host) return false;
         var w = document.createElement('div');
         w.id = 'Uran-btns';
@@ -336,7 +336,9 @@ function buildInjectScript(): string {
         }
 
         if (!ref) {
-          injectFallback();
+          if (!injectFallback()) {
+            log('no supported purchase area found; Steam Store layout may have changed');
+          }
           return;
         }
 
@@ -377,6 +379,10 @@ function buildInjectScript(): string {
           }
         }
 
+        if (!ref.parentElement) {
+          if (!injectFallback()) log('purchase option has no parent and fallback area is unavailable');
+          return;
+        }
         ref.parentElement.insertBefore(clone, ref);
         log('injected purchase slot card for ' + S.appId);
       }
@@ -471,7 +477,7 @@ function remove(): void {
 }
 
 async function connect(tab: StoreTab): Promise<void> {
-  if (!tab.webSocketDebuggerUrl) return;
+  if (!storePatchEnabled || !tab.webSocketDebuggerUrl) return;
   if (storeSocket) {
     try {
       storeSocket.close();
@@ -480,17 +486,24 @@ async function connect(tab: StoreTab): Promise<void> {
     wsReady = false;
   }
   slog("CDP: connecting to " + tab.webSocketDebuggerUrl);
-  storeSocket = new WebSocket(tab.webSocketDebuggerUrl);
-  storeSocket.onopen = () => {
+  const socket = new WebSocket(tab.webSocketDebuggerUrl);
+  storeSocket = socket;
+  socket.onopen = () => {
+    if (!storePatchEnabled || storeSocket !== socket) {
+      socket.close();
+      return;
+    }
     wsSend({ id: messageId++, method: "Page.enable" });
     wsSend({ id: messageId++, method: "Runtime.enable" });
     setTimeout(() => {
+      if (!storePatchEnabled || storeSocket !== socket) return;
       wsReady = true;
       const appId = extractAppId(tab.url);
       if (appId) inject(appId, true);
     }, 1500);
   };
-  storeSocket.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    if (!storePatchEnabled || storeSocket !== socket) return;
     try {
       const data = JSON.parse(ev.data);
       if (data.method === "Page.frameNavigated" && data.params?.frame) {
@@ -561,11 +574,13 @@ async function connect(tab: StoreTab): Promise<void> {
       }
     } catch {}
   };
-  storeSocket.onerror = () => {
+  socket.onerror = () => {
+    if (storeSocket !== socket) return;
     slog("CDP: socket error");
     wsReady = false;
   };
-  storeSocket.onclose = () => {
+  socket.onclose = () => {
+    if (storeSocket !== socket) return;
     slog("CDP: socket closed");
     storeSocket = null;
     wsReady = false;
@@ -573,8 +588,10 @@ async function connect(tab: StoreTab): Promise<void> {
 }
 
 async function pollCdp(): Promise<void> {
+  if (!storePatchEnabled) return;
   try {
     const res = await discoverStoreTab();
+    if (!storePatchEnabled) return;
     if (res) {
       if (!storeSocket || storeSocket.readyState !== WebSocket.OPEN) {
         await connect(res);
@@ -654,11 +671,33 @@ function initRouteSpy(): () => void {
 
 export function initStorePatch(): () => void {
   slog("initStorePatch: starting");
-  const stopSpy = initRouteSpy();
-  startPoll();
+  const thisLifecycle = ++lifecycle;
+  getSetting("steam_store_enabled", true)
+    .then((enabled) => {
+      if (lifecycle === thisLifecycle) setStorePatchEnabled(enabled !== false);
+    })
+    .catch((error) => {
+      slog("could not read Steam Store setting; leaving injection enabled: " + error);
+      if (lifecycle === thisLifecycle) setStorePatchEnabled(true);
+    });
   return () => {
     slog("initStorePatch: cleanup");
-    stopSpy();
-    stopPoll();
+    lifecycle++;
+    setStorePatchEnabled(false);
   };
+}
+
+export function setStorePatchEnabled(enabled: boolean): void {
+  if (storePatchEnabled === enabled) return;
+  storePatchEnabled = enabled;
+  if (enabled) {
+    slog("Steam Store button injection enabled");
+    stopRouteSpy = initRouteSpy();
+    startPoll();
+  } else {
+    slog("Steam Store button injection disabled");
+    stopPoll();
+    stopRouteSpy?.();
+    stopRouteSpy = null;
+  }
 }

@@ -3018,6 +3018,9 @@ let storeSocket = null;
 let messageId = 1;
 let wsReady = false;
 let pollTimer = null;
+let storePatchEnabled = null;
+let stopRouteSpy = null;
+let lifecycle = 0;
 let lastInjectedAppId = "";
 let lastConsoleTs = 0;
 const addedAppIds = new Set();
@@ -3031,11 +3034,11 @@ const feDebug$1 = callable("fe_debug");
 // -- Logging ------------------------------------------------------------------
 function slog(msg) {
     try {
-        feDebug$1(msg);
+        void feDebug$1(`[StorePatch] ${msg}`).catch(() => { });
     }
     catch { }
     try {
-        console.log("[ASSella Store] " + msg);
+        console.log("[StorePatch] " + msg);
     }
     catch { }
 }
@@ -3240,8 +3243,7 @@ function buildInjectScript() {
 
       function injectFallback() {
         var host = document.querySelector('.game_area_purchase')
-                || document.querySelector('#game_area_purchase')
-                || document.body;
+                || document.querySelector('#game_area_purchase');
         if (!host) return false;
         var w = document.createElement('div');
         w.id = 'Uran-btns';
@@ -3277,7 +3279,9 @@ function buildInjectScript() {
         }
 
         if (!ref) {
-          injectFallback();
+          if (!injectFallback()) {
+            log('no supported purchase area found; Steam Store layout may have changed');
+          }
           return;
         }
 
@@ -3318,6 +3322,10 @@ function buildInjectScript() {
           }
         }
 
+        if (!ref.parentElement) {
+          if (!injectFallback()) log('purchase option has no parent and fallback area is unavailable');
+          return;
+        }
         ref.parentElement.insertBefore(clone, ref);
         log('injected purchase slot card for ' + S.appId);
       }
@@ -3400,7 +3408,7 @@ function remove() {
     });
 }
 async function connect(tab) {
-    if (!tab.webSocketDebuggerUrl)
+    if (!storePatchEnabled || !tab.webSocketDebuggerUrl)
         return;
     if (storeSocket) {
         try {
@@ -3411,18 +3419,27 @@ async function connect(tab) {
         wsReady = false;
     }
     slog("CDP: connecting to " + tab.webSocketDebuggerUrl);
-    storeSocket = new WebSocket(tab.webSocketDebuggerUrl);
-    storeSocket.onopen = () => {
+    const socket = new WebSocket(tab.webSocketDebuggerUrl);
+    storeSocket = socket;
+    socket.onopen = () => {
+        if (!storePatchEnabled || storeSocket !== socket) {
+            socket.close();
+            return;
+        }
         wsSend({ id: messageId++, method: "Page.enable" });
         wsSend({ id: messageId++, method: "Runtime.enable" });
         setTimeout(() => {
+            if (!storePatchEnabled || storeSocket !== socket)
+                return;
             wsReady = true;
             const appId = extractAppId(tab.url);
             if (appId)
                 inject(appId, true);
         }, 1500);
     };
-    storeSocket.onmessage = (ev) => {
+    socket.onmessage = (ev) => {
+        if (!storePatchEnabled || storeSocket !== socket)
+            return;
         try {
             const data = JSON.parse(ev.data);
             if (data.method === "Page.frameNavigated" && data.params?.frame) {
@@ -3494,19 +3511,27 @@ async function connect(tab) {
         }
         catch { }
     };
-    storeSocket.onerror = () => {
+    socket.onerror = () => {
+        if (storeSocket !== socket)
+            return;
         slog("CDP: socket error");
         wsReady = false;
     };
-    storeSocket.onclose = () => {
+    socket.onclose = () => {
+        if (storeSocket !== socket)
+            return;
         slog("CDP: socket closed");
         storeSocket = null;
         wsReady = false;
     };
 }
 async function pollCdp() {
+    if (!storePatchEnabled)
+        return;
     try {
         const res = await discoverStoreTab();
+        if (!storePatchEnabled)
+            return;
         if (res) {
             if (!storeSocket || storeSocket.readyState !== WebSocket.OPEN) {
                 await connect(res);
@@ -3587,13 +3612,38 @@ function initRouteSpy() {
 }
 function initStorePatch() {
     slog("initStorePatch: starting");
-    const stopSpy = initRouteSpy();
-    startPoll();
+    const thisLifecycle = ++lifecycle;
+    getSetting$1("steam_store_enabled", true)
+        .then((enabled) => {
+        if (lifecycle === thisLifecycle)
+            setStorePatchEnabled(enabled !== false);
+    })
+        .catch((error) => {
+        slog("could not read Steam Store setting; leaving injection enabled: " + error);
+        if (lifecycle === thisLifecycle)
+            setStorePatchEnabled(true);
+    });
     return () => {
         slog("initStorePatch: cleanup");
-        stopSpy();
-        stopPoll();
+        lifecycle++;
+        setStorePatchEnabled(false);
     };
+}
+function setStorePatchEnabled(enabled) {
+    if (storePatchEnabled === enabled)
+        return;
+    storePatchEnabled = enabled;
+    if (enabled) {
+        slog("Steam Store button injection enabled");
+        stopRouteSpy = initRouteSpy();
+        startPoll();
+    }
+    else {
+        slog("Steam Store button injection disabled");
+        stopPoll();
+        stopRouteSpy?.();
+        stopRouteSpy = null;
+    }
 }
 
 /**
@@ -3918,6 +3968,7 @@ const listAtomGames = callable("list_plugin_games");
 const getAtomGame = callable("get_atom_game");
 const previewAtomUninstall = callable("preview_atom_uninstall");
 const uninstallAtomGame = callable("uninstall_atom_game");
+const getStoreDebugStatus = callable("get_store_debug_status");
 const setSlsonline = callable("set_slsonline");
 const setNetsock = callable("set_netsock_toggle");
 const setEos = callable("set_eos_toggle");
@@ -3992,7 +4043,6 @@ const AtomGamesTab = () => {
     const [games, setGames] = SP_REACT.useState([]);
     const [loading, setLoading] = SP_REACT.useState(true);
     const [detail, setDetail] = SP_REACT.useState(null);
-    const [confirm, setConfirm] = SP_REACT.useState(null);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [msg, setMsg] = SP_REACT.useState("");
     const load = SP_REACT.useCallback(async () => {
@@ -4049,8 +4099,14 @@ const AtomGamesTab = () => {
         setBusy(true);
         try {
             const p = await previewAtomUninstall(g.app_id);
-            if (p?.ok)
-                setConfirm({ game: g, preview: p });
+            if (p?.ok) {
+                const targets = p.targets || [];
+                let modal;
+                modal = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: `Uninstall ${g.name}?`, strOKButtonText: "Uninstall", strCancelButtonText: "Cancel", bDestructiveWarning: true, bDisableBackgroundDismiss: true, onCancel: () => modal.Close(), onOK: () => {
+                        modal.Close();
+                        void doUninstall(g);
+                    }, children: SP_JSX.jsxs("div", { style: { maxHeight: "45vh", overflowY: "auto", fontSize: "12px" }, children: [SP_JSX.jsx("p", { children: "This permanently deletes these files and folders:" }), targets.length ? (SP_JSX.jsx("ul", { style: { margin: "6px 0", paddingLeft: "18px" }, children: targets.map((target) => (SP_JSX.jsx("li", { style: { fontSize: "11px", wordBreak: "break-all" }, children: target }, target))) })) : (SP_JSX.jsx("p", { children: "No game files were found. Uran will only remove its library and config entries." })), SP_JSX.jsx("p", { children: "It will also remove this game from SLSsteam's config." }), SP_JSX.jsx("p", { style: { color: "#e57373" }, children: "This cannot be undone." })] }) }), undefined, { strTitle: `Uninstall ${g.name}?`, bNeverPopOut: true });
+            }
             else
                 setMsg(p?.error || "Could not prepare uninstall");
         }
@@ -4061,11 +4117,7 @@ const AtomGamesTab = () => {
             setBusy(false);
         }
     };
-    const doUninstall = async () => {
-        if (!confirm)
-            return;
-        const { game } = confirm;
-        setConfirm(null);
+    const doUninstall = async (game) => {
         setBusy(true);
         setMsg("");
         try {
@@ -4077,7 +4129,12 @@ const AtomGamesTab = () => {
                 await load();
             }
             else {
-                setMsg(`Uninstall incomplete: ${(r?.failed || []).join("; ")}`);
+                const issues = [...(r?.failed || [])];
+                if (r?.config_cleaned === false)
+                    issues.push("SLSsteam config cleanup failed");
+                if (r?.registered)
+                    issues.push("game is still registered in Uran");
+                setMsg(`Uninstall incomplete: ${issues.join("; ") || r?.error || "unknown error"}`);
                 await load();
             }
         }
@@ -4183,11 +4240,14 @@ const AtomGamesTab = () => {
                                         display: "block",
                                         width: "100%",
                                         fontSize: "13px",
-                                    }, children: g.name }) }), SP_JSX.jsx(DFL.DialogButton, { className: "uran-uninstall-btn", disabled: busy, onClick: () => askUninstall(g), children: SP_JSX.jsx(TrashIcon, { size: 16 }) })] }) }, g.app_id)))) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.85, padding: "8px" }, children: msg }) })), confirm && (SP_JSX.jsx(DFL.ConfirmModal, { onCancel: () => setConfirm(null), onOk: doUninstall, okButtonText: "Uninstall", title: `Uninstall ${confirm.game.name}?`, body: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("p", { children: "This will permanently delete:" }), SP_JSX.jsx("ul", { style: { margin: "6px 0", paddingLeft: "18px" }, children: confirm.preview.targets.map((t) => (SP_JSX.jsx("li", { style: { fontSize: "11px", wordBreak: "break-all" }, children: t }, t))) }), SP_JSX.jsx("p", { children: "and remove the game from SLSsteam's config." }), SP_JSX.jsx("p", { style: { color: "#e57373" }, children: "This cannot be undone." })] }) }))] }));
+                                    }, children: g.name }) }), SP_JSX.jsx(DFL.DialogButton, { className: "uran-uninstall-btn", disabled: busy, onClick: () => askUninstall(g), children: SP_JSX.jsx(TrashIcon, { size: 16 }) })] }) }, g.app_id)))) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.85, padding: "8px" }, children: msg }) }))] }));
 };
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab = () => {
     const [showRestartButton, setShowRestartButton] = SP_REACT.useState(false);
+    const [steamStoreEnabled, setSteamStoreEnabled] = SP_REACT.useState(true);
+    const [storeStatus, setStoreStatus] = SP_REACT.useState(null);
+    const [checkingStore, setCheckingStore] = SP_REACT.useState(false);
     const [manifestIdPinning, setManifestIdPinning] = SP_REACT.useState(false);
     const [notificationMode, setNotificationModeState] = SP_REACT.useState("auto");
     const [msg, setMsg] = SP_REACT.useState("");
@@ -4210,15 +4270,20 @@ const SettingsTab = () => {
         let alive = true;
         (async () => {
             try {
-                const [srb, mip, nm] = await Promise.all([
+                const [srb, mip, nm, storeEnabled, initialStoreStatus] = await Promise.all([
                     getSetting("show_restart_button", false),
                     getSetting("manifestid_pinning", false),
                     getSetting("notification_mode", "auto"),
+                    getSetting("steam_store_enabled", true),
+                    getStoreDebugStatus(false),
                 ]);
                 if (!alive)
                     return;
                 setShowRestartButton(!!srb);
                 setManifestIdPinning(!!mip);
+                setSteamStoreEnabled(storeEnabled !== false);
+                setStorePatchEnabled(storeEnabled !== false);
+                setStoreStatus(initialStoreStatus);
                 if (nm)
                     setNotificationModeState(nm);
             }
@@ -4229,6 +4294,30 @@ const SettingsTab = () => {
             alive = false;
         };
     }, [loadStats]);
+    const refreshStoreStatus = SP_REACT.useCallback(async (force = false) => {
+        setCheckingStore(true);
+        try {
+            setStoreStatus(await getStoreDebugStatus(force));
+        }
+        catch (e) {
+            setStoreStatus((previous) => previous ? {
+                ...previous,
+                message: `Could not read Steam Store status: ${e}`,
+            } : null);
+        }
+        finally {
+            setCheckingStore(false);
+        }
+    }, []);
+    SP_REACT.useEffect(() => {
+        const timer = setInterval(() => refreshStoreStatus(false), 10000);
+        return () => clearInterval(timer);
+    }, [refreshStoreStatus]);
+    const changeSteamStoreEnabled = async (enabled) => {
+        setSteamStoreEnabled(enabled);
+        setStorePatchEnabled(enabled);
+        await setSetting("steam_store_enabled", enabled);
+    };
     const stopQr = async () => {
         try {
             await stopKeyServer();
@@ -4327,7 +4416,11 @@ const SettingsTab = () => {
                                         ? "Key received ✓ — you can close this"
                                         : `Scan with your phone${keyServer.expires_in
                                             ? ` · closes in ${Math.max(0, keyServer.expires_in)}s`
-                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.75, lineHeight: 1.5 }, children: ["The key is shared with ASSella via", " ", SP_JSX.jsx("code", { children: "~/.config/Tachibana Labs/ACCELA.conf" }), "."] }) }), stats.ok && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.7, opacity: 0.9 }, children: [stats.username && (SP_JSX.jsxs("div", { children: ["Account ", SP_JSX.jsx("b", { children: stats.username })] })), stats.requests_remaining != null && (SP_JSX.jsxs("div", { children: ["Requests today: ", stats.daily_usage, "/", stats.daily_limit, " (", stats.requests_remaining, " left)"] })), stats.expires_at && SP_JSX.jsxs("div", { children: ["Key expires: ", stats.expires_at] })] }) })), !stats.ok && stats.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: stats.error }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
+                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.75, lineHeight: 1.5 }, children: ["The key is shared with ASSella via", " ", SP_JSX.jsx("code", { children: "~/.config/Tachibana Labs/ACCELA.conf" }), "."] }) }), stats.ok && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.7, opacity: 0.9 }, children: [stats.username && (SP_JSX.jsxs("div", { children: ["Account ", SP_JSX.jsx("b", { children: stats.username })] })), stats.requests_remaining != null && (SP_JSX.jsxs("div", { children: ["Requests today: ", stats.daily_usage, "/", stats.daily_limit, " (", stats.requests_remaining, " left)"] })), stats.expires_at && SP_JSX.jsxs("div", { children: ["Key expires: ", stats.expires_at] })] }) })), !stats.ok && stats.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: stats.error }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Steam Store", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Steam Store", checked: steamStoreEnabled, onChange: changeSteamStoreEnabled, description: !steamStoreEnabled
+                                ? "Store button injection is turned off."
+                                : storeStatus?.available
+                                    ? `CEF debugging detected on port ${storeStatus.port}. ${storeStatus.store_tab ? "A Store page is open." : "Open a Store page to inspect it."}`
+                                    : "CEF debugging is off or unreachable. Steam must expose --cef-enable-debugging for the Store button to work." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.5, opacity: 0.85 }, children: [storeStatus?.message || "Checking the Steam debugging port…", SP_JSX.jsx("div", { style: { marginTop: "4px", opacity: 0.7 }, children: "Port detection confirms CDP access, but cannot guarantee Valve's current Store layout accepts the button. Recent patch logs are shown below." })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: checkingStore, onClick: () => refreshStoreStatus(true), children: checkingStore ? "Checking…" : "Check Steam Store and refresh logs" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: "11px", lineHeight: 1.5, maxHeight: "140px", overflowY: "auto", opacity: 0.8 }, children: [SP_JSX.jsx("div", { style: { fontWeight: "bold", marginBottom: "4px" }, children: "Recent Store patch logs" }), storeStatus?.logs?.length ? storeStatus.logs.slice(-12).map((line, index) => (SP_JSX.jsx("div", { style: { overflowWrap: "anywhere" }, children: line }, `${index}-${line}`))) : SP_JSX.jsx("div", { children: "No Store patch messages yet. Keep the feature enabled and open a Store page." }), SP_JSX.jsx("div", { style: { marginTop: "6px", opacity: 0.7 }, children: "For help, share the status above and any log mentioning \u201Csocket\u201D, \u201Cpurchase area\u201D, or \u201Cinjected\u201D." })] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
                                 setManifestIdPinning(v);
                                 setSetting("manifestid_pinning", v);
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Exit Steam button", description: "Show a manual Exit Steam button on store pages.", checked: showRestartButton, onChange: (v) => {
@@ -4449,7 +4542,7 @@ var index = definePlugin(() => {
         return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("style", { children: `
           .${focusClass}{background:rgba(255,255,255,0.12) !important;color:#ddd !important;border-color:rgba(255,255,255,0.25) !important}
           .${activeFocusClass}{background:rgba(255,255,255,0.18) !important;color:#fff !important;border-color:rgba(255,255,255,0.35) !important}
-        ` }), SP_JSX.jsxs(DFL.Focusable, { "flow-children": "horizontal", style: { display: "flex", gap: "4px", padding: "0 0 12px 0" }, children: [SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "search" ? activeFocusClass : focusClass, onActivate: () => selectTab("search"), style: tabStyle(activeTab === "search"), children: "Search" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "atom" ? activeFocusClass : focusClass, onActivate: () => selectTab("atom"), style: tabStyle(activeTab === "atom"), children: "AT0-M" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "backups" ? activeFocusClass : focusClass, onActivate: () => selectTab("backups"), style: tabStyle(activeTab === "backups"), children: "Backups" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "settings" ? activeFocusClass : focusClass, onActivate: () => selectTab("settings"), style: tabStyle(activeTab === "settings"), children: "Settings" })] }), activeTab === "search" && SP_JSX.jsx(SearchTab, {}), activeTab === "atom" && SP_JSX.jsx(AtomGamesTab, {}), activeTab === "backups" && SP_JSX.jsx(BackupsTab, {}), activeTab === "settings" && SP_JSX.jsx(SettingsTab, {})] }));
+        ` }), SP_JSX.jsxs(DFL.Focusable, { "flow-children": "horizontal", style: { display: "flex", gap: "4px", padding: "0 0 12px 0" }, children: [SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "search" ? activeFocusClass : focusClass, onActivate: () => selectTab("search"), style: tabStyle(activeTab === "search"), children: "Search" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "atom" ? activeFocusClass : focusClass, onActivate: () => selectTab("atom"), style: tabStyle(activeTab === "atom"), children: "AT0-M" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "settings" ? activeFocusClass : focusClass, onActivate: () => selectTab("settings"), style: tabStyle(activeTab === "settings"), children: "Settings" }), SP_JSX.jsx(DFL.Focusable, { focusClassName: activeTab === "backups" ? activeFocusClass : focusClass, onActivate: () => selectTab("backups"), style: tabStyle(activeTab === "backups"), children: "Backups" })] }), activeTab === "search" && SP_JSX.jsx(SearchTab, {}), activeTab === "atom" && SP_JSX.jsx(AtomGamesTab, {}), activeTab === "backups" && SP_JSX.jsx(BackupsTab, {}), activeTab === "settings" && SP_JSX.jsx(SettingsTab, {})] }));
     };
     return {
         name: "ASSella",

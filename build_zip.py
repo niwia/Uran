@@ -20,6 +20,7 @@ FILES_TO_PACK = [
 DIRS_TO_PACK = [
     "dist",
     "assets",
+    "uran_backend",
 ]
 
 def make_zip():
@@ -41,8 +42,11 @@ def make_zip():
         for d in DIRS_TO_PACK:
             dp = HERE / d
             if dp.is_dir():
-                for root, _, files in os.walk(dp):
+                for root, subdirs, files in os.walk(dp):
+                    subdirs[:] = [name for name in subdirs if name != "__pycache__"]
                     for file in sorted(files):
+                        if file.endswith((".pyc", ".pyo")):
+                            continue
                         fp = Path(root) / file
                         rel = fp.relative_to(HERE)
                         arcname = f"Uran/{rel}"

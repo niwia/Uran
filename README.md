@@ -16,7 +16,7 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
   - Only depots that have a key (or are Steamworks shared redistributables) are registered, so Steam never fails with `DepotWithoutKey`.
   - Every entry is tagged with the game name so ASSella can attribute it during cleanup.
 - **Shared Registry**: Writes the same `plugin_library.json` record ASSella uses, so injected games appear in ASSella's AT0-M library.
-- **Steam Store Page Button**: Injected via CDP into the Steam Deck Store webview. Click "ADD TO ASSELLA" to register the game
+- **Steam Store Page Button**: Injected via CDP into the Steam Deck Store webview. Settings checks whether Steam's CEF debugging port is open and shows recent injection logs.
 - **Instant Hot Reloading**: Emits signals to `/tmp/SLSsteam.API` (`RELOAD`) for zero-restart configuration updates.
 
 ### AT0-M Library Manager
@@ -58,8 +58,8 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 
 1. **Search** — search games, inject into SLSsteam, view recent injects.
 2. **AT0-M** — manage your AT0-M library: per-game integrations and uninstall.
-3. **Backups** — browse and restore `config.yaml` snapshots.
-4. **Settings** — Hubcap key (QR entry + stats), manifest pinning, DLC fetching, notifications.
+3. **Settings** — Hubcap key, Steam Store status and logs, manifest pinning, and notifications.
+4. **Backups** — browse and restore `config.yaml` snapshots.
 
 ---
 
@@ -68,10 +68,14 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 ```bash
 git clone https://github.com/niwia/Uran
 cd Uran
-npm install
+npm ci
 npm run build
 ./devinstall.sh
 ```
+
+Use `npm ci && npm run package` to create the installable `Uran.zip`. In Settings → Steam Store, check whether CEF debugging is detected and read the recent patch logs. The button cannot be injected when Steam's debugging port is closed; Steam needs to be launched with `--cef-enable-debugging`. A detected port still cannot guarantee compatibility with Valve's current Store page layout.
+
+Backend feature code is split into `uran_backend/` modules for the Decky callable adapter, SLSsteam config and backups, local key-capture server, Steam Store diagnostics, and AT0-M uninstall handling. `main.py` keeps shared paths, library, and injection services and wires the modules together.
 
 ---
 
