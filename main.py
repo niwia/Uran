@@ -2974,6 +2974,18 @@ def check_for_plugin_updates() -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e), "current_version": current_version}
 
+def _plugin_dir() -> Path:
+    """Resolve the active Uran plugin directory dynamically without hardcoded paths."""
+    if decky and hasattr(decky, "DECKY_PLUGIN_DIR") and decky.DECKY_PLUGIN_DIR:
+        p = Path(decky.DECKY_PLUGIN_DIR)
+        if p.exists():
+            return p
+    env_dir = os.environ.get("DECKY_PLUGIN_DIR")
+    if env_dir and Path(env_dir).exists():
+        return Path(env_dir)
+    # The active directory where this plugin's main.py is installed
+    return Path(__file__).parent.resolve()
+
 def apply_plugin_update(download_url: str = "") -> dict:
     """Download latest release zip from GitHub and apply to plugin directory."""
     if not download_url:
@@ -2988,12 +3000,11 @@ def apply_plugin_update(download_url: str = "") -> dict:
         if resp.status_code != 200:
             return {"ok": False, "error": f"Failed to download zip (HTTP {resp.status_code})"}
 
-        plugin_dir = Path("/home/aiwin/homebrew/plugins/Uran")
-        if not plugin_dir.exists():
-            plugin_dir = Path(__file__).parent
+        plugin_dir = _plugin_dir()
 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             for name in zf.namelist():
+                # Strip leading "Uran/" if present in archive
                 rel_name = name[5:] if name.startswith("Uran/") else name
                 if not rel_name or rel_name.endswith("/"):
                     continue
