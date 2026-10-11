@@ -20,7 +20,7 @@ import { injectFinishedText, notify } from "./notify";
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
 const BUTTON_COLOR_BG = "#a1cd44";
-const BUTTON_COLOR_TEXT = "#ffffff";
+const BUTTON_COLOR_TEXT = "#beee11";
 const ASSELLA_TAG = "ASSELLA:";
 const RESTART_TAG = "RESTART:";
 
@@ -143,7 +143,7 @@ function buildInjectScript(): string {
 
       function getState() {
         if (!window.__assellaStoreState) {
-          window.__assellaStoreState = { appId: '', label: 'ADD TO ASSELLA', locked: false, showRestart: false };
+          window.__assellaStoreState = { appId: '', label: 'ADD TO URAN', locked: false, showRestart: false };
         }
         return window.__assellaStoreState;
       }
@@ -165,7 +165,7 @@ function buildInjectScript(): string {
           'border:none;' +
           'border-radius:2px;' +
           'padding:0 16px;' +
-          'font-family:\"Motiva Sans\", Twemoji, \"Noto Sans\", Helvetica, sans-serif;' +
+          'font-family:\"Motiva Sans\", Arial, sans-serif;' +
           'font-size:13px;' +
           'font-weight:700;' +
           'letter-spacing:0.3px;' +
@@ -176,7 +176,7 @@ function buildInjectScript(): string {
           'justify-content:center;' +
           'white-space:nowrap;' +
           'opacity:' + (disabled ? '0.7' : '1') + ';' +
-          'transition:filter 0.15s ease, opacity 0.15s ease;';
+          'transition:filter 0.15s ease, opacity 0.15s ease, color 0.15s ease;';
         if (disabled) {
           b.disabled = true;
         } else {
@@ -191,10 +191,16 @@ function buildInjectScript(): string {
             console.log(tag + getState().appId);
           };
           b.onmouseenter = function() {
-            if (!b.disabled) b.style.filter = 'brightness(1.08)';
+            if (!b.disabled) {
+              b.style.filter = 'brightness(1.08)';
+              b.style.color = '#ffffff';
+            }
           };
           b.onmouseleave = function() {
             b.style.filter = 'none';
+            if (!b.disabled) {
+              b.style.color = fg;
+            }
           };
         }
         return b;
@@ -489,7 +495,7 @@ async function inject(
   const isPending = !isAdded && pendingAppIds.has(appId);
   const label =
     labelOverride ??
-    (isAdded ? "ADDED" : isPending ? "ADDING..." : "ADD TO ASSELLA");
+    (isAdded ? "ADDED" : isPending ? "ADDING..." : "ADD TO URAN");
   const locked = lockedOverride ?? (isAdded || isPending);
 
   const stateScript =

@@ -152,11 +152,22 @@ class Plugin:
         return _core.uninstall_atom_game(app_id)
 
     async def set_slsonline(self, app_id: str, enabled: bool, fake_appid: str = "480") -> dict:
+        if _core.is_global_slsonline_enabled():
+            return {"ok": False, "error": "Global SLS Online is active for all games"}
         if enabled:
             return _core.set_fake_appid(app_id, fake_appid or "480")
         _core.set_fake_appid(app_id, "")
         _core.set_netsock(app_id, False)
         return {"ok": True, "fake_appid": ""}
+
+    async def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
+        return _core.toggle_additional_app(app_id, dlc_appid, enable)
+
+    async def is_global_slsonline_enabled(self) -> dict:
+        return {"ok": True, "enabled": _core.is_global_slsonline_enabled()}
+
+    async def set_global_slsonline(self, enabled: bool) -> dict:
+        return _core.set_global_slsonline(enabled)
 
     async def set_netsock_toggle(self, app_id: str, enabled: bool) -> dict:
         return _core.set_netsock(app_id, enabled)

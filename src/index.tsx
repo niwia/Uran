@@ -223,6 +223,16 @@ const toggleGameDlcs = callable<
   [app_id: string, enable: boolean],
   { ok: boolean; error?: string; count?: number }
 >("toggle_game_dlcs");
+const toggleAdditionalApp = callable<
+  [app_id: string, dlc_appid: string, enable: boolean],
+  { ok: boolean; error?: string; dlc_id?: string; enabled?: boolean }
+>("toggle_additional_app");
+const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>(
+  "is_global_slsonline_enabled",
+);
+const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; enabled: boolean }>(
+  "set_global_slsonline",
+);
 const getInjectStatus = callable<
   [app_id: string],
   {
@@ -533,6 +543,7 @@ type AtomDlcInfo = {
 
 type AtomDetail = AtomGame & {
   slsonline: boolean;
+  global_slsonline?: boolean;
   fake_appid: string;
   netsock: boolean;
   eos: string;
@@ -737,9 +748,13 @@ const AtomGamesTab: React.FC = () => {
           <PanelSectionRow>
             <ToggleField
               label="SLSonline"
-              description="Map this game to Spacewar (480) for online features."
-              checked={detail.slsonline}
-              disabled={busy}
+              description={
+                detail.global_slsonline
+                  ? "Locked ON via Global SLS Online (0: 480)"
+                  : "Map this game to Spacewar (480) for online features."
+              }
+              checked={detail.global_slsonline || detail.slsonline}
+              disabled={busy || notInstalled || detail.global_slsonline}
               onChange={(v) =>
                 toggle("SLSonline", () =>
                   setSlsonline(detail.app_id, v, detail.fake_appid || "480"),
@@ -786,57 +801,46 @@ const AtomGamesTab: React.FC = () => {
           </PanelSectionRow>
         </PanelSection>
 
-        <PanelSection title="DLC & Depots">
-          <PanelSectionRow>
-            <ToggleField
-              label="Inject DLCs"
-              description="Register all DLC AppIDs into AdditionalApps and sync keyed depots."
-              checked={!!detail.dlcs_injected}
-              disabled={busy}
-              onChange={(v) =>
-                toggle("Inject DLCs", () => toggleGameDlcs(detail.app_id, v))
-              }
-            />
-          </PanelSectionRow>
-
-          {detail.dlcs_detail && detail.dlcs_detail.length > 0 && (
+        <PanelSection title={`AdditionalAppIds / DLCs (${detail.dlcs_detail?.length || 0})`}>
+          {detail.dlcs_detail && detail.dlcs_detail.length > 0 ? (
+            detail.dlcs_detail.map((dlc) => (
+              <PanelSectionRow key={dlc.id}>
+                <ToggleField
+                  label={dlc.name}
+                  description={`AppID: ${dlc.id}`}
+                  checked={dlc.in_config}
+                  disabled={busy}
+                  onChange={(v) =>
+                    toggle(`DLC ${dlc.id}`, async () => {
+                      const res = await toggleAdditionalApp(detail.app_id, dlc.id, v);
+                      if (res?.ok) {
+                        setDetail((d) =>
+                          d
+                            ? {
+                                ...d,
+                                dlcs_detail: d.dlcs_detail?.map((x) =>
+                                  x.id === dlc.id ? { ...x, in_config: v } : x,
+                                ),
+                              }
+                            : d,
+                        );
+                      }
+                      return res;
+                    })
+                  }
+                />
+              </PanelSectionRow>
+            ))
+          ) : (
             <PanelSectionRow>
-              <div style={{ width: "100%", fontSize: "12px" }}>
-                <div style={{ fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }}>
-                  DLC AppIDs ({detail.dlcs_detail.length})
-                </div>
-                {detail.dlcs_detail.map((dlc) => (
-                  <div
-                    key={dlc.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "4px 0",
-                      borderBottom: "1px solid rgba(255,255,255,0.05)",
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: "8px" }}>
-                      <span style={{ fontFamily: "monospace", opacity: 0.75 }}>{dlc.id}</span>{" "}
-                      <span>{dlc.name}</span>
-                    </div>
-                    <span
-                      style={{
-                        fontSize: "10px",
-                        padding: "2px 6px",
-                        borderRadius: "4px",
-                        background: dlc.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
-                        color: dlc.in_config ? "#7ee2a8" : "#8a929e",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {dlc.in_config ? "Active in config" : "Not in config"}
-                    </span>
-                  </div>
-                ))}
+              <div style={{ fontSize: "12px", opacity: 0.6, padding: "4px 0" }}>
+                No AdditionalAppIds found for this game.
               </div>
             </PanelSectionRow>
           )}
+        </PanelSection>
+
+        <PanelSection title={`Depots (${detail.depots_detail?.length || 0})`}>
 
           {detail.depots_detail && detail.depots_detail.length > 0 && (
             <PanelSectionRow>
@@ -1047,6 +1051,7 @@ const SettingsTab: React.FC = () => {
     logs: string[];
   } | null>(null);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
+  const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
   >("auto");
@@ -1084,12 +1089,13 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, mip, nm, storeEnabled, initialStoreStatus] = await Promise.all([
+        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls] = await Promise.all([
           getSetting("show_restart_button", false),
           getSetting("manifestid_pinning", false),
           getSetting("notification_mode", "auto"),
           getSetting("steam_store_enabled", true),
           getStoreDebugStatus(false),
+          isGlobalSlsOnlineEnabled(),
         ]);
         if (!alive) return;
         setShowRestartButton(!!srb);
@@ -1097,6 +1103,7 @@ const SettingsTab: React.FC = () => {
         setSteamStoreEnabled(storeEnabled !== false);
         setStorePatchEnabled(storeEnabled !== false);
         setStoreStatus(initialStoreStatus);
+        setGlobalSlsOnlineState(!!gSls?.enabled);
         if (nm) setNotificationModeState(nm);
       } catch {}
       loadStats();
@@ -1209,21 +1216,27 @@ const SettingsTab: React.FC = () => {
                 gap: "6px",
                 fontSize: "12px",
                 width: "100%",
+                boxSizing: "border-box",
+                overflow: "hidden",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ opacity: 0.65 }}>user :</span>
-                <span style={{ fontWeight: 600 }}>{stats.username || "—"}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+                <span style={{ opacity: 0.65, flexShrink: 0 }}>user :</span>
+                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginLeft: "12px", textAlign: "right" }}>
+                  {stats.username || "—"}
+                </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ opacity: 0.65 }}>API :</span>
-                <span style={{ fontWeight: 600 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+                <span style={{ opacity: 0.65, flexShrink: 0 }}>API :</span>
+                <span style={{ fontWeight: 600, marginLeft: "12px", textAlign: "right" }}>
                   {stats.daily_usage ?? 0}/{stats.daily_limit ?? 0}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ opacity: 0.65 }}>expiry :</span>
-                <span style={{ fontWeight: 600 }}>{formatExpiry(stats.expires_at)}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+                <span style={{ opacity: 0.65, flexShrink: 0 }}>expiry :</span>
+                <span style={{ fontWeight: 600, marginLeft: "12px", textAlign: "right" }}>
+                  {formatExpiry(stats.expires_at)}
+                </span>
               </div>
             </div>
           </PanelSectionRow>
@@ -1322,6 +1335,26 @@ const SettingsTab: React.FC = () => {
             rgOptions={NOTIFICATION_MODE_OPTIONS}
             selectedOption={notificationMode}
             onChange={changeNotificationMode}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="SLS Online">
+        <PanelSectionRow>
+          <ToggleField
+            label="SLS Online Global"
+            description="Enable Spacewar (0: 480) for all games simultaneously. Locks individual game toggles ON."
+            checked={globalSlsOnline}
+            onChange={async (v) => {
+              setGlobalSlsOnlineState(v);
+              const res = await setGlobalSlsOnline(v);
+              if (!res?.ok) {
+                notify("Uran", "Failed to update SLS Online Global");
+                setGlobalSlsOnlineState(!v);
+              } else {
+                notify("Uran", v ? "SLS Online Global enabled" : "SLS Online Global disabled");
+              }
+            }}
           />
         </PanelSectionRow>
       </PanelSection>

@@ -541,6 +541,86 @@ def _accela_base_path() -> Path:
         return Path(xdg) / "ACCELA"
     return home / ".local" / "share" / "ACCELA"
 
+def _accela_db_candidates(db_name: str) -> list[Path]:
+    """Return prioritized candidate paths for an ACCELA SQLite database."""
+    home = _user_home()
+    candidates = [
+        _accela_base_path() / "db" / db_name,
+        _accela_base_path() / db_name,
+        home / ".local" / "share" / "ACCELA" / "db" / db_name,
+        home / ".local" / "share" / "ACCELA" / db_name,
+        home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "ACCELA" / "db" / db_name,
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "ACCELA" / "db" / db_name,
+        Path("/home/deck/.local/share/ACCELA/db") / db_name,
+    ]
+    seen = set()
+    deduped = []
+    for c in candidates:
+        s = str(c.resolve()) if c.exists() else str(c)
+        if s not in seen:
+            seen.add(s)
+            deduped.append(c)
+    return deduped
+
+def _get_local_depot_keys(app_id: str, candidate_depots: set | None = None) -> dict[str, str]:
+    """Retrieve cached depot keys from local depot_keys.db for an AppID and optional candidate depots."""
+    aid = _sanitize_id(app_id)
+    if not aid:
+        return {}
+    keys: dict[str, str] = {}
+    for db_path in _accela_db_candidates("depot_keys.db"):
+        if not db_path.exists():
+            continue
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                rows = cur.execute(
+                    "SELECT depot_id, aes_key FROM depot_keys WHERE appid = ? OR depot_id = ?",
+                    (aid, aid)
+                ).fetchall()
+                for did, k in rows:
+                    if did and k:
+                        keys[str(did)] = str(k).strip()
+                if candidate_depots:
+                    for did in candidate_depots:
+                        sd = _sanitize_id(did)
+                        if sd and sd not in keys:
+                            r = cur.execute(
+                                "SELECT aes_key FROM depot_keys WHERE depot_id = ? LIMIT 1",
+                                (sd,)
+                            ).fetchone()
+                            if r and r[0]:
+                                keys[sd] = str(r[0]).strip()
+            if keys:
+                break
+        except Exception as e:
+            logger.debug("depot_keys.db query on %s failed: %s", db_path, e)
+    return keys
+
+def _save_local_depot_keys(app_id: str, keys: dict[str, str]) -> None:
+    """Cache newly harvested depot keys into local depot_keys.db."""
+    aid = _sanitize_id(app_id)
+    if not aid or not keys:
+        return
+    for db_path in _accela_db_candidates("depot_keys.db"):
+        if db_path.exists():
+            try:
+                now = int(time.time())
+                with sqlite3.connect(db_path) as conn:
+                    cur = conn.cursor()
+                    for did, k in keys.items():
+                        sd = _sanitize_id(did)
+                        sk = str(k).strip()
+                        if sd and sk:
+                            cur.execute(
+                                "INSERT OR REPLACE INTO depot_keys (appid, depot_id, aes_key, updated_at) VALUES (?, ?, ?, ?)",
+                                (aid, sd, sk, now)
+                            )
+                    conn.commit()
+                break
+            except Exception as e:
+                logger.debug("Failed saving keys to %s: %s", db_path, e)
+
 def plugin_library_path() -> Path:
     """Path to ACCELA's plugin_library.json (db/ dir, with legacy fallback)."""
     base = _accela_base_path()
@@ -1060,11 +1140,22 @@ def _inspect_game_depots_and_dlcs(aid: str, rec: dict) -> tuple[list[dict], list
         except Exception as e:
             logger.debug("SLS config parse error: %s", e)
 
+    if not rec_dlcs:
+        try:
+            details = get_app_details(aid)
+            rec_dlcs = [str(d) for d in details.get("dlc", [])]
+        except Exception:
+            pass
+    for did, info in sqlite_depots.items():
+        if info.get("is_dlc") and did not in rec_dlcs:
+            rec_dlcs.append(did)
+
     dlc_ids: set[str] = set(rec_dlcs)
 
     dlcs_list: list[dict] = []
     for did in sorted(dlc_ids, key=lambda x: int(x) if x.isdigit() else 0):
-        dname = sqlite_depots.get(did, {}).get("name") or rec_names.get(did) or f"DLC {did}"
+        raw_name = sqlite_depots.get(did, {}).get("name") or rec_names.get(did) or f"DLC {did}"
+        dname = re.sub(r"^\[DLC\s*\d+\]\s*", "", raw_name)
         dlcs_list.append({
             "id": did,
             "name": dname,
@@ -1214,6 +1305,103 @@ def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
 
         return {"ok": True, "count": removed_apps}
 
+def toggle_additional_app(app_id: str, dlc_appid: str, enable: bool) -> dict:
+    """Add or remove a single AdditionalAppID (DLC) in config.yaml and manage its depot keys."""
+    aid = _sanitize_id(app_id)
+    dlc_id = _sanitize_id(dlc_appid)
+    if not aid or not dlc_id:
+        return {"ok": False, "error": "Invalid AppID"}
+
+    cfg = _find_sls_config()
+    if cfg is None:
+        return {"ok": False, "error": "SLSsteam config not found"}
+
+    marker = f"uran:dlc:{aid}"
+
+    if enable:
+        dlc_keys = _get_local_depot_keys(dlc_id)
+        if not dlc_keys:
+            parent_keys = _get_local_depot_keys(aid)
+            if dlc_id in parent_keys:
+                dlc_keys[dlc_id] = parent_keys[dlc_id]
+
+        db_path = _accela_base_path() / "db" / "steam_headers.db"
+        dlc_depots: set[str] = set()
+        if db_path.exists():
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.cursor().execute(
+                        "SELECT depot_id FROM depot_enrichments WHERE appid = ? AND (is_dlc = 1 OR depot_id = ?)",
+                        (aid, dlc_id),
+                    ).fetchall()
+                    for row in rows:
+                        if str(row[0]) == dlc_id:
+                            dlc_depots.add(str(row[0]))
+            except Exception as e:
+                logger.debug("Enrichment lookup error for %s: %s", dlc_id, e)
+
+        with _batch_config_edit() as editor:
+            editor.content = _ensure_plugins_enabled(editor.content)
+            editor.has_changes = True
+            existing_apps = _parse_list_section(editor.content, "AdditionalApps")
+            existing_depots = _parse_list_section(editor.content, "AdditionalDepots")
+            existing_keys, _ = _parse_key_section(editor.content, "DecryptionKeys")
+
+            if dlc_id not in existing_apps:
+                editor.add_app(dlc_id, comment=marker)
+
+            for did in dlc_depots:
+                if did != aid and did not in existing_depots:
+                    editor.add_depot(did, comment=marker)
+
+            for did, key in dlc_keys.items():
+                if did != aid and did not in existing_depots:
+                    editor.add_depot(did, comment=marker)
+                if did != aid and did not in existing_keys:
+                    editor.add_key(did, key, comment=marker)
+
+        if not editor.committed_successfully:
+            return {"ok": False, "error": "Failed to write SLSsteam config"}
+
+        lib = load_plugin_library()
+        if aid in lib:
+            dlcs = set(str(d) for d in lib[aid].get("dlc_appids", []))
+            dlcs.add(dlc_id)
+            lib[aid]["dlc_appids"] = sorted(list(dlcs), key=lambda x: int(x) if x.isdigit() else 0)
+            save_plugin_library(lib)
+
+        _signal_sls_api("RELOAD")
+        return {"ok": True, "dlc_id": dlc_id, "enabled": True}
+
+    else:
+        with _batch_config_edit() as editor:
+            apps = _parse_list_section(editor.content, "AdditionalApps")
+            if dlc_id in apps:
+                editor.content, changed = _remove_in_memory(editor.content, "AdditionalApps", dlc_id, is_list=True)
+                if changed:
+                    editor.has_changes = True
+
+            depots = _parse_list_section(editor.content, "AdditionalDepots")
+            if dlc_id in depots and marker in (depots.get(dlc_id) or ""):
+                editor.content, changed = _remove_in_memory(editor.content, "AdditionalDepots", dlc_id, is_list=True)
+                if changed:
+                    editor.has_changes = True
+
+            _, key_comments = _parse_key_section(editor.content, "DecryptionKeys")
+            if dlc_id in key_comments and marker in (key_comments.get(dlc_id) or ""):
+                editor.content, changed = _remove_in_memory(editor.content, "DecryptionKeys", dlc_id, is_list=False)
+                if changed:
+                    editor.has_changes = True
+
+        lib = load_plugin_library()
+        if aid in lib:
+            dlcs = [str(d) for d in lib[aid].get("dlc_appids", []) if str(d) != dlc_id]
+            lib[aid]["dlc_appids"] = dlcs
+            save_plugin_library(lib)
+
+        _signal_sls_api("RELOAD")
+        return {"ok": True, "dlc_id": dlc_id, "enabled": False}
+
 def get_atom_game_detail(app_id: str) -> dict:
     """Per-game state for the detail page: toggles, depots, DLCs, and install info."""
     aid = _sanitize_id(app_id)
@@ -1223,8 +1411,9 @@ def get_atom_game_detail(app_id: str) -> dict:
     install = _atom_install_info(aid)
     game_dir = Path(install.get("install_path") or "")
 
+    global_online = is_global_slsonline_enabled()
     fake = get_fake_appid(aid)
-    sls_online = bool(fake)
+    sls_online = bool(fake) or global_online
     netsock = is_netsock_active(aid)
     eos = eos_proxy_status(game_dir) if install.get("installed") else "none"
 
@@ -1242,6 +1431,7 @@ def get_atom_game_detail(app_id: str) -> dict:
         "key_count": len(rec.get("keys", {}) or {}),
         "dlc_only": bool(rec.get("dlc_only")),
         "slsonline": sls_online,
+        "global_slsonline": global_online,
         "fake_appid": fake,
         "netsock": netsock,
         "eos": eos,
@@ -1303,6 +1493,19 @@ def set_fake_appid(app_id: str, fake_appid: str, game_name: str = "") -> dict:
     if not editor.committed_successfully:
         return {"ok": False, "error": "Failed to write config"}
     return {"ok": True, "fake_appid": fake_appid}
+
+def is_global_slsonline_enabled() -> bool:
+    """Return True if 0: 480 is mapped in FakeAppIds."""
+    return get_fake_appid("0") == "480"
+
+def set_global_slsonline(enabled: bool) -> dict:
+    """Toggle global SLSonline (mapping AppID 0 to Spacewar 480 for all games)."""
+    if enabled:
+        res = set_fake_appid("0", "480", game_name="Global")
+    else:
+        res = set_fake_appid("0", "", game_name="")
+    _signal_sls_api("RELOAD")
+    return {"ok": res.get("ok", False), "enabled": enabled}
 
 # --- LaunchOptions (NetSock) --------------------------------------------------
 def _netsock_tools_dir() -> Path:
@@ -2372,17 +2575,25 @@ def _background_inject_worker(app_id: str, name: str, dlc_appids: set | None = N
     status_entry["running"] = True
 
     try:
-        # 1. Harvest Hubcap manifest bundle + depot keys WITHOUT writing config,
+        # 1. Harvest local depot keys from local SQLite database FIRST
+        local_keys = _get_local_depot_keys(app_id, candidate_depots)
+        if local_keys:
+            logger.info("Local DB: Found %d cached depot key(s) in depot_keys.db for AppID %s prior to Hubcap inquiry", len(local_keys), app_id)
+
+        # 2. Harvest Hubcap manifest bundle + depot keys WITHOUT writing config,
         #    so the whole inject lands as one atomic write below.
         manifest_res = fetch_manifests(app_id, persist_config=False)
-        depot_keys = {}
+        depot_keys = dict(local_keys)
         manifest_ids = {}
         resolved_dlcs = set(dlc_appids or ())
         resolved_name = name
 
         if manifest_res.get("ok"):
-            depot_keys = dict(manifest_res.get("depot_keys", {}))
-            status_entry["depot_keys"] = manifest_res.get("keys_added", [])
+            hubcap_keys = dict(manifest_res.get("depot_keys", {}))
+            depot_keys.update(hubcap_keys)
+            if hubcap_keys:
+                _save_local_depot_keys(app_id, hubcap_keys)
+            status_entry["depot_keys"] = sorted(list(depot_keys.keys()), key=lambda x: int(x) if x.isdigit() else 0)
             status_entry["manifests"] = manifest_res.get("manifests", [])
             if _get_setting("manifestid_pinning"):
                 manifest_ids = manifest_res.get("pinned_manifests", {})
@@ -2391,9 +2602,13 @@ def _background_inject_worker(app_id: str, name: str, dlc_appids: set | None = N
                 resolved_name = manifest_res["game_name"]
             resolved_dlcs |= {d for d in (manifest_res.get("dlc_appids") or []) if d}
         else:
-            status_entry["manifest_error"] = manifest_res.get("error")
+            if local_keys:
+                logger.info("Hubcap inquiry failed (%s), but proceeding with %d cached keys from local depot_keys.db", manifest_res.get("error"), len(local_keys))
+                status_entry["depot_keys"] = sorted(list(depot_keys.keys()), key=lambda x: int(x) if x.isdigit() else 0)
+            else:
+                status_entry["manifest_error"] = manifest_res.get("error")
 
-        # 2. Top up from keys already in config, scoped to this game.
+        # 3. Top up from keys already in config, scoped to this game.
         depot_keys = _merge_existing_keys(app_id, depot_keys, candidate_depots or set())
 
         # 3. Single atomic config write (Apps + Depots + Keys + SmartTickets).
