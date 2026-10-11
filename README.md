@@ -1,4 +1,4 @@
-# Uran
+<img width="3397" height="1298" alt="uran" src="https://github.com/user-attachments/assets/b664f362-4412-4bb6-9924-6121a6eecb10" />
 
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) companion plugin for [ASSella](https://github.com/niwia/ASSella).
 
