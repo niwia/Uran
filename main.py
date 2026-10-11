@@ -2961,6 +2961,15 @@ def check_for_plugin_updates() -> dict:
                 "download_url": download_url,
                 "published_at": rel.get("published_at", ""),
             }
+        if resp.status_code == 404:
+            return {
+                "ok": True,
+                "current_version": current_version,
+                "latest_version": current_version,
+                "has_update": False,
+                "notes": "No published releases found yet.",
+                "download_url": "",
+            }
         return {"ok": False, "error": f"GitHub API HTTP {resp.status_code}", "current_version": current_version}
     except Exception as e:
         return {"ok": False, "error": str(e), "current_version": current_version}
