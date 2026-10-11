@@ -1,0 +1,24 @@
+name: Notify Discord on release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send release to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ github.event.release.name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          jq -n \
+            --arg title "New release: ${NAME:-$TAG}" \
+            --arg url "$URL" \
+            --arg desc "$(echo "$BODY" | head -c 1500)" \
+            '{embeds: [{title: $title, url: $url, description: $desc, color: 5814783}]}' \
+          | curl -sS -H "Content-Type: application/json" -d @- "$WEBHOOK"
