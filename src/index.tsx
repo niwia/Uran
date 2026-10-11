@@ -23,35 +23,32 @@ import QRCode from "qrcode";
 import { initStorePatch, setStorePatchEnabled, tagInAssellaCollection, addedAppIds, pendingAppIds, syncAddedAppIds } from "./StorePatch";
 import { initContextMenuPatch } from "./LibraryPatch";
 
-const AssellaLogo: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
+const UranLogo: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
   size = "1em",
   style,
 }) => (
   <svg
-    viewBox="0 0 100 100"
+    viewBox="0 0 245 231"
     width={size}
     height={size}
     style={{ display: "inline-block", verticalAlign: "middle", ...style }}
     xmlns="http://www.w3.org/2000/svg"
   >
     <path
-      d="M20.956 50.804 L49.999 16.921 L79.025 50.826 C85.468 58.562 84.421 70.081 76.679 76.52 C68.909 82.998 57.43 81.891 50.936 74.175 C50.435 73.58 49.516 73.582 49.018 74.181 C42.577 81.925 31.053 82.967 23.319 76.519 C15.559 70.065 14.558 58.574 20.956 50.804 Z"
-      fill="#f4c8ab"
+      d="M36.487 78.134 C67.549 7.126 172.463 7.277 198.569 83.303 C199.061 84.365 199.834 85.072 200.889 85.413 C208.341 86.841 220.656 80.813 225.483 74.672 C227.405 75.872 226.643 89.66 226.655 92.238 C224.1 123.211 212.477 149.067 189.886 168.655 C179.025 177.792 167.202 185.109 154.419 190.606 C152.017 191.769 149.697 193.108 147.471 194.625 C145.209 196.811 141.132 199.06 140.159 202.333 C137.792 201.31 138.282 199.197 140.347 197.43 C142.163 195.876 144.002 194.334 145.842 192.792 C147.951 190.833 149.92 188.723 151.747 186.461 C152.978 184.843 154.477 183.605 156.247 182.758 C169.171 181.899 175.346 175.618 180.196 162.88 C183.829 153.832 180.103 145.402 172.323 141.055 C170.143 139.703 167.835 139.286 165.386 139.779 C161.391 141.712 158.215 144.682 155.848 148.688 C154.97 148.991 154.255 148.726 153.704 147.879 C150.037 141.75 145.42 135.318 144.108 128.014 C143.932 127.394 144.073 126.902 144.506 126.51 C147.225 128.077 154.993 130.844 156.645 126.788 C157.407 117.702 148.572 103.839 143.545 96.749 C139.093 89.116 113.351 67.886 106.063 71.121 C92.096 78.299 79.336 89.571 67.033 99.554 C65.873 99.845 64.924 99.479 64.186 98.455 C61.69 95.245 59.534 91.795 57.718 88.093 C56.441 85.375 55.222 82.621 54.05 79.84 C53.148 78.463 52.281 78.577 51.461 80.169 C41.033 94.032 33.674 111.876 36.944 130.036 C38.244 137.302 39.955 144.455 42.052 151.494 C43.177 155.032 44.021 158.646 44.595 162.324 C44.583 163.347 44.103 163.941 43.154 164.118 C42.638 162.779 41.947 161.566 41.08 160.453 C35.163 153.667 30.23 146.161 26.258 137.921 C18.231 121.278 16.462 102.284 19.813 84.011 C20.141 83.518 20.516 83.467 20.938 83.859 C22.906 87.511 25.344 90.759 28.249 93.615 C29.726 95.131 30.921 94.955 31.835 93.072 C33.311 88.067 34.858 83.088 36.487 78.134 Z M160.336 50.257 C160.922 49.941 161.32 49.473 161.508 48.854 C160.207 48.197 158.825 47.83 157.383 47.742 C154.126 47.489 153.247 48.892 154.735 51.925 C155.802 52.797 156.997 53.416 158.309 53.795 M167.999 63.601 C168.901 64.145 169.827 64.625 170.776 65.042 C171.28 66.862 172.182 68.404 173.494 69.655 C175.111 71.032 177.677 70.552 176.318 67.873 C174.01 65.345 173.846 63.058 172.405 60.164 C169.018 55.286 164.706 58.622 167.999 63.601 Z"
+      fill="#ffffff"
     />
     <path
-      d="M49.051 14.187 C49.55 13.605 50.451 13.605 50.95 14.187 L80.93 49.207 C80.933 49.211 80.937 49.215 80.94 49.22 C88.272 58.013 87.086 71.117 78.28 78.44 C69.88 85.444 57.551 84.695 49.985 76.851 C42.461 84.72 30.094 85.422 21.721 78.441 C12.899 71.105 11.754 58.036 19.036 49.205 C19.041 49.199 19.046 49.193 19.051 49.187 Z M49.999 16.921 L20.957 50.804 C14.558 58.574 15.559 70.065 23.319 76.519 C31.054 82.968 42.578 81.926 49.019 74.181 C49.516 73.583 50.435 73.58 50.936 74.175 C57.431 81.891 68.91 82.998 76.68 76.52 C84.422 70.081 85.469 58.562 79.025 50.827 Z"
-      fill="#000000"
+      d="M147.044 42.747 C148.29 40.5 153.105 41.13 157.8 44.156 C162.495 47.181 165.292 51.456 164.046 53.704 C162.801 55.952 157.986 55.321 153.291 52.296 C148.596 49.27 145.799 44.995 147.044 42.747 Z"
+      fill="#040302"
     />
     <path
-      d="M26.9 42 C42.3 46 57.7 46 73.1 42 C61.033 54 53.333 65 50 75 C46.667 65 38.967 54 26.9 42 Z"
-      fill="#000000"
-    />
-    <path
-      d="M72.762 56.826 C72.858 56.142 73.49 55.666 74.174 55.762 C74.858 55.858 75.334 56.49 75.238 57.174 C74.486 62.529 70.557 66.922 65.298 68.214 C64.628 68.379 63.951 67.969 63.786 67.298 C63.621 66.628 64.031 65.951 64.702 65.786 C68.968 64.738 72.152 61.169 72.762 56.826 Z"
-      fill="#000000"
+      d="M167.213 58.201 C169.114 56.719 173.166 59.263 176.263 63.884 C179.36 68.504 180.329 73.452 178.427 74.935 C176.525 76.417 172.473 73.873 169.376 69.252 C166.279 64.631 165.311 59.684 167.213 58.201 Z"
+      fill="#040302"
     />
   </svg>
 );
+const AssellaLogo = UranLogo;
 
 const TrashIcon: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
   size = "1em",
@@ -398,6 +395,107 @@ const SearchTab: React.FC = () => {
             {msg}
           </div>
         </PanelSectionRow>
+      )}
+
+      {results.length > 0 && (
+        <PanelSection title={`Results (${results.length})`}>
+          {results.map((item) => {
+            const isAdded = addedAppIds.has(item.app_id);
+            const isPending = pendingAppIds.has(item.app_id);
+            return (
+              <PanelSectionRow key={item.app_id}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    width: "100%",
+                    gap: "8px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      overflow: "hidden",
+                      flex: 1,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.title}
+                    </span>
+                    <span style={{ fontSize: "11px", opacity: 0.6 }}>
+                      App ID: {item.app_id}
+                    </span>
+                  </div>
+                  <div style={{ flexShrink: 0 }}>
+                    <DialogButton
+                      style={{
+                        height: "28px",
+                        minWidth: "70px",
+                        padding: "0 10px",
+                        fontSize: "12px",
+                      }}
+                      disabled={isAdded || isPending}
+                      onClick={() => doInject(item.app_id, item.title)}
+                    >
+                      {isAdded ? "Added" : isPending ? "Adding..." : "Add"}
+                    </DialogButton>
+                  </div>
+                </div>
+              </PanelSectionRow>
+            );
+          })}
+        </PanelSection>
+      )}
+
+      {recent.length > 0 && (
+        <PanelSection title="Recent Activity">
+          {recent.slice(0, 5).map((r) => (
+            <PanelSectionRow key={r.app_id}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  width: "100%",
+                  fontSize: "12px",
+                }}
+              >
+                <span
+                  style={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxWidth: "70%",
+                  }}
+                >
+                  {r.name || r.app_id}
+                </span>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: r.error
+                      ? "#e57373"
+                      : r.done
+                      ? "#81c784"
+                      : "#ffb74d",
+                  }}
+                >
+                  {r.error ? "Failed" : r.done ? "Done" : "Working..."}
+                </span>
+              </div>
+            </PanelSectionRow>
+          ))}
+        </PanelSection>
       )}
     </>
   );
@@ -923,6 +1021,19 @@ const AtomGamesTab: React.FC = () => {
   );
 };
 
+function formatExpiry(raw?: string): string {
+  if (!raw) return "—";
+  try {
+    const datePart = raw.split(" ")[0].split("T")[0];
+    const parts = datePart.split("-");
+    if (parts.length === 3) {
+      const yy = parts[0].length === 4 ? parts[0].slice(2) : parts[0];
+      return `${parts[2]}/${parts[1]}/${yy}`;
+    }
+  } catch {}
+  return raw;
+}
+
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab: React.FC = () => {
   const [showRestartButton, setShowRestartButton] = React.useState(false);
@@ -935,7 +1046,6 @@ const SettingsTab: React.FC = () => {
     message: string;
     logs: string[];
   } | null>(null);
-  const [checkingStore, setCheckingStore] = React.useState(false);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
@@ -996,25 +1106,6 @@ const SettingsTab: React.FC = () => {
     };
   }, [loadStats]);
 
-  const refreshStoreStatus = React.useCallback(async (force = false) => {
-    setCheckingStore(true);
-    try {
-      setStoreStatus(await getStoreDebugStatus(force));
-    } catch (e: any) {
-      setStoreStatus((previous) => previous ? {
-        ...previous,
-        message: `Could not read Steam Store status: ${e}`,
-      } : null);
-    } finally {
-      setCheckingStore(false);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    const timer = setInterval(() => refreshStoreStatus(false), 10000);
-    return () => clearInterval(timer);
-  }, [refreshStoreStatus]);
-
   const changeSteamStoreEnabled = async (enabled: boolean) => {
     setSteamStoreEnabled(enabled);
     setStorePatchEnabled(enabled);
@@ -1064,7 +1155,6 @@ const SettingsTab: React.FC = () => {
     }
   };
 
-  // Poll while the capture server is up so the UI flips on its own.
   React.useEffect(() => {
     if (!keyServer.running) return;
     let alive = true;
@@ -1105,7 +1195,46 @@ const SettingsTab: React.FC = () => {
 
   return (
     <>
-      <PanelSection title="Hubcap API Key">
+      <PanelSection title="Hubcap API">
+        {stats.ok ? (
+          <PanelSectionRow>
+            <div
+              style={{
+                background: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: "8px",
+                padding: "10px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+                fontSize: "12px",
+                width: "100%",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ opacity: 0.65 }}>user :</span>
+                <span style={{ fontWeight: 600 }}>{stats.username || "—"}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ opacity: 0.65 }}>API :</span>
+                <span style={{ fontWeight: 600 }}>
+                  {stats.daily_usage ?? 0}/{stats.daily_limit ?? 0}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ opacity: 0.65 }}>expiry :</span>
+                <span style={{ fontWeight: 600 }}>{formatExpiry(stats.expires_at)}</span>
+              </div>
+            </div>
+          </PanelSectionRow>
+        ) : (
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", opacity: 0.7, padding: "4px 0" }}>
+              {stats.error || "No API key configured."}
+            </div>
+          </PanelSectionRow>
+        )}
+
         <PanelSectionRow>
           <ToggleField
             label="Show QR code"
@@ -1167,39 +1296,23 @@ const SettingsTab: React.FC = () => {
             <div style={{ fontSize: "12px", color: "#e57373" }}>{qrError}</div>
           </PanelSectionRow>
         )}
+      </PanelSection>
 
+      <PanelSection title="Steam Store">
         <PanelSectionRow>
-          <div style={{ fontSize: "12px", opacity: 0.75, lineHeight: 1.5 }}>
-            The key is shared with ASSella via{" "}
-            <code>~/.config/Tachibana Labs/ACCELA.conf</code>.
-          </div>
+          <ToggleField
+            label="Steam Store"
+            checked={steamStoreEnabled}
+            onChange={changeSteamStoreEnabled}
+            description={
+              storeStatus?.port
+                ? `Port: ${storeStatus.port}`
+                : storeStatus?.available
+                ? "Port: 8080"
+                : "CEF debugging unavailable"
+            }
+          />
         </PanelSectionRow>
-
-        {stats.ok && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", lineHeight: 1.7, opacity: 0.9 }}>
-              {stats.username && (
-                <div>
-                  Account <b>{stats.username}</b>
-                </div>
-              )}
-              {stats.requests_remaining != null && (
-                <div>
-                  Requests today: {stats.daily_usage}/{stats.daily_limit} (
-                  {stats.requests_remaining} left)
-                </div>
-              )}
-              {stats.expires_at && <div>Key expires: {stats.expires_at}</div>}
-            </div>
-          </PanelSectionRow>
-        )}
-        {!stats.ok && stats.error && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#e57373" }}>
-              {stats.error}
-            </div>
-          </PanelSectionRow>
-        )}
       </PanelSection>
 
       <PanelSection title="Notifications">
@@ -1210,47 +1323,6 @@ const SettingsTab: React.FC = () => {
             selectedOption={notificationMode}
             onChange={changeNotificationMode}
           />
-        </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="Steam Store">
-        <PanelSectionRow>
-          <ToggleField
-            label="Steam Store"
-            checked={steamStoreEnabled}
-            onChange={changeSteamStoreEnabled}
-            description={
-              !steamStoreEnabled
-                ? "Store button injection is turned off."
-                : storeStatus?.available
-                ? `CEF debugging detected on port ${storeStatus.port}. ${storeStatus.store_tab ? "A Store page is open." : "Open a Store page to inspect it."}`
-                : "CEF debugging is off or unreachable. Steam must expose --cef-enable-debugging for the Store button to work."
-            }
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.85 }}>
-            {storeStatus?.message || "Checking the Steam debugging port…"}
-            <div style={{ marginTop: "4px", opacity: 0.7 }}>
-              Port detection confirms CDP access, but cannot guarantee Valve&apos;s current Store layout accepts the button. Recent patch logs are shown below.
-            </div>
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={checkingStore} onClick={() => refreshStoreStatus(true)}>
-            {checkingStore ? "Checking…" : "Check Steam Store and refresh logs"}
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ width: "100%", fontSize: "11px", lineHeight: 1.5, maxHeight: "140px", overflowY: "auto", opacity: 0.8 }}>
-            <div style={{ fontWeight: "bold", marginBottom: "4px" }}>Recent Store patch logs</div>
-            {storeStatus?.logs?.length ? storeStatus.logs.slice(-12).map((line, index) => (
-              <div key={`${index}-${line}`} style={{ overflowWrap: "anywhere" }}>{line}</div>
-            )) : <div>No Store patch messages yet. Keep the feature enabled and open a Store page.</div>}
-            <div style={{ marginTop: "6px", opacity: 0.7 }}>
-              For help, share the status above and any log mentioning “socket”, “purchase area”, or “injected”.
-            </div>
-          </div>
         </PanelSectionRow>
       </PanelSection>
 

@@ -20,7 +20,7 @@ import { injectFinishedText, notify } from "./notify";
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
 const BUTTON_COLOR_BG = "#a1cd44";
-const BUTTON_COLOR_TEXT = "#000000";
+const BUTTON_COLOR_TEXT = "#ffffff";
 const ASSELLA_TAG = "ASSELLA:";
 const RESTART_TAG = "RESTART:";
 
@@ -161,6 +161,7 @@ function buildInjectScript(): string {
           'height:36px;' +
           'background:' + bg + ';' +
           'color:' + fg + ';' +
+          'text-shadow:0 1px 2px rgba(0,0,0,0.45);' +
           'border:none;' +
           'border-radius:2px;' +
           'padding:0 16px;' +
@@ -271,20 +272,50 @@ function buildInjectScript(): string {
         if (!wishBtn) return false;
 
         var colItem = wishBtn.closest ? wishBtn.closest('._2YzOLNBx6TonKU0Zmp20l4') : null;
-        if (!colItem) colItem = wishBtn.parentElement;
+        var isGameModeWishlist = !!colItem;
+        if (!colItem) {
+          colItem = wishBtn.closest ? wishBtn.closest('#add_to_wishlist_area, .queue_control_button') : null;
+          if (!colItem) colItem = wishBtn.parentElement;
+        }
         if (!colItem || !colItem.parentElement) return false;
 
         var colContainer = colItem.parentElement;
-        var w = createButtonWrapper(true);
+        var S = getState();
 
-        /* Insert directly under the Wishlist button item */
-        if (colItem.nextSibling) {
-          colContainer.insertBefore(w, colItem.nextSibling);
+        if (isGameModeWishlist) {
+          var w = createButtonWrapper(true);
+          if (colItem.nextSibling) {
+            colContainer.insertBefore(w, colItem.nextSibling);
+          } else {
+            colContainer.appendChild(w);
+          }
+          log('injected Game Mode wishlist-style button for ' + S.appId);
+          return true;
         } else {
-          colContainer.appendChild(w);
+          var w = document.createElement('div');
+          w.id = 'Uran-btns';
+          w.setAttribute('data-assella-appid', S.appId);
+          w.setAttribute('data-assella-inner', '1');
+          w.style.cssText = 'display:inline-block; vertical-align:top; margin:0 4px;';
+          var btn = makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false);
+          btn.style.height = '30px';
+          btn.style.lineHeight = '30px';
+          btn.style.padding = '0 14px';
+          btn.style.display = 'inline-flex';
+          btn.style.alignItems = 'center';
+          btn.style.fontSize = '12px';
+          w.appendChild(btn);
+          if (S.showRestart) {
+            w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, false, '#3a3a4c', '#ffffff'));
+          }
+          if (colItem.nextSibling) {
+            colContainer.insertBefore(w, colItem.nextSibling);
+          } else {
+            colContainer.appendChild(w);
+          }
+          log('injected Desktop Steam wishlist button for ' + S.appId);
+          return true;
         }
-        log('injected wishlist-style button for ' + S.appId);
-        return true;
       }
 
       /* ------------------------------------------------------------------ */

@@ -438,6 +438,8 @@ def _stored_hubcap_key() -> str:
         pass
     return ""
 
+_last_detected_hubcap_key_path = None
+
 def _detect_assella_canary_hubcap_key() -> str:
     """Read the Hubcap (morrenus) API key from ACCELA's own settings.
 
@@ -445,6 +447,7 @@ def _detect_assella_canary_hubcap_key() -> str:
     always talk to Hubcap with the same key. An explicit override set in the
     plugin's own settings still wins.
     """
+    global _last_detected_hubcap_key_path
     override = _stored_hubcap_key()
     if override:
         return override
@@ -454,12 +457,10 @@ def _detect_assella_canary_hubcap_key() -> str:
             continue
         key = _read_ini_value(p, "morrenus_api_key")
         if key:
-            logger.info("Auto-detected Hubcap API key from ACCELA config (%s)", p)
+            if _last_detected_hubcap_key_path != str(p):
+                _last_detected_hubcap_key_path = str(p)
+                logger.info("Auto-detected Hubcap API key from ACCELA config (%s)", p)
             return key
-    logger.warning(
-        "No morrenus_api_key found in ACCELA config. Open ASSella settings and "
-        "set your Hubcap key, or set one in this plugin's settings."
-    )
     return ""
 
 def _find_sls_config() -> Path | None:

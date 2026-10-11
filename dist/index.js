@@ -3009,7 +3009,7 @@ browser.toString = renderCanvas.bind(null, function (data, _, opts) {
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
 const BUTTON_COLOR_BG = "#a1cd44";
-const BUTTON_COLOR_TEXT = "#000000";
+const BUTTON_COLOR_TEXT = "#ffffff";
 const ASSELLA_TAG = "ASSELLA:";
 const RESTART_TAG = "RESTART:";
 // -- State --------------------------------------------------------------------
@@ -3024,9 +3024,9 @@ let lastInjectedAppId = "";
 let lastConsoleTs = 0;
 const addedAppIds = new Set();
 const pendingAppIds = new Set();
-const getInjectStatus = callable("get_inject_status");
+const getInjectStatus$1 = callable("get_inject_status");
 const getSetting$1 = callable("get_setting");
-const injectGame = callable("inject_game");
+const injectGame$1 = callable("inject_game");
 const restartSteam = callable("restart_steam");
 const discoverStoreTab = callable("discover_store_tab");
 const isAppAdded = callable("is_app_added");
@@ -3064,7 +3064,7 @@ function pollInjectJob(appId, name, onDone) {
     const MAX_WAIT_MS = 300000;
     const timer = setInterval(async () => {
         try {
-            const job = await getInjectStatus(appId);
+            const job = await getInjectStatus$1(appId);
             if (job?.done) {
                 clearInterval(timer);
                 notify("Uran", injectFinishedText(name, job));
@@ -3124,6 +3124,7 @@ function buildInjectScript() {
           'height:36px;' +
           'background:' + bg + ';' +
           'color:' + fg + ';' +
+          'text-shadow:0 1px 2px rgba(0,0,0,0.45);' +
           'border:none;' +
           'border-radius:2px;' +
           'padding:0 16px;' +
@@ -3234,20 +3235,50 @@ function buildInjectScript() {
         if (!wishBtn) return false;
 
         var colItem = wishBtn.closest ? wishBtn.closest('._2YzOLNBx6TonKU0Zmp20l4') : null;
-        if (!colItem) colItem = wishBtn.parentElement;
+        var isGameModeWishlist = !!colItem;
+        if (!colItem) {
+          colItem = wishBtn.closest ? wishBtn.closest('#add_to_wishlist_area, .queue_control_button') : null;
+          if (!colItem) colItem = wishBtn.parentElement;
+        }
         if (!colItem || !colItem.parentElement) return false;
 
         var colContainer = colItem.parentElement;
-        var w = createButtonWrapper(true);
+        var S = getState();
 
-        /* Insert directly under the Wishlist button item */
-        if (colItem.nextSibling) {
-          colContainer.insertBefore(w, colItem.nextSibling);
+        if (isGameModeWishlist) {
+          var w = createButtonWrapper(true);
+          if (colItem.nextSibling) {
+            colContainer.insertBefore(w, colItem.nextSibling);
+          } else {
+            colContainer.appendChild(w);
+          }
+          log('injected Game Mode wishlist-style button for ' + S.appId);
+          return true;
         } else {
-          colContainer.appendChild(w);
+          var w = document.createElement('div');
+          w.id = 'Uran-btns';
+          w.setAttribute('data-assella-appid', S.appId);
+          w.setAttribute('data-assella-inner', '1');
+          w.style.cssText = 'display:inline-block; vertical-align:top; margin:0 4px;';
+          var btn = makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false);
+          btn.style.height = '30px';
+          btn.style.lineHeight = '30px';
+          btn.style.padding = '0 14px';
+          btn.style.display = 'inline-flex';
+          btn.style.alignItems = 'center';
+          btn.style.fontSize = '12px';
+          w.appendChild(btn);
+          if (S.showRestart) {
+            w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, false, '#3a3a4c', '#ffffff'));
+          }
+          if (colItem.nextSibling) {
+            colContainer.insertBefore(w, colItem.nextSibling);
+          } else {
+            colContainer.appendChild(w);
+          }
+          log('injected Desktop Steam wishlist button for ' + S.appId);
+          return true;
         }
-        log('injected wishlist-style button for ' + S.appId);
-        return true;
       }
 
       /* ------------------------------------------------------------------ */
@@ -3521,7 +3552,7 @@ async function connect(tab) {
                             }
                             pendingAppIds.add(appId);
                             inject(appId, true, "ADDING...", true);
-                            injectGame(appId)
+                            injectGame$1(appId)
                                 .then((r) => {
                                 if (r && r.already_added) {
                                     pendingAppIds.delete(appId);
@@ -4003,11 +4034,12 @@ function initContextMenuPatch() {
     };
 }
 
-const AssellaLogo = ({ size = "1em", style, }) => (SP_JSX.jsxs("svg", { viewBox: "0 0 100 100", width: size, height: size, style: { display: "inline-block", verticalAlign: "middle", ...style }, xmlns: "http://www.w3.org/2000/svg", children: [SP_JSX.jsx("path", { d: "M20.956 50.804 L49.999 16.921 L79.025 50.826 C85.468 58.562 84.421 70.081 76.679 76.52 C68.909 82.998 57.43 81.891 50.936 74.175 C50.435 73.58 49.516 73.582 49.018 74.181 C42.577 81.925 31.053 82.967 23.319 76.519 C15.559 70.065 14.558 58.574 20.956 50.804 Z", fill: "#f4c8ab" }), SP_JSX.jsx("path", { d: "M49.051 14.187 C49.55 13.605 50.451 13.605 50.95 14.187 L80.93 49.207 C80.933 49.211 80.937 49.215 80.94 49.22 C88.272 58.013 87.086 71.117 78.28 78.44 C69.88 85.444 57.551 84.695 49.985 76.851 C42.461 84.72 30.094 85.422 21.721 78.441 C12.899 71.105 11.754 58.036 19.036 49.205 C19.041 49.199 19.046 49.193 19.051 49.187 Z M49.999 16.921 L20.957 50.804 C14.558 58.574 15.559 70.065 23.319 76.519 C31.054 82.968 42.578 81.926 49.019 74.181 C49.516 73.583 50.435 73.58 50.936 74.175 C57.431 81.891 68.91 82.998 76.68 76.52 C84.422 70.081 85.469 58.562 79.025 50.827 Z", fill: "#000000" }), SP_JSX.jsx("path", { d: "M26.9 42 C42.3 46 57.7 46 73.1 42 C61.033 54 53.333 65 50 75 C46.667 65 38.967 54 26.9 42 Z", fill: "#000000" }), SP_JSX.jsx("path", { d: "M72.762 56.826 C72.858 56.142 73.49 55.666 74.174 55.762 C74.858 55.858 75.334 56.49 75.238 57.174 C74.486 62.529 70.557 66.922 65.298 68.214 C64.628 68.379 63.951 67.969 63.786 67.298 C63.621 66.628 64.031 65.951 64.702 65.786 C68.968 64.738 72.152 61.169 72.762 56.826 Z", fill: "#000000" })] }));
+const UranLogo = ({ size = "1em", style, }) => (SP_JSX.jsxs("svg", { viewBox: "0 0 245 231", width: size, height: size, style: { display: "inline-block", verticalAlign: "middle", ...style }, xmlns: "http://www.w3.org/2000/svg", children: [SP_JSX.jsx("path", { d: "M36.487 78.134 C67.549 7.126 172.463 7.277 198.569 83.303 C199.061 84.365 199.834 85.072 200.889 85.413 C208.341 86.841 220.656 80.813 225.483 74.672 C227.405 75.872 226.643 89.66 226.655 92.238 C224.1 123.211 212.477 149.067 189.886 168.655 C179.025 177.792 167.202 185.109 154.419 190.606 C152.017 191.769 149.697 193.108 147.471 194.625 C145.209 196.811 141.132 199.06 140.159 202.333 C137.792 201.31 138.282 199.197 140.347 197.43 C142.163 195.876 144.002 194.334 145.842 192.792 C147.951 190.833 149.92 188.723 151.747 186.461 C152.978 184.843 154.477 183.605 156.247 182.758 C169.171 181.899 175.346 175.618 180.196 162.88 C183.829 153.832 180.103 145.402 172.323 141.055 C170.143 139.703 167.835 139.286 165.386 139.779 C161.391 141.712 158.215 144.682 155.848 148.688 C154.97 148.991 154.255 148.726 153.704 147.879 C150.037 141.75 145.42 135.318 144.108 128.014 C143.932 127.394 144.073 126.902 144.506 126.51 C147.225 128.077 154.993 130.844 156.645 126.788 C157.407 117.702 148.572 103.839 143.545 96.749 C139.093 89.116 113.351 67.886 106.063 71.121 C92.096 78.299 79.336 89.571 67.033 99.554 C65.873 99.845 64.924 99.479 64.186 98.455 C61.69 95.245 59.534 91.795 57.718 88.093 C56.441 85.375 55.222 82.621 54.05 79.84 C53.148 78.463 52.281 78.577 51.461 80.169 C41.033 94.032 33.674 111.876 36.944 130.036 C38.244 137.302 39.955 144.455 42.052 151.494 C43.177 155.032 44.021 158.646 44.595 162.324 C44.583 163.347 44.103 163.941 43.154 164.118 C42.638 162.779 41.947 161.566 41.08 160.453 C35.163 153.667 30.23 146.161 26.258 137.921 C18.231 121.278 16.462 102.284 19.813 84.011 C20.141 83.518 20.516 83.467 20.938 83.859 C22.906 87.511 25.344 90.759 28.249 93.615 C29.726 95.131 30.921 94.955 31.835 93.072 C33.311 88.067 34.858 83.088 36.487 78.134 Z M160.336 50.257 C160.922 49.941 161.32 49.473 161.508 48.854 C160.207 48.197 158.825 47.83 157.383 47.742 C154.126 47.489 153.247 48.892 154.735 51.925 C155.802 52.797 156.997 53.416 158.309 53.795 M167.999 63.601 C168.901 64.145 169.827 64.625 170.776 65.042 C171.28 66.862 172.182 68.404 173.494 69.655 C175.111 71.032 177.677 70.552 176.318 67.873 C174.01 65.345 173.846 63.058 172.405 60.164 C169.018 55.286 164.706 58.622 167.999 63.601 Z", fill: "#ffffff" }), SP_JSX.jsx("path", { d: "M147.044 42.747 C148.29 40.5 153.105 41.13 157.8 44.156 C162.495 47.181 165.292 51.456 164.046 53.704 C162.801 55.952 157.986 55.321 153.291 52.296 C148.596 49.27 145.799 44.995 147.044 42.747 Z", fill: "#040302" }), SP_JSX.jsx("path", { d: "M167.213 58.201 C169.114 56.719 173.166 59.263 176.263 63.884 C179.36 68.504 180.329 73.452 178.427 74.935 C176.525 76.417 172.473 73.873 169.376 69.252 C166.279 64.631 165.311 59.684 167.213 58.201 Z", fill: "#040302" })] }));
+const AssellaLogo = UranLogo;
 const TrashIcon = ({ size = "1em", style, }) => (SP_JSX.jsxs("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", style: { display: "inline-block", verticalAlign: "middle", ...style }, children: [SP_JSX.jsx("polyline", { points: "3 6 5 6 21 6" }), SP_JSX.jsx("path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }), SP_JSX.jsx("line", { x1: "10", y1: "11", x2: "10", y2: "17" }), SP_JSX.jsx("line", { x1: "14", y1: "11", x2: "14", y2: "17" })] }));
 const getRecentInjects = callable("get_recent_injects");
 const searchGames = callable("search_games");
-callable("inject_game");
+const injectGame = callable("inject_game");
 const getSetting = callable("get_setting");
 const setSetting = callable("set_setting");
 const listBackups = callable("list_backups");
@@ -4031,7 +4063,7 @@ const setNetsock = callable("set_netsock_toggle");
 const setEos = callable("set_eos_toggle");
 const setEosNetsock = callable("set_eos_netsock");
 const toggleGameDlcs = callable("toggle_game_dlcs");
-callable("get_inject_status");
+const getInjectStatus = callable("get_inject_status");
 // -- Search Tab ---------------------------------------------------------------
 const SearchTab = () => {
     const [query, setQuery] = SP_REACT.useState("");
@@ -4040,7 +4072,7 @@ const SearchTab = () => {
     const [searching, setSearching] = SP_REACT.useState(false);
     const [msg, setMsg] = SP_REACT.useState("");
     const [recent, setRecent] = SP_REACT.useState([]);
-    SP_REACT.useReducer((n) => n + 1, 0);
+    const [, bumpVersion] = SP_REACT.useReducer((n) => n + 1, 0);
     const loadRecent = async () => {
         try {
             const r = await getRecentInjects();
@@ -4082,7 +4114,117 @@ const SearchTab = () => {
         }
         setSearching(false);
     };
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Search Games", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: searchByAppId ? "App ID (numeric)" : "Game Name", value: query, onChange: (e) => setQuery(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Search by App ID", description: "Match exact game_id instead of name", checked: searchByAppId, onChange: setSearchByAppId }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: searching || query.trim().length < (searchByAppId ? 1 : 3), onClick: doSearch, children: searching ? "Searching..." : "Search" }) })] }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.8, padding: "8px" }, children: msg }) }))] }));
+    const doInject = async (appId, title) => {
+        if (addedAppIds.has(appId)) {
+            const msg = `${title} is already registered in your library.`;
+            notify("Uran", msg);
+            setMsg(msg);
+            return;
+        }
+        pendingAppIds.add(appId);
+        bumpVersion();
+        setMsg(`Adding ${title} to SLS...`);
+        try {
+            const r = await injectGame(appId);
+            if (r?.already_added) {
+                pendingAppIds.delete(appId);
+                addedAppIds.add(appId);
+                bumpVersion();
+                const err = r.error || `${title} is already registered in your library.`;
+                notify("Uran", err);
+                setMsg(err);
+                return;
+            }
+            if (r && !r.error) {
+                const name = r.name ?? title;
+                const toastMsg = `Added ${name} to SLS`;
+                notify("Uran", toastMsg);
+                setMsg(toastMsg);
+                const startedAt = Date.now();
+                const MAX_WAIT_MS = 300000;
+                const timer = setInterval(async () => {
+                    try {
+                        const job = await getInjectStatus(appId);
+                        if (job?.done) {
+                            clearInterval(timer);
+                            pendingAppIds.delete(appId);
+                            addedAppIds.add(appId);
+                            bumpVersion();
+                            notify("Uran", injectFinishedText(name, job));
+                        }
+                        else if (Date.now() - startedAt > MAX_WAIT_MS) {
+                            clearInterval(timer);
+                            pendingAppIds.delete(appId);
+                            addedAppIds.add(appId);
+                            bumpVersion();
+                            notify("Uran", `Background work for ${name} timed out`);
+                        }
+                    }
+                    catch {
+                        // keep polling
+                    }
+                }, 2000);
+            }
+            else {
+                pendingAppIds.delete(appId);
+                bumpVersion();
+                const err = r?.error || "Unknown error";
+                notify("Uran", err);
+                setMsg(err);
+            }
+        }
+        catch (e) {
+            pendingAppIds.delete(appId);
+            bumpVersion();
+            notify("Uran", `Error: ${e}`);
+            setMsg(`Error: ${e}`);
+        }
+    };
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Search Games", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: searchByAppId ? "App ID (numeric)" : "Game Name", value: query, onChange: (e) => setQuery(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Search by App ID", description: "Match exact game_id instead of name", checked: searchByAppId, onChange: setSearchByAppId }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: searching || query.trim().length < (searchByAppId ? 1 : 3), onClick: doSearch, children: searching ? "Searching..." : "Search" }) })] }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.8, padding: "8px" }, children: msg }) })), results.length > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: `Results (${results.length})`, children: results.map((item) => {
+                    const isAdded = addedAppIds.has(item.app_id);
+                    const isPending = pendingAppIds.has(item.app_id);
+                    return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                width: "100%",
+                                gap: "8px",
+                            }, children: [SP_JSX.jsxs("div", { style: {
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        overflow: "hidden",
+                                        flex: 1,
+                                    }, children: [SP_JSX.jsx("span", { style: {
+                                                fontSize: "13px",
+                                                fontWeight: 600,
+                                                whiteSpace: "nowrap",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                            }, children: item.title }), SP_JSX.jsxs("span", { style: { fontSize: "11px", opacity: 0.6 }, children: ["App ID: ", item.app_id] })] }), SP_JSX.jsx("div", { style: { flexShrink: 0 }, children: SP_JSX.jsx(DFL.DialogButton, { style: {
+                                            height: "28px",
+                                            minWidth: "70px",
+                                            padding: "0 10px",
+                                            fontSize: "12px",
+                                        }, disabled: isAdded || isPending, onClick: () => doInject(item.app_id, item.title), children: isAdded ? "Added" : isPending ? "Adding..." : "Add" }) })] }) }, item.app_id));
+                }) })), recent.length > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: "Recent Activity", children: recent.slice(0, 5).map((r) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            width: "100%",
+                            fontSize: "12px",
+                        }, children: [SP_JSX.jsx("span", { style: {
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    maxWidth: "70%",
+                                }, children: r.name || r.app_id }), SP_JSX.jsx("span", { style: {
+                                    fontSize: "11px",
+                                    color: r.error
+                                        ? "#e57373"
+                                        : r.done
+                                            ? "#81c784"
+                                            : "#ffb74d",
+                                }, children: r.error ? "Failed" : r.done ? "Done" : "Working..." })] }) }, r.app_id))) }))] }));
 };
 const formatBytes = (n) => {
     if (!n)
@@ -4301,12 +4443,25 @@ const AtomGamesTab = () => {
                                         fontSize: "13px",
                                     }, children: g.name }) }), SP_JSX.jsx(DFL.DialogButton, { className: "uran-uninstall-btn", disabled: busy, onClick: () => askUninstall(g), children: SP_JSX.jsx(TrashIcon, { size: 16 }) })] }) }, g.app_id)))) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.85, padding: "8px" }, children: msg }) }))] }));
 };
+function formatExpiry(raw) {
+    if (!raw)
+        return "—";
+    try {
+        const datePart = raw.split(" ")[0].split("T")[0];
+        const parts = datePart.split("-");
+        if (parts.length === 3) {
+            const yy = parts[0].length === 4 ? parts[0].slice(2) : parts[0];
+            return `${parts[2]}/${parts[1]}/${yy}`;
+        }
+    }
+    catch { }
+    return raw;
+}
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab = () => {
     const [showRestartButton, setShowRestartButton] = SP_REACT.useState(false);
     const [steamStoreEnabled, setSteamStoreEnabled] = SP_REACT.useState(true);
     const [storeStatus, setStoreStatus] = SP_REACT.useState(null);
-    const [checkingStore, setCheckingStore] = SP_REACT.useState(false);
     const [manifestIdPinning, setManifestIdPinning] = SP_REACT.useState(false);
     const [notificationMode, setNotificationModeState] = SP_REACT.useState("auto");
     const [msg, setMsg] = SP_REACT.useState("");
@@ -4353,25 +4508,6 @@ const SettingsTab = () => {
             alive = false;
         };
     }, [loadStats]);
-    const refreshStoreStatus = SP_REACT.useCallback(async (force = false) => {
-        setCheckingStore(true);
-        try {
-            setStoreStatus(await getStoreDebugStatus(force));
-        }
-        catch (e) {
-            setStoreStatus((previous) => previous ? {
-                ...previous,
-                message: `Could not read Steam Store status: ${e}`,
-            } : null);
-        }
-        finally {
-            setCheckingStore(false);
-        }
-    }, []);
-    SP_REACT.useEffect(() => {
-        const timer = setInterval(() => refreshStoreStatus(false), 10000);
-        return () => clearInterval(timer);
-    }, [refreshStoreStatus]);
     const changeSteamStoreEnabled = async (enabled) => {
         setSteamStoreEnabled(enabled);
         setStorePatchEnabled(enabled);
@@ -4418,7 +4554,6 @@ const SettingsTab = () => {
             setQrError(e?.message || "Failed to start");
         }
     };
-    // Poll while the capture server is up so the UI flips on its own.
     SP_REACT.useEffect(() => {
         if (!keyServer.running)
             return;
@@ -4458,7 +4593,17 @@ const SettingsTab = () => {
         await setNotificationMode(val);
         await refreshNotificationChannel();
     };
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Hubcap API Key", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show QR code", description: "Scan with your phone to paste the key \u2014 no keyboard needed.", checked: keyServer.running, onChange: (v) => (v ? startQr() : stopQr()) }) }), keyServer.running && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Hubcap API", children: [stats.ok ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                                background: "rgba(255, 255, 255, 0.04)",
+                                border: "1px solid rgba(255, 255, 255, 0.1)",
+                                borderRadius: "8px",
+                                padding: "10px 14px",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "6px",
+                                fontSize: "12px",
+                                width: "100%",
+                            }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [SP_JSX.jsx("span", { style: { opacity: 0.65 }, children: "user :" }), SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: stats.username || "—" })] }), SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [SP_JSX.jsx("span", { style: { opacity: 0.65 }, children: "API :" }), SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: [stats.daily_usage ?? 0, "/", stats.daily_limit ?? 0] })] }), SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [SP_JSX.jsx("span", { style: { opacity: 0.65 }, children: "expiry :" }), SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: formatExpiry(stats.expires_at) })] })] }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.7, padding: "4px 0" }, children: stats.error || "No API key configured." }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show QR code", description: "Scan with your phone to paste the key \u2014 no keyboard needed.", checked: keyServer.running, onChange: (v) => (v ? startQr() : stopQr()) }) }), keyServer.running && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
                                         display: "flex",
                                         justifyContent: "center",
                                         padding: "8px 0",
@@ -4475,11 +4620,11 @@ const SettingsTab = () => {
                                         ? "Key received ✓ — you can close this"
                                         : `Scan with your phone${keyServer.expires_in
                                             ? ` · closes in ${Math.max(0, keyServer.expires_in)}s`
-                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.75, lineHeight: 1.5 }, children: ["The key is shared with ASSella via", " ", SP_JSX.jsx("code", { children: "~/.config/Tachibana Labs/ACCELA.conf" }), "."] }) }), stats.ok && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.7, opacity: 0.9 }, children: [stats.username && (SP_JSX.jsxs("div", { children: ["Account ", SP_JSX.jsx("b", { children: stats.username })] })), stats.requests_remaining != null && (SP_JSX.jsxs("div", { children: ["Requests today: ", stats.daily_usage, "/", stats.daily_limit, " (", stats.requests_remaining, " left)"] })), stats.expires_at && SP_JSX.jsxs("div", { children: ["Key expires: ", stats.expires_at] })] }) })), !stats.ok && stats.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: stats.error }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Steam Store", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Steam Store", checked: steamStoreEnabled, onChange: changeSteamStoreEnabled, description: !steamStoreEnabled
-                                ? "Store button injection is turned off."
-                                : storeStatus?.available
-                                    ? `CEF debugging detected on port ${storeStatus.port}. ${storeStatus.store_tab ? "A Store page is open." : "Open a Store page to inspect it."}`
-                                    : "CEF debugging is off or unreachable. Steam must expose --cef-enable-debugging for the Store button to work." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.5, opacity: 0.85 }, children: [storeStatus?.message || "Checking the Steam debugging port…", SP_JSX.jsx("div", { style: { marginTop: "4px", opacity: 0.7 }, children: "Port detection confirms CDP access, but cannot guarantee Valve's current Store layout accepts the button. Recent patch logs are shown below." })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: checkingStore, onClick: () => refreshStoreStatus(true), children: checkingStore ? "Checking…" : "Check Steam Store and refresh logs" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: "11px", lineHeight: 1.5, maxHeight: "140px", overflowY: "auto", opacity: 0.8 }, children: [SP_JSX.jsx("div", { style: { fontWeight: "bold", marginBottom: "4px" }, children: "Recent Store patch logs" }), storeStatus?.logs?.length ? storeStatus.logs.slice(-12).map((line, index) => (SP_JSX.jsx("div", { style: { overflowWrap: "anywhere" }, children: line }, `${index}-${line}`))) : SP_JSX.jsx("div", { children: "No Store patch messages yet. Keep the feature enabled and open a Store page." }), SP_JSX.jsx("div", { style: { marginTop: "6px", opacity: 0.7 }, children: "For help, share the status above and any log mentioning \u201Csocket\u201D, \u201Cpurchase area\u201D, or \u201Cinjected\u201D." })] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
+                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Steam Store", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Steam Store", checked: steamStoreEnabled, onChange: changeSteamStoreEnabled, description: storeStatus?.port
+                            ? `Port: ${storeStatus.port}`
+                            : storeStatus?.available
+                                ? "Port: 8080"
+                                : "CEF debugging unavailable" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
                                 setManifestIdPinning(v);
                                 setSetting("manifestid_pinning", v);
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Exit Steam button", description: "Show a manual Exit Steam button on store pages.", checked: showRestartButton, onChange: (v) => {
