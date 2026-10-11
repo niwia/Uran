@@ -19,6 +19,7 @@ FILES_TO_PACK = [
 
 DIRS_TO_PACK = [
     "dist",
+    "assets",
 ]
 
 def make_zip():

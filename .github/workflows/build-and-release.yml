@@ -1,0 +1,75 @@
+name: Build and Release Plugin
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release?"
+        required: false
+        type: boolean
+        default: false
+      tag_name:
+        description: "Release tag (optional, e.g. v0.2.1. Leave blank to use package.json version)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package Uran
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read version from package.json
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build frontend and package zip
+        run: npm run package
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Uran-plugin
+          path: Uran.zip
+
+      - name: Attach zip to published Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Uran.zip
+
+      - name: Create Release and Upload Asset (Manual Dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || format('v{0}', steps.get_version.outputs.version) }}
+          files: Uran.zip
+          generate_release_notes: true
