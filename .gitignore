@@ -1,0 +1,7 @@
+node_modules/
+__pycache__/
+*.pyc
+defaults
+package-lock.json
+.idea
+*.zip

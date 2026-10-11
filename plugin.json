@@ -1,0 +1,19 @@
+{
+  "name": "Uran",
+  "author": "niwia, ASSella Team",
+  "version": "0.2.1",
+  "flags": [
+    "debug"
+  ],
+  "api_version": 1,
+  "license": "MIT",
+  "publish": {
+    "tags": [
+      "utilities",
+      "steam",
+      "assella"
+    ],
+    "description": "Companion Decky plugin for ASSella: register Steam games into SLSsteam using AT0-M mode, and manage your AT0-M library and Hubcap API key.",
+    "image": "https://raw.githubusercontent.com/niwia/ASSella/main/assella_logo.png"
+  }
+}
