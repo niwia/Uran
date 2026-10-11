@@ -358,7 +358,16 @@ def _write_accela_api_key(key: str) -> tuple[bool, str]:
         except Exception as e:
             logger.error("Failed writing ACCELA key to %s: %s", path, e)
             continue
-    return False, "Could not locate a writable ACCELA.conf."
+
+    try:
+        primary = _user_home() / ".config" / "Tachibana Labs" / "ACCELA.conf"
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        primary.write_text(f"[General]\nmorrenus_api_key={key}\n", encoding="utf-8")
+        logger.info("Created ACCELA config at %s and saved morrenus_api_key", primary)
+        return True, f"Key saved to {primary} (shared with ASSella)"
+    except Exception as e:
+        logger.error("Failed creating ACCELA.conf: %s", e)
+    return False, "Could not locate or create a writable ACCELA.conf."
 
 def _accela_conf_candidates() -> list[Path]:
     """Config files ACCELA may store morrenus_api_key in, newest layout first.
@@ -373,6 +382,8 @@ def _accela_conf_candidates() -> list[Path]:
             continue
         cands.extend([
             h / ".config" / "Tachibana Labs" / "ACCELA.conf",
+            h / ".var" / "app" / "com.valvesoftware.Steam" / "config" / "Tachibana Labs" / "ACCELA.conf",
+            h / ".var" / "app" / "com.tachibanalabs.accela" / "config" / "Tachibana Labs" / "ACCELA.conf",
             h / ".config" / "ACCELA" / "Settings.conf",
             h / ".config" / "ACCELA" / "ACCELA.conf",
             h / ".config" / "ACCELA" / "ASSella.conf",
@@ -2430,17 +2441,25 @@ def _background_inject_worker(app_id: str, name: str, dlc_appids: set | None = N
 
 def inject_game(app_id: str) -> dict:
     app_id = str(app_id).strip()
-    details = get_app_details(app_id)
-    name = details.get("name", f"App {app_id}")
+    aid = _sanitize_id(app_id)
+    if not aid:
+        return {"error": "Invalid AppID"}
+
+    details = get_app_details(aid)
+    name = details.get("name", f"App {aid}")
     depots = details.get("depots", [])
     dlc_ids = [_sanitize_id(d) for d in details.get("dlc", [])]
 
-    cfg = _find_sls_config()
-    if not cfg:
-        return {"error": "SLSsteam config not found at ~/.config/SLSsteam/config.yaml"}
+    # Preflight guard 1: check SLS environment
+    env = check_sls_environment()
+    if not env.get("ok"):
+        return {"error": env.get("error", "SLS environment validation failed"), "blocked": env.get("reason")}
 
-    # Preflight guards — fail fast and loudly rather than registering a game
-    # that can never download (no key => DepotWithoutKey / no AppKey).
+    # Preflight guard 2: game already registered
+    if is_app_added(aid):
+        return {"error": f"{name} is already registered in your library.", "already_added": True}
+
+    # Preflight guard 3: Hubcap key
     if not _detect_assella_canary_hubcap_key():
         return {
             "error": "No Hubcap API key found. Set morrenus_api_key in ASSella "
@@ -2452,23 +2471,17 @@ def inject_game(app_id: str) -> dict:
     # Automatic safety backup
     create_backup("pre_inject")
 
-    # The AppID registration itself now happens inside the single-pass inject in
-    # the background worker, together with depots + keys, so SLSsteam reloads
-    # once instead of once per entry.
-    # NOTE: package IDs are deliberately NOT injected. ASSella never writes
-    # AdditionalPackages either; packages are not needed for the AT0M flow.
-
     # Initialize inject status
-    _inject_status[app_id] = {
+    _inject_status[aid] = {
         "done": False,
         "running": True,
-        "app_id": app_id,
+        "app_id": aid,
         "name": name,
     }
 
     # Record recent inject
     recent_entry = {
-        "app_id": app_id,
+        "app_id": aid,
         "name": name,
         "depots_resolved": depots,
     }
@@ -2479,7 +2492,7 @@ def inject_game(app_id: str) -> dict:
     # Launch background worker
     threading.Thread(
         target=_background_inject_worker,
-        args=(app_id, name, set(dlc_ids), set(depots)),
+        args=(aid, name, set(dlc_ids), set(depots)),
         daemon=True,
     ).start()
 
@@ -2549,6 +2562,7 @@ def restart_steam() -> None:
 
 # Feature services are separate modules; this entrypoint keeps Decky callables stable.
 from uran_backend import keycare, sls_config
+from uran_backend.guards import GuardService
 from uran_backend.plugin_api import Plugin, bind_core
 from uran_backend.steam_store import StoreDebugger
 from uran_backend.uninstall import AtomUninstallService
@@ -2603,6 +2617,19 @@ get_hubcap_key_status = keycare.get_hubcap_key_status
 
 _store_debugger = StoreDebugger(requests, logger)
 _atom_uninstaller = AtomUninstallService(_core)
+_guard_service = GuardService(_core)
+
+
+def check_sls_environment() -> dict:
+    return _guard_service.check_sls_environment()
+
+
+def is_app_added(app_id: str) -> bool:
+    return _guard_service.is_app_added(app_id)
+
+
+def get_added_app_ids() -> list[str]:
+    return _guard_service.get_added_app_ids()
 
 
 def discover_store_tab() -> dict | None:
@@ -2622,3 +2649,4 @@ def uninstall_atom_game(app_id: str) -> dict:
 
 
 bind_core(_core)
+

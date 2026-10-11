@@ -19,11 +19,10 @@ import { injectFinishedText, notify } from "./notify";
 
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
-const BUTTON_COLOR_BG = "rgba(76, 175, 80, 0.92)";
-const BUTTON_COLOR_TEXT = "#fff";
+const BUTTON_COLOR_BG = "#a1cd44";
+const BUTTON_COLOR_TEXT = "#000000";
 const ASSELLA_TAG = "ASSELLA:";
 const RESTART_TAG = "RESTART:";
-const COLLECTION_TAG = "Added by ASSella";
 
 
 // -- State --------------------------------------------------------------------
@@ -62,10 +61,27 @@ const getInjectStatus = callable<[app_id: string], InjectStatus>(
 const getSetting = callable<[key: string, defaultValue: any], any>(
   "get_setting",
 );
-const injectGame = callable<[app_id: string], InjectResult>("inject_game");
+const injectGame = callable<[app_id: string], InjectResult & { already_added?: boolean }>("inject_game");
 const restartSteam = callable<[], void>("restart_steam");
 const discoverStoreTab = callable<[], StoreTab | null>("discover_store_tab");
+const isAppAdded = callable<[app_id: string], boolean>("is_app_added");
+const getAddedAppIds = callable<[], string[]>("get_added_app_ids");
 const feDebug = callable<[msg: string], void>("fe_debug");
+
+export async function syncAddedAppIds(): Promise<void> {
+  try {
+    const list = await getAddedAppIds();
+    if (Array.isArray(list)) {
+      addedAppIds.clear();
+      for (const id of list) {
+        if (id) addedAppIds.add(String(id));
+      }
+      slog(`synced ${addedAppIds.size} added games`);
+    }
+  } catch (err) {
+    slog("syncAddedAppIds error: " + err);
+  }
+}
 
 // -- Logging ------------------------------------------------------------------
 function slog(msg: string): void {
@@ -75,115 +91,9 @@ function slog(msg: string): void {
   try { console.log("[StorePatch] " + msg); } catch {}
 }
 
-// -- Collection helpers -------------------------------------------------------
-let _assellaCollectionId: string | null = null;
-
-export async function tagInAssellaCollection(
-  appId: string,
-  retries = 3,
-): Promise<void> {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const cs =
-        (window as any).collectionStore || (window as any).g_CollectionStore;
-      if (!cs) {
-        slog(
-          `tagInAssellaCollection attempt ${attempt + 1}/${retries}: no collectionStore`,
-        );
-        if (attempt < retries - 1) {
-          await new Promise((r) => setTimeout(r, 1000));
-          continue;
-        }
-        notify(
-          "Uran",
-          `Collection store unavailable — game added but not tagged`,
-        );
-        return;
-      }
-
-      let collectionId =
-        _assellaCollectionId || cs.GetCollectionIDByUserTag?.(COLLECTION_TAG);
-      let collection = collectionId ? cs.GetCollection?.(collectionId) : null;
-
-      if (!collection) {
-        _assellaCollectionId = null;
-        slog("creating collection: " + COLLECTION_TAG);
-        collectionId =
-          (await cs.CreateNewCollection?.(COLLECTION_TAG)) ||
-          (await cs.CreateCustomCollection?.(COLLECTION_TAG));
-        if (!collectionId) {
-          slog("CreateNewCollection returned falsy");
-          if (attempt < retries - 1) {
-            await new Promise((r) => setTimeout(r, 1000));
-            continue;
-          }
-          notify(
-            "Uran",
-            `Could not create "${COLLECTION_TAG}" collection`,
-          );
-          return;
-        }
-        collection = cs.GetCollection?.(collectionId);
-        if (!collection) {
-          slog("collection created but GetCollection returned null");
-          if (attempt < retries - 1) {
-            await new Promise((r) => setTimeout(r, 1000));
-            continue;
-          }
-          notify(
-            "Uran",
-            `Collection created but not yet available`,
-          );
-          return;
-        }
-      }
-
-      _assellaCollectionId = collectionId as string;
-      const numAppId = Number(appId);
-
-      if (typeof collection.AddApp === "function") {
-        await collection.AddApp(numAppId);
-      } else if (typeof cs.AddAppToCollection === "function") {
-        await cs.AddAppToCollection(collectionId, numAppId);
-      } else if (typeof collection.AddAppToCollection === "function") {
-        await collection.AddAppToCollection(numAppId);
-      } else if (typeof cs.AddAppsToCollection === "function") {
-        await cs.AddAppsToCollection(collectionId, [numAppId]);
-      } else {
-        slog(
-          "No known AddApp method on collection: " +
-            Object.keys(collection).join(", "),
-        );
-        if (attempt < retries - 1) {
-          await new Promise((r) => setTimeout(r, 1000));
-          continue;
-        }
-        return;
-      }
-
-      try {
-        cs.SaveCollections?.();
-      } catch {}
-      try {
-        collection.Save?.();
-      } catch {}
-
-      slog(`tagged ${appId} in "${COLLECTION_TAG}" (attempt ${attempt + 1})`);
-      return;
-    } catch (e) {
-      slog(
-        `tagInAssellaCollection attempt ${attempt + 1}/${retries} error: ${e}`,
-      );
-      _assellaCollectionId = null;
-      if (attempt < retries - 1) {
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
-  }
-  notify(
-    "Uran",
-    `Failed to add game to collection after ${retries} tries`,
-  );
+// -- Collection helpers (disabled per user request) --------------------------
+export async function tagInAssellaCollection(_appId: string): Promise<void> {
+  // Feature disabled
 }
 
 function pollInjectJob(appId: string, name: string, onDone?: () => void): void {
@@ -231,53 +141,77 @@ function buildInjectScript(): string {
       var ASSELLA_TAG = ${JSON.stringify(ASSELLA_TAG)};
       var RESTART_TAG = ${JSON.stringify(RESTART_TAG)};
 
-      if (!window.__assellaStoreState) {
-        window.__assellaStoreState = { appId:'', label:'ADD TO ASSELLA', locked:false, showRestart:false };
+      function getState() {
+        if (!window.__assellaStoreState) {
+          window.__assellaStoreState = { appId: '', label: 'ADD TO ASSELLA', locked: false, showRestart: false };
+        }
+        return window.__assellaStoreState;
       }
-      var S = window.__assellaStoreState;
 
-      function makeButton(text, tag, clickLabel, disabled) {
+      function makeButton(text, tag, clickLabel, disabled, isWishlistStyle, customBg, customFg) {
         var b = document.createElement('button');
         b.type = 'button';
         b.textContent = text;
         b.setAttribute('data-assella-action', tag);
         b.tabIndex = 0;
+        var bg = customBg || (tag === RESTART_TAG ? '#3a3a4c' : BG);
+        var fg = customFg || (tag === RESTART_TAG ? '#ffffff' : FG);
         b.style.cssText =
-          'display:inline-block;' +
-          'padding:10px 18px;' +
-          'margin-right:8px;' +
+          (isWishlistStyle ? 'width:100%;' : '') +
+          'height:36px;' +
+          'background:' + bg + ';' +
+          'color:' + fg + ';' +
           'border:none;' +
-          'border-radius:4px;' +
-          'background:' + (tag === RESTART_TAG ? '#3a3a4c' : BG) + ';' +
-          'color:' + FG + ';' +
-          'font-family:inherit;' +
-          'font-size:14px;' +
+          'border-radius:2px;' +
+          'padding:0 16px;' +
+          'font-family:\"Motiva Sans\", Twemoji, \"Noto Sans\", Helvetica, sans-serif;' +
+          'font-size:13px;' +
           'font-weight:700;' +
-          'letter-spacing:0.5px;' +
+          'letter-spacing:0.3px;' +
+          'box-sizing:border-box;' +
           'cursor:' + (disabled ? 'default' : 'pointer') + ';' +
+          'display:' + (isWishlistStyle ? 'flex' : 'inline-flex') + ';' +
+          'align-items:center;' +
+          'justify-content:center;' +
+          'white-space:nowrap;' +
           'opacity:' + (disabled ? '0.7' : '1') + ';' +
-          'transition:background 0.15s, opacity 0.15s;';
-        if (!disabled) {
+          'transition:filter 0.15s ease, opacity 0.15s ease;';
+        if (disabled) {
+          b.disabled = true;
+        } else {
           b.onclick = function(e) {
             e.stopPropagation();
+            e.preventDefault();
             if (clickLabel) {
               b.textContent = clickLabel;
               b.style.opacity = '0.7';
               b.disabled = true;
             }
-            console.log(tag + S.appId);
+            console.log(tag + getState().appId);
+          };
+          b.onmouseenter = function() {
+            if (!b.disabled) b.style.filter = 'brightness(1.08)';
+          };
+          b.onmouseleave = function() {
+            b.style.filter = 'none';
           };
         }
         return b;
       }
 
       function findExisting() {
-        return document.getElementById('assella-purchase-slot')
-            || document.getElementById('Uran-btns');
+        var all = document.querySelectorAll('#Uran-btns, #assella-purchase-slot');
+        if (all.length > 1) {
+          for (var i = 1; i < all.length; i++) {
+            all[i].remove();
+          }
+        }
+        return all[0] || null;
       }
 
       function updateExisting(existing) {
         if (!existing) return false;
+        var S = getState();
         var slotApp = existing.getAttribute('data-assella-appid');
         if (slotApp !== S.appId) return false;
 
@@ -286,36 +220,172 @@ function buildInjectScript(): string {
           mainBtn.textContent = S.label;
           mainBtn.style.opacity = S.locked ? '0.7' : '1';
           mainBtn.style.cursor = S.locked ? 'default' : 'pointer';
+          mainBtn.disabled = !!S.locked;
         }
 
         var restart = existing.querySelector('button[data-assella-action="' + RESTART_TAG + '"]');
         if (S.showRestart && !restart) {
-          var inner = existing.querySelector('[data-assella-inner]') || existing;
-          inner.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false));
+          var isWish = existing.classList.contains('Panel');
+          existing.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, isWish, '#3a3a4c', '#ffffff'));
         } else if (!S.showRestart && restart) {
           restart.remove();
         }
         return true;
       }
 
-      function injectFallback() {
-        var host = document.querySelector('.game_area_purchase')
-                || document.querySelector('#game_area_purchase');
-        if (!host) return false;
+      function createButtonWrapper(isWishlistStyle) {
+        var S = getState();
         var w = document.createElement('div');
         w.id = 'Uran-btns';
         w.setAttribute('data-assella-appid', S.appId);
-        w.style.cssText = 'padding:14px; margin:12px 0; background:rgba(0,0,0,0.35); border-radius:6px;';
-        w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked));
+        w.setAttribute('data-assella-inner', '1');
+        if (isWishlistStyle) {
+          w.className = 'Panel Focusable';
+          w.style.cssText = 'width:100%; display:flex; flex-direction:column; gap:4px;';
+        } else {
+          w.style.cssText = 'display:inline-flex; align-items:center; gap:6px; margin-right:6px;';
+        }
+        w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, isWishlistStyle));
         if (S.showRestart) {
-          w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false));
+          w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, isWishlistStyle, '#3a3a4c', '#ffffff'));
+        }
+        return w;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Strategy 1 (Wishlist Position): Inject under/top of wishlist button*/
+      /* ------------------------------------------------------------------ */
+      function injectNearWishlist() {
+        var allBtns = document.querySelectorAll('button, a.btnv6_blue_hoverfade, #add_to_wishlist_area a');
+        var wishBtn = null;
+        for (var i = 0; i < allBtns.length; i++) {
+          var b = allBtns[i];
+          if (b.id === 'Uran-btns' || (b.closest && b.closest('#Uran-btns'))) continue;
+          if (b.offsetHeight === 0) continue;
+          var t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+          if (t.indexOf('wishlist') !== -1) {
+            wishBtn = b;
+            break;
+          }
+        }
+        if (!wishBtn) return false;
+
+        var colItem = wishBtn.closest ? wishBtn.closest('._2YzOLNBx6TonKU0Zmp20l4') : null;
+        if (!colItem) colItem = wishBtn.parentElement;
+        if (!colItem || !colItem.parentElement) return false;
+
+        var colContainer = colItem.parentElement;
+        var w = createButtonWrapper(true);
+
+        /* Insert directly under the Wishlist button item */
+        if (colItem.nextSibling) {
+          colContainer.insertBefore(w, colItem.nextSibling);
+        } else {
+          colContainer.appendChild(w);
+        }
+        log('injected wishlist-style button for ' + S.appId);
+        return true;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Strategy 2 (New Steam React Layout): Insert button inside the      */
+      /*   purchase card right before the price and Add to Cart button      */
+      /* ------------------------------------------------------------------ */
+      function injectReactPurchaseRow() {
+        var ft = document.getElementById('FeatureTarget_purchase-options');
+        if (!ft || ft.offsetHeight === 0) return false;
+
+        /* Find the first purchase card (base game option) */
+        var card = ft.querySelector('._1F2jbNP9IHRfKonl_3baY8, [class*="_1F2jbNP9IHRfKonl"]') || ft;
+
+        /* Find the price widget or cart button in this card */
+        var priceWidget = card.querySelector('.StoreSalePriceWidgetContainer, [class*="StoreSalePriceWidgetContainer"]');
+        var cartBtn = card.querySelector('button[title*="Cart" i], button[title*="CART" i], button[aria-label*="cart" i]');
+        var target = priceWidget || cartBtn;
+        if (!target || !target.parentElement) return false;
+
+        var row = target.parentElement;
+        var w = createButtonWrapper(false);
+        row.insertBefore(w, target);
+        log('injected inline button before price/cart for ' + S.appId);
+        return true;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Strategy 3 (Any visible Add to Cart / Price row on the page)       */
+      /* ------------------------------------------------------------------ */
+      function injectNearCartButton() {
+        var allBtns = document.querySelectorAll('button[title*="Cart" i], button[title*="CART" i], button[aria-label*="cart" i], button');
+        var cartBtn = null;
+        for (var i = 0; i < allBtns.length; i++) {
+          var b = allBtns[i];
+          if (b.id === 'Uran-btns' || b.closest('#Uran-btns')) continue;
+          if (b.offsetHeight === 0) continue;
+          var title = (b.getAttribute('title') || b.getAttribute('aria-label') || b.textContent || '').trim().toUpperCase();
+          if (title.indexOf('ADD TO CART') !== -1 || title === 'ADD TO CART') {
+            cartBtn = b;
+            break;
+          }
+        }
+        if (!cartBtn || !cartBtn.parentElement) return false;
+
+        var row = cartBtn.parentElement;
+        var price = row.querySelector('.StoreSalePriceWidgetContainer, [class*="StoreSalePriceWidgetContainer"], .game_purchase_price');
+        var insertBeforeTarget = price || cartBtn;
+
+        var w = createButtonWrapper(false);
+        row.insertBefore(w, insertBeforeTarget);
+        log('injected inline button near cart/price for ' + S.appId);
+        return true;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Strategy 4 (Legacy Steam Store): .game_purchase_action             */
+      /* ------------------------------------------------------------------ */
+      function injectOldSteamAction() {
+        var actionArea = document.querySelector('.game_purchase_action');
+        if (!actionArea || actionArea.offsetHeight === 0) return false;
+
+        var w = createButtonWrapper(false);
+        if (actionArea.firstChild) {
+          actionArea.insertBefore(w, actionArea.firstChild);
+        } else {
+          actionArea.appendChild(w);
+        }
+        log('injected legacy purchase action button for ' + S.appId);
+        return true;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Strategy 5 (Fallback banner): prepend to purchase area             */
+      /* ------------------------------------------------------------------ */
+      function injectFallback() {
+        var hosts = document.querySelectorAll('.game_area_purchase, #game_area_purchase, #purchaseOptionsContent');
+        var host = null;
+        for (var i = 0; i < hosts.length; i++) {
+          if (hosts[i].offsetHeight > 0) { host = hosts[i]; break; }
+        }
+        if (!host) return false;
+
+        var S = getState();
+        var w = document.createElement('div');
+        w.id = 'Uran-btns';
+        w.setAttribute('data-assella-appid', S.appId);
+        w.style.cssText = 'padding:14px; margin:12px 0; background:rgba(0,0,0,0.35); border-radius:6px; display:flex; gap:8px; align-items:center;';
+        w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false));
+        if (S.showRestart) {
+          w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, false, '#3a3a4c', '#ffffff'));
         }
         host.prepend(w);
         log('fallback banner injected for ' + S.appId);
         return true;
       }
 
+      /* ------------------------------------------------------------------ */
+      /* Main injection orchestrator — tries strategies in priority order    */
+      /* ------------------------------------------------------------------ */
       function injectFromState() {
+        var S = getState();
         if (!S.appId) return;
 
         var existing = findExisting();
@@ -324,67 +394,12 @@ function buildInjectScript(): string {
           existing.remove();
         }
 
-        var candidates = document.querySelectorAll('[role="listitem"], .game_area_purchase_game, .game_area_purchase_platform');
-        var ref = null;
-        for (var i = 0; i < candidates.length; i++) {
-          var c = candidates[i];
-          if (c.id === 'assella-purchase-slot' || c.id === 'Uran-btns') continue;
-          if (c.querySelector('button, .btn_addtocart, .game_purchase_action')) {
-            ref = c;
-            break;
-          }
-        }
-
-        if (!ref) {
-          if (!injectFallback()) {
-            log('no supported purchase area found; Steam Store layout may have changed');
-          }
-          return;
-        }
-
-        var clone = ref.cloneNode(true);
-        clone.id = 'assella-purchase-slot';
-        clone.setAttribute('data-id', 'assella_purchase_option');
-        clone.setAttribute('data-assella-appid', S.appId);
-        clone.style.outline = 'none';
-
-        var title = clone.querySelector('h1, h2, h3, [class*="game_area_purchase_game_dropdown_selection"]');
-        if (title) title.textContent = 'ASSella';
-
-        var desc = clone.querySelector('[class*="purchase_subtext"], [class*="game_area_purchase_game_dropdown_selection_price"]');
-        if (desc) {
-          desc.textContent = 'Add game to your ASSella / SLS library';
-        }
-
-        var btn = clone.querySelector('button, .btn_addtocart, [class*="btn_primary"]');
-        if (btn) {
-          btn.textContent = S.label;
-          btn.setAttribute('data-assella-action', ASSELLA_TAG);
-          if (btn.parentElement) btn.parentElement.setAttribute('data-assella-inner', '1');
-          btn.style.background = BG;
-          btn.style.color = FG;
-          btn.style.opacity = S.locked ? '0.7' : '1';
-          btn.style.cursor = S.locked ? 'default' : 'pointer';
-          btn.onclick = function(e) {
-            e.stopPropagation();
-            if (!S.locked) {
-              btn.textContent = 'ADDING...';
-              btn.style.opacity = '0.7';
-              console.log(ASSELLA_TAG + S.appId);
-            }
-          };
-          if (S.showRestart) {
-            var rBtn = makeButton('EXIT STEAM', RESTART_TAG, 'EXITING...', false);
-            btn.parentElement.appendChild(rBtn);
-          }
-        }
-
-        if (!ref.parentElement) {
-          if (!injectFallback()) log('purchase option has no parent and fallback area is unavailable');
-          return;
-        }
-        ref.parentElement.insertBefore(clone, ref);
-        log('injected purchase slot card for ' + S.appId);
+        if (injectNearWishlist()) return;
+        if (injectReactPurchaseRow()) return;
+        if (injectNearCartButton()) return;
+        if (injectOldSteamAction()) return;
+        if (injectFallback()) return;
+        log('no supported purchase area found for ' + S.appId);
       }
 
       window.__assellaInjectFromState = injectFromState;
@@ -423,6 +438,15 @@ async function inject(
     return;
   }
   lastInjectedAppId = appId;
+
+  if (!addedAppIds.has(appId) && labelOverride === undefined) {
+    try {
+      const added = await isAppAdded(appId);
+      if (added) {
+        addedAppIds.add(appId);
+      }
+    } catch {}
+  }
 
   let showRestart = false;
   try {
@@ -469,8 +493,8 @@ function remove(): void {
     params: {
       expression:
         "(function(){try{" +
-        "var s=document.getElementById('assella-purchase-slot'); if(s) s.remove();" +
-        "var o=document.getElementById('Uran-btns'); if(o) o.remove();" +
+        "var s=document.querySelectorAll('#assella-purchase-slot, #Uran-btns');" +
+        "for(var i=0;i<s.length;i++){s[i].remove();}" +
         "}catch(e){}})();",
     },
   });
@@ -495,6 +519,7 @@ async function connect(tab: StoreTab): Promise<void> {
     }
     wsSend({ id: messageId++, method: "Page.enable" });
     wsSend({ id: messageId++, method: "Runtime.enable" });
+    syncAddedAppIds().catch(() => {});
     setTimeout(() => {
       if (!storePatchEnabled || storeSocket !== socket) return;
       wsReady = true;
@@ -532,12 +557,23 @@ async function connect(tab: StoreTab): Promise<void> {
             } else if (arg.value.startsWith(ASSELLA_TAG)) {
               const appId = arg.value.slice(ASSELLA_TAG.length);
               slog("webview click: " + appId);
+              if (addedAppIds.has(appId)) {
+                notify("Uran", `This game is already registered in your library.`);
+                inject(appId, true, "ADDED", true);
+                return;
+              }
               pendingAppIds.add(appId);
               inject(appId, true, "ADDING...", true);
               injectGame(appId)
-                .then((r: InjectResult) => {
+                .then((r: any) => {
+                  if (r && r.already_added) {
+                    pendingAppIds.delete(appId);
+                    addedAppIds.add(appId);
+                    notify("Uran", r.error || "This game is already registered in your library.");
+                    inject(appId, true, "ADDED", true);
+                    return;
+                  }
                   if (r && !r.error) {
-                    tagInAssellaCollection(appId);
                     const name = r.name || appId;
                     const extra = "";
                     const depotInfo = r.depots
@@ -550,7 +586,7 @@ async function connect(tab: StoreTab): Promise<void> {
                     pollInjectJob(appId, name, () => {
                       pendingAppIds.delete(appId);
                       addedAppIds.add(appId);
-                      inject(appId, true);
+                      inject(appId, true, "ADDED", true);
                     });
                   } else {
                     pendingAppIds.delete(appId);
@@ -671,6 +707,7 @@ function initRouteSpy(): () => void {
 
 export function initStorePatch(): () => void {
   slog("initStorePatch: starting");
+  syncAddedAppIds().catch(() => {});
   const thisLifecycle = ++lifecycle;
   getSetting("steam_store_enabled", true)
     .then((enabled) => {

@@ -20,7 +20,7 @@ import {
   setNotificationMode,
 } from "./notify";
 import QRCode from "qrcode";
-import { initStorePatch, setStorePatchEnabled, tagInAssellaCollection, addedAppIds, pendingAppIds } from "./StorePatch";
+import { initStorePatch, setStorePatchEnabled, tagInAssellaCollection, addedAppIds, pendingAppIds, syncAddedAppIds } from "./StorePatch";
 import { initContextMenuPatch } from "./LibraryPatch";
 
 const AssellaLogo: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
@@ -297,14 +297,27 @@ const SearchTab: React.FC = () => {
   };
 
   const doInject = async (appId: string, title: string) => {
+    if (addedAppIds.has(appId)) {
+      const msg = `${title} is already registered in your library.`;
+      notify("Uran", msg);
+      setMsg(msg);
+      return;
+    }
     pendingAppIds.add(appId);
     bumpVersion();
     setMsg(`Adding ${title} to SLS...`);
     try {
       const r = await injectGame(appId);
+      if ((r as any)?.already_added) {
+        pendingAppIds.delete(appId);
+        addedAppIds.add(appId);
+        bumpVersion();
+        const err = (r as any).error || `${title} is already registered in your library.`;
+        notify("Uran", err);
+        setMsg(err);
+        return;
+      }
       if (r && !r.error) {
-        tagInAssellaCollection(appId);
-
         const name = r.name ?? title;
         const depots = r.depots?.length ?? 0;
         const toastMsg = `Added ${name} to SLS`;
@@ -455,6 +468,7 @@ const AtomGamesTab: React.FC = () => {
     try {
       const r = await listAtomGames();
       setGames(r?.games ?? []);
+      syncAddedAppIds().catch(() => {});
     } catch {
       setGames([]);
     } finally {
@@ -554,6 +568,7 @@ const AtomGamesTab: React.FC = () => {
     try {
       const r = await uninstallAtomGame(game.app_id);
       if (r?.ok) {
+        addedAppIds.delete(game.app_id);
         notify("Uran", `Uninstalled ${game.name}`);
         setMsg(`Uninstalled ${game.name}`);
         setDetail(null);

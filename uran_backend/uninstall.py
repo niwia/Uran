@@ -15,6 +15,11 @@ class AtomUninstallService:
         aid = core._sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
+
+        env = core.check_sls_environment()
+        if not env.get("ok"):
+            return {"ok": False, "error": env.get("error", "SLS environment check failed")}
+
         install = core._atom_install_info(aid)
         targets = []
         install_path = install.get("install_path") or ""
@@ -51,6 +56,10 @@ class AtomUninstallService:
         aid = core._sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
+
+        env = core.check_sls_environment()
+        if not env.get("ok"):
+            return {"ok": False, "error": env.get("error", "SLS environment check failed")}
 
         preview = self.preview(aid)
         if not preview.get("ok"):
