@@ -2031,6 +2031,64 @@ def _harvest_depot_names(lua_text: str) -> int:
 # same service with the same key.
 # ---------------------------------------------------------------------------
 HUBCAP_BASE_URL = "https://hubcapmanifest.com/api/v1"
+WIRECUTTER_ENDPOINT = "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+DOH_ENDPOINTS = [
+    "https://1.1.1.1/dns-query",
+    "https://dns.google/resolve",
+]
+
+def _resolve_doh(domain: str) -> str | None:
+    """Resolve domain to IP via DNS-over-HTTPS (Cloudflare / Google)."""
+    for endpoint in DOH_ENDPOINTS:
+        try:
+            resp = requests.get(
+                f"{endpoint}?name={domain}&type=A",
+                headers={"Accept": "application/dns-json"},
+                timeout=4,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for ans in data.get("Answer", []):
+                    ip = str(ans.get("data", "")).strip()
+                    if ip and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ip):
+                        return ip
+        except Exception as e:
+            logger.debug("DoH query on %s failed: %s", endpoint, e)
+    return None
+
+def _hubcap_request(url: str, headers: dict | None = None, timeout: int = 20, stream: bool = False) -> requests.Response:
+    """Execute a request to Hubcap API with automatic ISP bypass (Wirecutter proxy & DoH)."""
+    use_wirecutter = bool(_get_setting("isp_bypass_wirecutter", False))
+    use_doh = bool(_get_setting("isp_bypass_doh", False))
+
+    hdrs = dict(headers or {})
+
+    # 1. Wirecutter Edge Proxy rewrite
+    if use_wirecutter:
+        wc_url = url.replace("https://hubcapmanifest.com/api/v1", WIRECUTTER_ENDPOINT)
+        try:
+            return requests.get(wc_url, headers=hdrs, timeout=timeout, stream=stream)
+        except Exception as e:
+            logger.warning("Wirecutter proxy request failed (%s), falling back...", e)
+
+    # 2. DNS-over-HTTPS (DoH) resolution
+    if use_doh:
+        resolved_ip = _resolve_doh("hubcapmanifest.com")
+        if resolved_ip:
+            doh_url = url.replace("hubcapmanifest.com", resolved_ip)
+            hdrs["Host"] = "hubcapmanifest.com"
+            try:
+                return requests.get(doh_url, headers=hdrs, timeout=timeout, stream=stream, verify=False)
+            except Exception as e:
+                logger.warning("DoH IP direct request failed (%s), falling back to standard request", e)
+
+    # 3. Standard direct request with auto-fallback to Wirecutter if blocked
+    try:
+        return requests.get(url, headers=hdrs, timeout=timeout, stream=stream)
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        logger.warning("Direct connection to %s failed (%s); attempting auto-fallback via Wirecutter proxy...", url, e)
+        wc_url = url.replace("https://hubcapmanifest.com/api/v1", WIRECUTTER_ENDPOINT)
+        return requests.get(wc_url, headers=hdrs, timeout=timeout, stream=stream)
 
 def _hubcap_headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"}
@@ -2047,7 +2105,7 @@ def hubcap_manifest_contents(app_id: str) -> dict:
     if not api_key:
         return {"error": "Hubcap API key is not set in ACCELA settings"}
     try:
-        resp = requests.get(
+        resp = _hubcap_request(
             f"{HUBCAP_BASE_URL}/manifest/{app_id}/contents",
             headers=_hubcap_headers(api_key),
             timeout=15,
@@ -2098,7 +2156,7 @@ def fetch_manifests(app_id: str, persist_config: bool = True) -> dict:
             url += "?force_update=true"
         logger.info(f"Hubcap: fetching bundle for AppID {app_id} from {url}")
         try:
-            resp = requests.get(url, headers=headers, timeout=60)
+            resp = _hubcap_request(url, headers=headers, timeout=60)
         except Exception as e:
             last_error = f"Hubcap download failed: {e}"
             continue
@@ -2862,6 +2920,83 @@ def preview_atom_uninstall(app_id: str) -> dict:
 
 def uninstall_atom_game(app_id: str) -> dict:
     return _atom_uninstaller.uninstall(app_id)
+
+
+GITHUB_REPO = "niwia/Uran"
+
+def check_for_plugin_updates() -> dict:
+    """Query GitHub Releases API to check for updates."""
+    current_version = "0.2.3"
+    pkg = Path(__file__).parent / "package.json"
+    if pkg.exists():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            current_version = data.get("version", current_version)
+        except Exception:
+            pass
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Uran-Decky-Plugin"}, timeout=8)
+        if resp.status_code == 200:
+            rel = resp.json()
+            latest_tag = rel.get("tag_name", "").lstrip("v")
+            body = rel.get("body", "")
+            download_url = ""
+            for asset in rel.get("assets", []):
+                if asset.get("name", "").endswith(".zip"):
+                    download_url = asset.get("browser_download_url")
+                    break
+
+            def _parse_v(v: str):
+                return [int(x) if x.isdigit() else 0 for x in v.split(".")]
+
+            has_update = _parse_v(latest_tag) > _parse_v(current_version) if latest_tag else False
+            return {
+                "ok": True,
+                "current_version": current_version,
+                "latest_version": latest_tag or current_version,
+                "has_update": has_update,
+                "notes": body,
+                "download_url": download_url,
+                "published_at": rel.get("published_at", ""),
+            }
+        return {"ok": False, "error": f"GitHub API HTTP {resp.status_code}", "current_version": current_version}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "current_version": current_version}
+
+def apply_plugin_update(download_url: str = "") -> dict:
+    """Download latest release zip from GitHub and apply to plugin directory."""
+    if not download_url:
+        chk = check_for_plugin_updates()
+        download_url = chk.get("download_url")
+    if not download_url:
+        return {"ok": False, "error": "No update download URL found"}
+
+    try:
+        logger.info("Downloading Uran update from %s", download_url)
+        resp = requests.get(download_url, headers={"User-Agent": "Uran-Decky-Plugin"}, timeout=60)
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"Failed to download zip (HTTP {resp.status_code})"}
+
+        plugin_dir = Path("/home/aiwin/homebrew/plugins/Uran")
+        if not plugin_dir.exists():
+            plugin_dir = Path(__file__).parent
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            for name in zf.namelist():
+                rel_name = name[5:] if name.startswith("Uran/") else name
+                if not rel_name or rel_name.endswith("/"):
+                    continue
+                target = plugin_dir / rel_name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(zf.read(name))
+
+        logger.info("Uran update extracted successfully to %s", plugin_dir)
+        return {"ok": True, "message": "Updated successfully! Please reload plugin or restart Decky to apply."}
+    except Exception as e:
+        logger.error("Failed to apply Uran update: %s", e, exc_info=True)
+        return {"ok": False, "error": str(e)}
 
 
 bind_core(_core)

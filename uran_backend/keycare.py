@@ -218,11 +218,19 @@ def validate_hubcap_key(key: str) -> tuple[bool, str, str]:
     if not key:
         return False, "No key supplied.", ""
     try:
-        resp = requests.get(
-            f"{HUBCAP_BASE_URL}/user/stats",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=20,
-        )
+        hubcap_req = getattr(_core, "_hubcap_request", None) if "_core" in globals() and _core else None
+        if callable(hubcap_req):
+            resp = hubcap_req(
+                f"{HUBCAP_BASE_URL}/user/stats",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=20,
+            )
+        else:
+            resp = requests.get(
+                f"{HUBCAP_BASE_URL}/user/stats",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=20,
+            )
     except Exception as e:
         return False, f"Could not reach Hubcap: {e}", ""
 

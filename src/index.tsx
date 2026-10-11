@@ -233,6 +233,23 @@ const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>
 const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; enabled: boolean }>(
   "set_global_slsonline",
 );
+const checkForUpdates = callable<
+  [],
+  {
+    ok: boolean;
+    current_version?: string;
+    latest_version?: string;
+    has_update?: boolean;
+    notes?: string;
+    download_url?: string;
+    published_at?: string;
+    error?: string;
+  }
+>("check_for_updates");
+const applyUpdate = callable<
+  [download_url: string],
+  { ok: boolean; message?: string; error?: string }
+>("apply_update");
 const getInjectStatus = callable<
   [app_id: string],
   {
@@ -1052,6 +1069,20 @@ const SettingsTab: React.FC = () => {
   } | null>(null);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
+  const [ispDoh, setIspDoh] = React.useState(false);
+  const [ispWirecutter, setIspWirecutter] = React.useState(false);
+  const [checkingUpdate, setCheckingUpdate] = React.useState(false);
+  const [updating, setUpdating] = React.useState(false);
+  const [updateInfo, setUpdateInfo] = React.useState<{
+    ok: boolean;
+    current_version?: string;
+    latest_version?: string;
+    has_update?: boolean;
+    notes?: string;
+    download_url?: string;
+    published_at?: string;
+    error?: string;
+  } | null>(null);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
   >("auto");
@@ -1089,13 +1120,15 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls] = await Promise.all([
+        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls, dohVal, wcVal] = await Promise.all([
           getSetting("show_restart_button", false),
           getSetting("manifestid_pinning", false),
           getSetting("notification_mode", "auto"),
           getSetting("steam_store_enabled", true),
           getStoreDebugStatus(false),
           isGlobalSlsOnlineEnabled(),
+          getSetting("isp_bypass_doh", false),
+          getSetting("isp_bypass_wirecutter", false),
         ]);
         if (!alive) return;
         setShowRestartButton(!!srb);
@@ -1104,6 +1137,8 @@ const SettingsTab: React.FC = () => {
         setStorePatchEnabled(storeEnabled !== false);
         setStoreStatus(initialStoreStatus);
         setGlobalSlsOnlineState(!!gSls?.enabled);
+        setIspDoh(!!dohVal);
+        setIspWirecutter(!!wcVal);
         if (nm) setNotificationModeState(nm);
       } catch {}
       loadStats();
@@ -1311,6 +1346,51 @@ const SettingsTab: React.FC = () => {
         )}
       </PanelSection>
 
+      <PanelSection title="SLS Online (0: 480)">
+        <PanelSectionRow>
+          <ToggleField
+            label="Global SLS Online"
+            description="Map AppID 0 to 480 in SLS config so all games use Spacewar networking simultaneously. Locks individual game toggles ON."
+            checked={globalSlsOnline}
+            onChange={async (v) => {
+              setGlobalSlsOnlineState(v);
+              const res = await setGlobalSlsOnline(v);
+              if (!res?.ok) {
+                notify("Uran", "Failed to update Global SLS Online");
+                setGlobalSlsOnlineState(!v);
+              } else {
+                notify("Uran", v ? "Global SLS Online enabled" : "Global SLS Online disabled");
+              }
+            }}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="ISP Bypass">
+        <PanelSectionRow>
+          <ToggleField
+            label="DNS-over-HTTPS (DoH)"
+            description="Resolve Hubcap API via Cloudflare/Google over HTTPS to bypass local DNS blocks."
+            checked={ispDoh}
+            onChange={(v) => {
+              setIspDoh(v);
+              setSetting("isp_bypass_doh", v);
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Wirecutter Edge Proxy"
+            description="Route Hubcap API requests through Cloudflare Worker proxy to bypass ISP SNI/IP blocks."
+            checked={ispWirecutter}
+            onChange={(v) => {
+              setIspWirecutter(v);
+              setSetting("isp_bypass_wirecutter", v);
+            }}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Steam Store">
         <PanelSectionRow>
           <ToggleField
@@ -1339,26 +1419,6 @@ const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="SLS Online">
-        <PanelSectionRow>
-          <ToggleField
-            label="SLS Online Global"
-            description="Enable Spacewar (0: 480) for all games simultaneously. Locks individual game toggles ON."
-            checked={globalSlsOnline}
-            onChange={async (v) => {
-              setGlobalSlsOnlineState(v);
-              const res = await setGlobalSlsOnline(v);
-              if (!res?.ok) {
-                notify("Uran", "Failed to update SLS Online Global");
-                setGlobalSlsOnlineState(!v);
-              } else {
-                notify("Uran", v ? "SLS Online Global enabled" : "SLS Online Global disabled");
-              }
-            }}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
       <PanelSection title="Injection">
         <PanelSectionRow>
           <ToggleField
@@ -1381,6 +1441,101 @@ const SettingsTab: React.FC = () => {
               setSetting("show_restart_button", v);
             }}
           />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Updates">
+        <PanelSectionRow>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              width: "100%",
+              fontSize: "12px",
+            }}
+          >
+            <span style={{ opacity: 0.7 }}>Installed version:</span>
+            <span style={{ fontWeight: 600 }}>v0.2.3</span>
+          </div>
+        </PanelSectionRow>
+
+        {updateInfo?.has_update && (
+          <PanelSectionRow>
+            <div
+              style={{
+                background: "rgba(126, 226, 168, 0.12)",
+                border: "1px solid rgba(126, 226, 168, 0.35)",
+                borderRadius: "8px",
+                padding: "10px",
+                width: "100%",
+                boxSizing: "border-box",
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+              }}
+            >
+              <div style={{ color: "#7ee2a8", fontWeight: "bold", fontSize: "12px" }}>
+                Update Available: v{updateInfo.latest_version}
+              </div>
+              {updateInfo.notes && (
+                <div
+                  style={{
+                    fontSize: "11px",
+                    opacity: 0.85,
+                    maxHeight: "80px",
+                    overflowY: "auto",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {updateInfo.notes}
+                </div>
+              )}
+              <ButtonItem
+                layout="inline"
+                disabled={updating}
+                onClick={async () => {
+                  setUpdating(true);
+                  notify("Uran", "Downloading update package...");
+                  const res = await applyUpdate(updateInfo.download_url || "");
+                  setUpdating(false);
+                  if (res?.ok) {
+                    notify("Uran", "Uran updated! Please reload plugin.");
+                    setUpdateInfo((u) => (u ? { ...u, has_update: false } : null));
+                  } else {
+                    notify("Uran", `Update failed: ${res?.error || "Error"}`);
+                  }
+                }}
+              >
+                {updating ? "Updating…" : `Install v${updateInfo.latest_version}`}
+              </ButtonItem>
+            </div>
+          </PanelSectionRow>
+        )}
+
+        <PanelSectionRow>
+          <ButtonItem
+            layout="inline"
+            disabled={checkingUpdate || updating}
+            onClick={async () => {
+              setCheckingUpdate(true);
+              notify("Uran", "Checking GitHub for updates…");
+              const res = await checkForUpdates();
+              setCheckingUpdate(false);
+              if (res?.ok) {
+                setUpdateInfo(res);
+                if (res.has_update) {
+                  notify("Uran", `Update available: v${res.latest_version}`);
+                } else {
+                  notify("Uran", `Uran is up to date (v${res.current_version})`);
+                }
+              } else {
+                notify("Uran", `Update check failed: ${res?.error || "Network error"}`);
+              }
+            }}
+          >
+            {checkingUpdate ? "Checking…" : "Check for Updates"}
+          </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 

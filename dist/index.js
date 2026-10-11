@@ -4072,6 +4072,8 @@ callable("toggle_game_dlcs");
 const toggleAdditionalApp = callable("toggle_additional_app");
 const isGlobalSlsOnlineEnabled = callable("is_global_slsonline_enabled");
 const setGlobalSlsOnline = callable("set_global_slsonline");
+const checkForUpdates = callable("check_for_updates");
+const applyUpdate = callable("apply_update");
 const getInjectStatus = callable("get_inject_status");
 // -- Search Tab ---------------------------------------------------------------
 const SearchTab = () => {
@@ -4473,6 +4475,11 @@ const SettingsTab = () => {
     const [storeStatus, setStoreStatus] = SP_REACT.useState(null);
     const [manifestIdPinning, setManifestIdPinning] = SP_REACT.useState(false);
     const [globalSlsOnline, setGlobalSlsOnlineState] = SP_REACT.useState(false);
+    const [ispDoh, setIspDoh] = SP_REACT.useState(false);
+    const [ispWirecutter, setIspWirecutter] = SP_REACT.useState(false);
+    const [checkingUpdate, setCheckingUpdate] = SP_REACT.useState(false);
+    const [updating, setUpdating] = SP_REACT.useState(false);
+    const [updateInfo, setUpdateInfo] = SP_REACT.useState(null);
     const [notificationMode, setNotificationModeState] = SP_REACT.useState("auto");
     const [msg, setMsg] = SP_REACT.useState("");
     const [stats, setStats] = SP_REACT.useState({ ok: false });
@@ -4494,13 +4501,15 @@ const SettingsTab = () => {
         let alive = true;
         (async () => {
             try {
-                const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls] = await Promise.all([
+                const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls, dohVal, wcVal] = await Promise.all([
                     getSetting("show_restart_button", false),
                     getSetting("manifestid_pinning", false),
                     getSetting("notification_mode", "auto"),
                     getSetting("steam_store_enabled", true),
                     getStoreDebugStatus(false),
                     isGlobalSlsOnlineEnabled(),
+                    getSetting("isp_bypass_doh", false),
+                    getSetting("isp_bypass_wirecutter", false),
                 ]);
                 if (!alive)
                     return;
@@ -4510,6 +4519,8 @@ const SettingsTab = () => {
                 setStorePatchEnabled(storeEnabled !== false);
                 setStoreStatus(initialStoreStatus);
                 setGlobalSlsOnlineState(!!gSls?.enabled);
+                setIspDoh(!!dohVal);
+                setIspWirecutter(!!wcVal);
                 if (nm)
                     setNotificationModeState(nm);
             }
@@ -4634,27 +4645,84 @@ const SettingsTab = () => {
                                         ? "Key received ✓ — you can close this"
                                         : `Scan with your phone${keyServer.expires_in
                                             ? ` · closes in ${Math.max(0, keyServer.expires_in)}s`
-                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Steam Store", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Steam Store", checked: steamStoreEnabled, onChange: changeSteamStoreEnabled, description: storeStatus?.port
-                            ? `Port: ${storeStatus.port}`
-                            : storeStatus?.available
-                                ? "Port: 8080"
-                                : "CEF debugging unavailable" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "SLS Online", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "SLS Online Global", description: "Enable Spacewar (0: 480) for all games simultaneously. Locks individual game toggles ON.", checked: globalSlsOnline, onChange: async (v) => {
+                                            : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "SLS Online (0: 480)", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Global SLS Online", description: "Map AppID 0 to 480 in SLS config so all games use Spacewar networking simultaneously. Locks individual game toggles ON.", checked: globalSlsOnline, onChange: async (v) => {
                             setGlobalSlsOnlineState(v);
                             const res = await setGlobalSlsOnline(v);
                             if (!res?.ok) {
-                                notify("Uran", "Failed to update SLS Online Global");
+                                notify("Uran", "Failed to update Global SLS Online");
                                 setGlobalSlsOnlineState(!v);
                             }
                             else {
-                                notify("Uran", v ? "SLS Online Global enabled" : "SLS Online Global disabled");
+                                notify("Uran", v ? "Global SLS Online enabled" : "Global SLS Online disabled");
                             }
-                        } }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
+                        } }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "ISP Bypass", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "DNS-over-HTTPS (DoH)", description: "Resolve Hubcap API via Cloudflare/Google over HTTPS to bypass local DNS blocks.", checked: ispDoh, onChange: (v) => {
+                                setIspDoh(v);
+                                setSetting("isp_bypass_doh", v);
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Wirecutter Edge Proxy", description: "Route Hubcap API requests through Cloudflare Worker proxy to bypass ISP SNI/IP blocks.", checked: ispWirecutter, onChange: (v) => {
+                                setIspWirecutter(v);
+                                setSetting("isp_bypass_wirecutter", v);
+                            } }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Steam Store", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Steam Store", checked: steamStoreEnabled, onChange: changeSteamStoreEnabled, description: storeStatus?.port
+                            ? `Port: ${storeStatus.port}`
+                            : storeStatus?.available
+                                ? "Port: 8080"
+                                : "CEF debugging unavailable" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
                                 setManifestIdPinning(v);
                                 setSetting("manifestid_pinning", v);
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Exit Steam button", description: "Show a manual Exit Steam button on store pages.", checked: showRestartButton, onChange: (v) => {
                                 setShowRestartButton(v);
                                 setSetting("show_restart_button", v);
-                            } }) })] }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.8, padding: "8px" }, children: msg }) }))] }));
+                            } }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Updates", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                width: "100%",
+                                fontSize: "12px",
+                            }, children: [SP_JSX.jsx("span", { style: { opacity: 0.7 }, children: "Installed version:" }), SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "v0.2.3" })] }) }), updateInfo?.has_update && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: {
+                                background: "rgba(126, 226, 168, 0.12)",
+                                border: "1px solid rgba(126, 226, 168, 0.35)",
+                                borderRadius: "8px",
+                                padding: "10px",
+                                width: "100%",
+                                boxSizing: "border-box",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                            }, children: [SP_JSX.jsxs("div", { style: { color: "#7ee2a8", fontWeight: "bold", fontSize: "12px" }, children: ["Update Available: v", updateInfo.latest_version] }), updateInfo.notes && (SP_JSX.jsx("div", { style: {
+                                        fontSize: "11px",
+                                        opacity: 0.85,
+                                        maxHeight: "80px",
+                                        overflowY: "auto",
+                                        whiteSpace: "pre-wrap",
+                                    }, children: updateInfo.notes })), SP_JSX.jsx(DFL.ButtonItem, { layout: "inline", disabled: updating, onClick: async () => {
+                                        setUpdating(true);
+                                        notify("Uran", "Downloading update package...");
+                                        const res = await applyUpdate(updateInfo.download_url || "");
+                                        setUpdating(false);
+                                        if (res?.ok) {
+                                            notify("Uran", "Uran updated! Please reload plugin.");
+                                            setUpdateInfo((u) => (u ? { ...u, has_update: false } : null));
+                                        }
+                                        else {
+                                            notify("Uran", `Update failed: ${res?.error || "Error"}`);
+                                        }
+                                    }, children: updating ? "Updating…" : `Install v${updateInfo.latest_version}` })] }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "inline", disabled: checkingUpdate || updating, onClick: async () => {
+                                setCheckingUpdate(true);
+                                notify("Uran", "Checking GitHub for updates…");
+                                const res = await checkForUpdates();
+                                setCheckingUpdate(false);
+                                if (res?.ok) {
+                                    setUpdateInfo(res);
+                                    if (res.has_update) {
+                                        notify("Uran", `Update available: v${res.latest_version}`);
+                                    }
+                                    else {
+                                        notify("Uran", `Uran is up to date (v${res.current_version})`);
+                                    }
+                                }
+                                else {
+                                    notify("Uran", `Update check failed: ${res?.error || "Network error"}`);
+                                }
+                            }, children: checkingUpdate ? "Checking…" : "Check for Updates" }) })] }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.8, padding: "8px" }, children: msg }) }))] }));
 };
 // -- Backups Tab --------------------------------------------------------------
 const BackupsTab = () => {

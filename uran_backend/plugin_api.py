@@ -192,3 +192,9 @@ class Plugin:
         else:
             channel = mode
         return {"ok": True, "channel": channel}
+
+    async def check_for_updates(self) -> dict:
+        return _core.check_for_plugin_updates()
+
+    async def apply_update(self, download_url: str = "") -> dict:
+        return _core.apply_plugin_update(download_url)
