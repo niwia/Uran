@@ -2553,7 +2553,22 @@ from uran_backend.plugin_api import Plugin, bind_core
 from uran_backend.steam_store import StoreDebugger
 from uran_backend.uninstall import AtomUninstallService
 
-_core = sys.modules[__name__]
+_core = sys.modules.get(__name__)
+if _core is None:
+    import types
+
+    class _CoreProxy(types.ModuleType):
+        def __getattr__(self, name):
+            if name in globals():
+                return globals()[name]
+            raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+        def __dir__(self):
+            return list(globals().keys())
+
+    _core = _CoreProxy(__name__)
+    _core.__dict__.update(globals())
+    sys.modules[__name__] = _core
 sls_config.bind_core(_core)
 _backups_dir = sls_config._backups_dir
 create_backup = sls_config.create_backup

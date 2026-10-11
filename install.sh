@@ -46,7 +46,7 @@ mkdir -p "$HOME/homebrew"
 sudo mkdir -p "$HOME/homebrew/plugins"
 sudo rm -rf "$DEST"
 sudo mkdir -p "$DEST"
-sudo cp -r "$SRC"/main.py "$SRC"/dist "$SRC"/plugin.json "$SRC"/package.json "$DEST"/
+sudo cp -r "$SRC"/main.py "$SRC"/dist "$SRC"/plugin.json "$SRC"/package.json "$SRC"/uran_backend "$SRC"/assets "$DEST"/
 
 # --- Restart plugin loader ---------------------------------------------------
 if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active plugin_loader >/dev/null 2>&1; then

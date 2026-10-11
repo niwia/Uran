@@ -50,7 +50,7 @@ mkdir -p "$HOME/homebrew"
 sudo mkdir -p "$HOME/homebrew/plugins"
 sudo rm -rf "$DEST"
 sudo mkdir -p "$DEST"
-sudo cp -r "$SRC"/main.py "$SRC"/dist "$SRC"/plugin.json "$SRC"/package.json "$DEST"/
+sudo cp -r "$SRC"/main.py "$SRC"/dist "$SRC"/plugin.json "$SRC"/package.json "$SRC"/uran_backend "$SRC"/assets "$DEST"/
 
 # --- Restart Steam / Plugin Loader -------------------------------------------
 echo "==> Restarting plugin loader"
