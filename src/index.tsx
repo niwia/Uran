@@ -52,6 +52,28 @@ const AssellaLogo: React.FC<{ size?: number | string; style?: React.CSSPropertie
   </svg>
 );
 
+const TrashIcon: React.FC<{ size?: number | string; style?: React.CSSProperties }> = ({
+  size = "1em",
+  style,
+}) => (
+  <svg
+    viewBox="0 0 24 24"
+    width={size}
+    height={size}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    style={{ display: "inline-block", verticalAlign: "middle", ...style }}
+  >
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
+  </svg>
+);
+
 // -- Backend callables (modern @decky/api, positional args) -------------------
 type SearchResult = { app_id: string; title: string };
 type SearchResponse = { error?: string; results: SearchResult[] };
@@ -601,6 +623,54 @@ const AtomGamesTab: React.FC = () => {
   // ---- List page ----
   return (
     <>
+      <style>{`
+        .uran-game-row {
+          display: flex !important;
+          align-items: center !important;
+          gap: 6px !important;
+          width: 100% !important;
+        }
+        .uran-game-pill {
+          min-width: 0 !important;
+          flex: 1 1 0% !important;
+          height: 38px !important;
+          min-height: 38px !important;
+          padding: 0 12px !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: flex-start !important;
+          overflow: hidden !important;
+          border-radius: 8px !important;
+        }
+        .uran-game-pill > div,
+        .uran-game-pill > span {
+          width: 100% !important;
+          min-width: 0 !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          white-space: nowrap !important;
+          text-align: left !important;
+        }
+        .uran-uninstall-btn {
+          width: 38px !important;
+          min-width: 38px !important;
+          max-width: 38px !important;
+          height: 38px !important;
+          min-height: 38px !important;
+          padding: 0 !important;
+          flex-shrink: 0 !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          border-radius: 8px !important;
+        }
+        .uran-uninstall-btn:hover,
+        .uran-uninstall-btn:focus,
+        .uran-uninstall-btn:focus-within {
+          color: #ff6b6b !important;
+        }
+      `}</style>
+
       <PanelSection title={`AT0-M Games (${games.length})`}>
         {loading ? (
           <PanelSectionRow>
@@ -615,49 +685,35 @@ const AtomGamesTab: React.FC = () => {
         ) : (
           games.map((g) => (
             <PanelSectionRow key={g.app_id}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: "8px",
-                }}
+              <Focusable
+                flow-children="horizontal"
+                className="uran-game-row"
               >
-                <div
-                  style={{ cursor: "pointer", flex: 1, minWidth: 0 }}
+                <DialogButton
+                  className="uran-game-pill"
                   onClick={() => openGame(g.app_id)}
                 >
-                  <div
+                  <span
                     style={{
-                      fontSize: "13px",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
+                      display: "block",
+                      width: "100%",
+                      fontSize: "13px",
                     }}
                   >
                     {g.name}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "10px",
-                      color: g.installed ? "#7ee2a8" : "#8a929e",
-                      fontFamily: "monospace",
-                    }}
-                  >
-                    {g.app_id}
-                    {g.installed && g.size_on_disk > 0
-                      ? ` · ${formatBytes(g.size_on_disk)}`
-                      : " · not installed"}
-                  </div>
-                </div>
-                <ButtonItem
-                  layout="inline"
+                  </span>
+                </DialogButton>
+                <DialogButton
+                  className="uran-uninstall-btn"
                   disabled={busy}
                   onClick={() => askUninstall(g)}
                 >
-                  Uninstall
-                </ButtonItem>
-              </div>
+                  <TrashIcon size={16} />
+                </DialogButton>
+              </Focusable>
             </PanelSectionRow>
           ))
         )}
