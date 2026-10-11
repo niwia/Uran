@@ -89,3 +89,40 @@ jobs:
           tag_name: ${{ inputs.tag_name != '' && inputs.tag_name || format('v{0}', needs.build.outputs.version) }}
           files: release-package/Uran.zip
           generate_release_notes: true
+
+      - name: Send notification to Discord
+        if: success()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TAG_INPUT: ${{ inputs.tag_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_URL is not set; skipping Discord notification."
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            NAME="${{ github.event.release.name }}"
+            URL="${{ github.event.release.html_url }}"
+            BODY="${{ github.event.release.body }}"
+          else
+            TAG="${TAG_INPUT:-v${VERSION}}"
+            NAME="Uran ${TAG}"
+            URL="${SERVER_URL}/${REPOSITORY}/releases/tag/${TAG}"
+            BODY="Uran ${TAG} package ready for Decky Loader."
+          fi
+
+          TITLE="New release: ${NAME:-$TAG}"
+          DESC="$(echo "$BODY" | head -c 1500)"
+
+          jq -n \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg desc "$DESC" \
+            '{embeds: [{title: $title, url: $url, description: $desc, color: 5814783}]}' \
+          | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK" || echo "Failed to post to Discord webhook"

@@ -3,6 +3,12 @@ name: Notify Discord on release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. 0.2.5). Leave blank for latest release."
+        required: false
+        default: ""
 
 jobs:
   notify:
@@ -11,15 +17,39 @@ jobs:
       - name: Send release to Discord
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          TAG: ${{ github.event.release.tag_name }}
-          NAME: ${{ github.event.release.name }}
-          URL: ${{ github.event.release.html_url }}
-          BODY: ${{ github.event.release.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$WEBHOOK" ]; then
             echo "DISCORD_WEBHOOK_URL is not configured; skipping notification."
             exit 0
           fi
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            NAME="${{ github.event.release.name }}"
+            URL="${{ github.event.release.html_url }}"
+            BODY="${{ github.event.release.body }}"
+          else
+            if [ -n "$INPUT_TAG" ]; then
+              REL_JSON=$(curl -fsSL "https://api.github.com/repos/${REPOSITORY}/releases/tags/${INPUT_TAG}" || echo "{}")
+            else
+              REL_JSON=$(curl -fsSL "https://api.github.com/repos/${REPOSITORY}/releases/latest" || echo "{}")
+            fi
+            TAG=$(echo "$REL_JSON" | jq -r '.tag_name // empty')
+            NAME=$(echo "$REL_JSON" | jq -r '.name // empty')
+            URL=$(echo "$REL_JSON" | jq -r '.html_url // empty')
+            BODY=$(echo "$REL_JSON" | jq -r '.body // empty')
+
+            if [ -z "$URL" ]; then
+              TAG="${INPUT_TAG:-latest}"
+              NAME="Uran ${TAG}"
+              URL="https://github.com/${REPOSITORY}/releases"
+              BODY="Manual release notification for Uran ${TAG}"
+            fi
+          fi
+
           jq -n \
             --arg title "New release: ${NAME:-$TAG}" \
             --arg url "$URL" \
