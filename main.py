@@ -32,6 +32,7 @@ import zipfile
 import secrets
 import threading
 import subprocess
+import sqlite3
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
@@ -1155,6 +1156,9 @@ class _SlsConfigEditor:
     def remove_app(self, app_id: str) -> bool:
         return self._apply(*_remove_in_memory(self.content, "AdditionalApps", app_id, is_list=True))
 
+    def add_depot(self, depot_id: str, comment: str = "") -> bool:
+        return self._apply(*_upsert_in_memory(self.content, "AdditionalDepots", depot_id, comment=comment))
+
     def remove_depot(self, depot_id: str) -> bool:
         return self._apply(*_remove_in_memory(self.content, "AdditionalDepots", depot_id, is_list=True))
 
@@ -1406,8 +1410,202 @@ def list_atom_games() -> list[dict]:
     games.sort(key=lambda g: (not g["installed"], g["name"].lower()))
     return games
 
+def _inspect_game_depots_and_dlcs(aid: str, rec: dict) -> tuple[list[dict], list[dict], bool]:
+    """Inspect and cross-reference depots and DLCs for a specific AT0-M game."""
+    rec_depots = {str(d) for d in rec.get("depots", [])}
+    rec_keys = {str(d): str(k) for d, k in (rec.get("keys", {}) or {}).items()}
+    rec_names = {str(d): str(n) for d, n in (rec.get("depot_names", {}) or {}).items()}
+    rec_dlcs = [str(d) for d in rec.get("dlc_appids", [])]
+
+    sqlite_depots: dict[str, dict] = {}
+    db_path = _accela_base_path() / "db" / "steam_headers.db"
+    if db_path.exists():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                rows = cur.execute(
+                    "SELECT depot_id, name, is_dlc, oslist FROM depot_enrichments WHERE appid = ?",
+                    (aid,)
+                ).fetchall()
+                for row in rows:
+                    did = str(row[0])
+                    sqlite_depots[did] = {
+                        "name": str(row[1] or ""),
+                        "is_dlc": bool(row[2]),
+                        "oslist": str(row[3] or ""),
+                    }
+        except Exception as e:
+            logger.debug("depot_enrichments error: %s", e)
+
+    db_keys_path = _accela_base_path() / "db" / "depot_keys.db"
+    if db_keys_path.exists():
+        try:
+            with sqlite3.connect(db_keys_path) as conn:
+                cur = conn.cursor()
+                rows = cur.execute(
+                    "SELECT depot_id, aes_key FROM depot_keys WHERE appid = ?",
+                    (aid,)
+                ).fetchall()
+                for did, k in rows:
+                    rec_keys.setdefault(str(did), str(k))
+        except Exception as e:
+            logger.debug("depot_keys.db error: %s", e)
+
+    cfg = _find_sls_config()
+    live_apps: set[str] = set()
+    live_depots: set[str] = set()
+    live_keys: set[str] = set()
+    if cfg and cfg.exists():
+        try:
+            content = cfg.read_text(encoding="utf-8", errors="ignore")
+            live_apps = set(_parse_list_section(content, "AdditionalApps").keys())
+            live_depots = set(_parse_list_section(content, "AdditionalDepots").keys())
+            lkeys, _ = _parse_key_section(content, "DecryptionKeys")
+            live_keys = set(lkeys.keys())
+        except Exception as e:
+            logger.debug("SLS config parse error: %s", e)
+
+    dlc_ids: set[str] = set(rec_dlcs)
+    for did, info in sqlite_depots.items():
+        if info.get("is_dlc") or "[dlc" in info.get("name", "").lower():
+            dlc_ids.add(did)
+
+    dlcs_list: list[dict] = []
+    for did in sorted(dlc_ids, key=lambda x: int(x) if x.isdigit() else 0):
+        dname = sqlite_depots.get(did, {}).get("name") or rec_names.get(did) or f"DLC {did}"
+        dlcs_list.append({
+            "id": did,
+            "name": dname,
+            "in_config": did in live_apps,
+        })
+
+    all_depots = (rec_depots | set(sqlite_depots.keys()) | set(rec_keys.keys())) - {aid}
+    depots_list: list[dict] = []
+    for did in sorted(all_depots, key=lambda x: int(x) if x.isdigit() else 0):
+        enrich = sqlite_depots.get(did, {})
+        dname = enrich.get("name") or rec_names.get(did) or _depot_name_cache.get(did) or f"Depot {did}"
+        in_config = did in live_depots
+        has_key = did in live_keys or did in rec_keys
+        is_dlc = enrich.get("is_dlc", False) or did in dlc_ids or "[dlc" in dname.lower()
+        is_shared = did in SHARED_REDISTS
+        oslist = enrich.get("oslist", "")
+
+        depots_list.append({
+            "id": did,
+            "name": dname,
+            "in_config": in_config,
+            "has_key": has_key,
+            "is_dlc": is_dlc,
+            "is_shared": is_shared,
+            "os": oslist,
+        })
+
+    dlcs_injected = bool(dlcs_list and any(d["in_config"] for d in dlcs_list))
+    return depots_list, dlcs_list, dlcs_injected
+
+def toggle_game_dlcs(app_id: str, enable: bool) -> dict:
+    """Add or remove a game's DLC AppIDs in AdditionalApps and sync keyed depots."""
+    aid = _sanitize_id(app_id)
+    if not aid:
+        return {"ok": False, "error": "Invalid AppID"}
+
+    if enable:
+        details = get_app_details(aid)
+        dlc_ids = [_sanitize_id(d) for d in details.get("dlc", [])]
+        dlc_ids = [d for d in dlc_ids if d]
+
+        rec = load_plugin_library().get(aid) or {}
+        for d in rec.get("dlc_appids", []):
+            sd = _sanitize_id(d)
+            if sd and sd not in dlc_ids:
+                dlc_ids.append(sd)
+
+        db_path = _accela_base_path() / "db" / "steam_headers.db"
+        if db_path.exists():
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    rows = conn.cursor().execute(
+                        "SELECT depot_id FROM depot_enrichments WHERE appid = ? AND (is_dlc = 1 OR name LIKE '%[DLC%')",
+                        (aid,)
+                    ).fetchall()
+                    for r in rows:
+                        sd = _sanitize_id(r[0])
+                        if sd and sd not in dlc_ids:
+                            dlc_ids.append(sd)
+            except Exception:
+                pass
+
+        if not dlc_ids:
+            return {"ok": False, "error": f"No DLCs found for AppID {aid}"}
+
+        cfg = _find_sls_config()
+        if cfg is None:
+            return {"ok": False, "error": "SLSsteam config not found"}
+
+        game_name = _sanitize_comment(details.get("name") or rec.get("name") or f"App {aid}")
+
+        manifest_res = fetch_manifests(aid, persist_config=False)
+        depot_keys = manifest_res.get("depot_keys", {}) if manifest_res.get("ok") else {}
+        for did, k in (rec.get("keys") or {}).items():
+            depot_keys.setdefault(str(did), str(k))
+
+        with _batch_config_edit() as editor:
+            editor.content = _ensure_plugins_enabled(editor.content)
+            editor.has_changes = True
+            for dlc_id in dlc_ids:
+                editor.add_app(dlc_id, comment=f"{game_name} DLC ({dlc_id})")
+            for did, key in (depot_keys or {}).items():
+                if did != aid and did not in dlc_ids:
+                    editor.add_depot(did, comment=f"{game_name} DLC depot ({aid})")
+                    editor.add_key(did, key, comment=_depot_name_cache.get(did, ""))
+
+        if not editor.committed_successfully:
+            return {"ok": False, "error": "Failed to write SLSsteam config"}
+
+        lib = load_plugin_library()
+        if aid in lib:
+            lib[aid]["dlc_appids"] = dlc_ids
+            lib[aid]["dlcs_injected"] = True
+            save_plugin_library(lib)
+
+        return {"ok": True, "count": len(dlc_ids), "dlc_ids": dlc_ids}
+
+    else:
+        rec = load_plugin_library().get(aid) or {}
+        dlc_ids = set(str(d) for d in rec.get("dlc_appids", []))
+
+        cfg = _find_sls_config()
+        if cfg and cfg.exists():
+            content = cfg.read_text(encoding="utf-8", errors="ignore")
+            for line in content.splitlines():
+                m = re.match(r"^\s*-\s*(\d+)\s*#.*(?:DLC|\b" + re.escape(aid) + r"\b)", line)
+                if m:
+                    dlc_ids.add(m.group(1))
+
+        if not dlc_ids:
+            lib = load_plugin_library()
+            if aid in lib:
+                lib[aid]["dlcs_injected"] = False
+                save_plugin_library(lib)
+            return {"ok": True, "count": 0}
+
+        with _batch_config_edit() as editor:
+            editor.has_changes = True
+            for dlc_id in dlc_ids:
+                editor.remove_app(dlc_id)
+                editor.remove_fake_app_id(dlc_id)
+                editor.remove_launch_option(dlc_id)
+            editor.remove_dlc(aid)
+
+        lib = load_plugin_library()
+        if aid in lib:
+            lib[aid]["dlcs_injected"] = False
+            save_plugin_library(lib)
+
+        return {"ok": True, "count": len(dlc_ids)}
+
 def get_atom_game_detail(app_id: str) -> dict:
-    """Per-game state for the detail page: toggles + install info."""
+    """Per-game state for the detail page: toggles, depots, DLCs, and install info."""
     aid = _sanitize_id(app_id)
     if not aid:
         return {"ok": False, "error": "Invalid AppID"}
@@ -1419,6 +1617,8 @@ def get_atom_game_detail(app_id: str) -> dict:
     sls_online = bool(fake)
     netsock = is_netsock_active(aid)
     eos = eos_proxy_status(game_dir) if install.get("installed") else "none"
+
+    depots_detail, dlcs_detail, dlcs_injected = _inspect_game_depots_and_dlcs(aid, rec)
 
     return {
         "ok": True,
@@ -1437,6 +1637,9 @@ def get_atom_game_detail(app_id: str) -> dict:
         "eos": eos,
         "eos_available": eos != "none",
         "registered": bool(rec),
+        "depots_detail": depots_detail,
+        "dlcs_detail": dlcs_detail,
+        "dlcs_injected": dlcs_injected,
     }
 
 def preview_atom_uninstall(app_id: str) -> dict:
@@ -3327,6 +3530,9 @@ class Plugin:
     # DLC & Manifest Callables
     async def fetch_dlcs_for_app(self, app_id: str) -> dict:
         return fetch_dlcs_for_app(app_id)
+
+    async def toggle_game_dlcs(self, app_id: str, enable: bool) -> dict:
+        return toggle_game_dlcs(app_id, enable)
 
     async def refetch_manifests(self, app_id: str) -> dict:
         return refetch_manifests(app_id)

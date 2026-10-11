@@ -201,6 +201,10 @@ const setEosNetsock = callable<
   [app_id: string, enabled: boolean],
   { ok: boolean; error?: string }
 >("set_eos_netsock");
+const toggleGameDlcs = callable<
+  [app_id: string, enable: boolean],
+  { ok: boolean; error?: string; count?: number }
+>("toggle_game_dlcs");
 const getInjectStatus = callable<
   [app_id: string],
   {
@@ -379,6 +383,22 @@ type AtomGame = {
   dlc_only: boolean;
 };
 
+type AtomDepotInfo = {
+  id: string;
+  name: string;
+  in_config: boolean;
+  has_key: boolean;
+  is_dlc: boolean;
+  is_shared: boolean;
+  os: string;
+};
+
+type AtomDlcInfo = {
+  id: string;
+  name: string;
+  in_config: boolean;
+};
+
 type AtomDetail = AtomGame & {
   slsonline: boolean;
   fake_appid: string;
@@ -386,6 +406,9 @@ type AtomDetail = AtomGame & {
   eos: string;
   eos_available: boolean;
   registered: boolean;
+  depots_detail?: AtomDepotInfo[];
+  dlcs_detail?: AtomDlcInfo[];
+  dlcs_injected?: boolean;
 };
 
 const formatBytes = (n: number): string => {
@@ -597,6 +620,106 @@ const AtomGamesTab: React.FC = () => {
           </PanelSectionRow>
         </PanelSection>
 
+        <PanelSection title="DLC & Depots">
+          <PanelSectionRow>
+            <ToggleField
+              label="Inject DLCs"
+              description="Register all DLC AppIDs into AdditionalApps and sync keyed depots."
+              checked={!!detail.dlcs_injected}
+              disabled={busy}
+              onChange={(v) =>
+                toggle("Inject DLCs", () => toggleGameDlcs(detail.app_id, v))
+              }
+            />
+          </PanelSectionRow>
+
+          {detail.dlcs_detail && detail.dlcs_detail.length > 0 && (
+            <PanelSectionRow>
+              <div style={{ width: "100%", fontSize: "12px" }}>
+                <div style={{ fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }}>
+                  DLC AppIDs ({detail.dlcs_detail.length})
+                </div>
+                {detail.dlcs_detail.map((dlc) => (
+                  <div
+                    key={dlc.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "4px 0",
+                      borderBottom: "1px solid rgba(255,255,255,0.05)",
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: "8px" }}>
+                      <span style={{ fontFamily: "monospace", opacity: 0.75 }}>{dlc.id}</span>{" "}
+                      <span>{dlc.name}</span>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        background: dlc.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
+                        color: dlc.in_config ? "#7ee2a8" : "#8a929e",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {dlc.in_config ? "Active in config" : "Not in config"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </PanelSectionRow>
+          )}
+
+          {detail.depots_detail && detail.depots_detail.length > 0 && (
+            <PanelSectionRow>
+              <div style={{ width: "100%", fontSize: "12px" }}>
+                <div style={{ fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }}>
+                  Depots ({detail.depots_detail.length})
+                </div>
+                {detail.depots_detail.map((d) => (
+                  <div
+                    key={d.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "5px 0",
+                      borderBottom: "1px solid rgba(255,255,255,0.05)",
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: "8px" }}>
+                      <div>
+                        <b style={{ fontFamily: "monospace" }}>{d.id}</b>{" "}
+                        <span style={{ opacity: 0.9 }}>{d.name}</span>
+                      </div>
+                      <div style={{ fontSize: "10px", opacity: 0.65, marginTop: "2px" }}>
+                        {d.os ? `[${d.os}] ` : ""}
+                        {d.is_dlc ? "[DLC] " : ""}
+                        {d.is_shared ? "[Shared] " : ""}
+                        {d.has_key ? "Key present" : "No key"}
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        background: d.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
+                        color: d.in_config ? "#7ee2a8" : "#8a929e",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {d.in_config ? "Added in config" : "Not in config"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+
         <PanelSection>
           <PanelSectionRow>
             <ButtonItem
@@ -629,6 +752,7 @@ const AtomGamesTab: React.FC = () => {
           align-items: center !important;
           gap: 6px !important;
           width: 100% !important;
+          margin-bottom: 8px !important;
         }
         .uran-game-pill {
           min-width: 0 !important;
@@ -684,7 +808,7 @@ const AtomGamesTab: React.FC = () => {
           </PanelSectionRow>
         ) : (
           games.map((g) => (
-            <PanelSectionRow key={g.app_id}>
+            <PanelSectionRow key={g.app_id} style={{ marginBottom: "6px" }}>
               <Focusable
                 flow-children="horizontal"
                 className="uran-game-row"
@@ -756,7 +880,6 @@ const AtomGamesTab: React.FC = () => {
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab: React.FC = () => {
   const [showRestartButton, setShowRestartButton] = React.useState(false);
-  const [fetchDlcsOnInject, setFetchDlcsOnInject] = React.useState(false);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
@@ -795,15 +918,13 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, fdl, mip, nm] = await Promise.all([
+        const [srb, mip, nm] = await Promise.all([
           getSetting("show_restart_button", false),
-          getSetting("fetch_dlcs_on_inject", false),
           getSetting("manifestid_pinning", false),
           getSetting("notification_mode", "auto"),
         ]);
         if (!alive) return;
         setShowRestartButton(!!srb);
-        setFetchDlcsOnInject(!!fdl);
         setManifestIdPinning(!!mip);
         if (nm) setNotificationModeState(nm);
       } catch {}
@@ -1015,17 +1136,6 @@ const SettingsTab: React.FC = () => {
             onChange={(v) => {
               setManifestIdPinning(v);
               setSetting("manifestid_pinning", v);
-            }}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="Fetch DLCs on inject"
-            description="Also register the game's DLC AppIDs."
-            checked={fetchDlcsOnInject}
-            onChange={(v) => {
-              setFetchDlcsOnInject(v);
-              setSetting("fetch_dlcs_on_inject", v);
             }}
           />
         </PanelSectionRow>

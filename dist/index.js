@@ -3922,6 +3922,7 @@ const setSlsonline = callable("set_slsonline");
 const setNetsock = callable("set_netsock_toggle");
 const setEos = callable("set_eos_toggle");
 const setEosNetsock = callable("set_eos_netsock");
+const toggleGameDlcs = callable("toggle_game_dlcs");
 callable("get_inject_status");
 // -- Search Tab ---------------------------------------------------------------
 const SearchTab = () => {
@@ -4099,7 +4100,33 @@ const AtomGamesTab = () => {
                                         ? "Installed"
                                         : detail.downloading
                                             ? "Downloading"
-                                            : "Not installed" })] }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Integrations", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "SLSonline", description: "Map this game to Spacewar (480) for online features.", checked: detail.slsonline, disabled: busy, onChange: (v) => toggle("SLSonline", () => setSlsonline(detail.app_id, v, detail.fake_appid || "480")) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "NetSock", description: "Steam Networking Sockets multiplayer patch.", checked: detail.netsock, disabled: busy || notInstalled || !detail.slsonline, onChange: (v) => toggle("NetSock", () => setNetsock(detail.app_id, v)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "EOS Proxy", description: "Apply the Epic Online Services proxy.", checked: detail.eos === "active", disabled: busy || notInstalled || !detail.slsonline || !detail.eos_available, onChange: (v) => toggle("EOS Proxy", () => setEos(detail.app_id, v)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "EOS + NetSock", description: "Enable the EOS proxy and NetSock together.", checked: detail.eos === "active" && detail.netsock, disabled: busy || notInstalled || !detail.slsonline || !detail.eos_available, onChange: (v) => toggle("EOS + NetSock", () => setEosNetsock(detail.app_id, v)) }) })] }), SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => askUninstall(detail), children: "Uninstall" }) }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.85, padding: "8px" }, children: msg }) }))] }));
+                                            : "Not installed" })] }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Integrations", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "SLSonline", description: "Map this game to Spacewar (480) for online features.", checked: detail.slsonline, disabled: busy, onChange: (v) => toggle("SLSonline", () => setSlsonline(detail.app_id, v, detail.fake_appid || "480")) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "NetSock", description: "Steam Networking Sockets multiplayer patch.", checked: detail.netsock, disabled: busy || notInstalled || !detail.slsonline, onChange: (v) => toggle("NetSock", () => setNetsock(detail.app_id, v)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "EOS Proxy", description: "Apply the Epic Online Services proxy.", checked: detail.eos === "active", disabled: busy || notInstalled || !detail.slsonline || !detail.eos_available, onChange: (v) => toggle("EOS Proxy", () => setEos(detail.app_id, v)) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "EOS + NetSock", description: "Enable the EOS proxy and NetSock together.", checked: detail.eos === "active" && detail.netsock, disabled: busy || notInstalled || !detail.slsonline || !detail.eos_available, onChange: (v) => toggle("EOS + NetSock", () => setEosNetsock(detail.app_id, v)) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "DLC & Depots", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Inject DLCs", description: "Register all DLC AppIDs into AdditionalApps and sync keyed depots.", checked: !!detail.dlcs_injected, disabled: busy, onChange: (v) => toggle("Inject DLCs", () => toggleGameDlcs(detail.app_id, v)) }) }), detail.dlcs_detail && detail.dlcs_detail.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: "12px" }, children: [SP_JSX.jsxs("div", { style: { fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }, children: ["DLC AppIDs (", detail.dlcs_detail.length, ")"] }), detail.dlcs_detail.map((dlc) => (SP_JSX.jsxs("div", { style: {
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            padding: "4px 0",
+                                            borderBottom: "1px solid rgba(255,255,255,0.05)",
+                                        }, children: [SP_JSX.jsxs("div", { style: { flex: 1, minWidth: 0, paddingRight: "8px" }, children: [SP_JSX.jsx("span", { style: { fontFamily: "monospace", opacity: 0.75 }, children: dlc.id }), " ", SP_JSX.jsx("span", { children: dlc.name })] }), SP_JSX.jsx("span", { style: {
+                                                    fontSize: "10px",
+                                                    padding: "2px 6px",
+                                                    borderRadius: "4px",
+                                                    background: dlc.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
+                                                    color: dlc.in_config ? "#7ee2a8" : "#8a929e",
+                                                    whiteSpace: "nowrap",
+                                                }, children: dlc.in_config ? "Active in config" : "Not in config" })] }, dlc.id)))] }) })), detail.depots_detail && detail.depots_detail.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: "12px" }, children: [SP_JSX.jsxs("div", { style: { fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }, children: ["Depots (", detail.depots_detail.length, ")"] }), detail.depots_detail.map((d) => (SP_JSX.jsxs("div", { style: {
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            padding: "5px 0",
+                                            borderBottom: "1px solid rgba(255,255,255,0.05)",
+                                        }, children: [SP_JSX.jsxs("div", { style: { flex: 1, minWidth: 0, paddingRight: "8px" }, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("b", { style: { fontFamily: "monospace" }, children: d.id }), " ", SP_JSX.jsx("span", { style: { opacity: 0.9 }, children: d.name })] }), SP_JSX.jsxs("div", { style: { fontSize: "10px", opacity: 0.65, marginTop: "2px" }, children: [d.os ? `[${d.os}] ` : "", d.is_dlc ? "[DLC] " : "", d.is_shared ? "[Shared] " : "", d.has_key ? "Key present" : "No key"] })] }), SP_JSX.jsx("span", { style: {
+                                                    fontSize: "10px",
+                                                    padding: "2px 6px",
+                                                    borderRadius: "4px",
+                                                    background: d.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
+                                                    color: d.in_config ? "#7ee2a8" : "#8a929e",
+                                                    whiteSpace: "nowrap",
+                                                }, children: d.in_config ? "Added in config" : "Not in config" })] }, d.id)))] }) }))] }), SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => askUninstall(detail), children: "Uninstall" }) }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.85, padding: "8px" }, children: msg }) }))] }));
     }
     // ---- List page ----
     return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("style", { children: `
@@ -4108,6 +4135,7 @@ const AtomGamesTab = () => {
           align-items: center !important;
           gap: 6px !important;
           width: 100% !important;
+          margin-bottom: 8px !important;
         }
         .uran-game-pill {
           min-width: 0 !important;
@@ -4148,7 +4176,7 @@ const AtomGamesTab = () => {
         .uran-uninstall-btn:focus-within {
           color: #ff6b6b !important;
         }
-      ` }), SP_JSX.jsx(DFL.PanelSection, { title: `AT0-M Games (${games.length})`, children: loading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.7 }, children: "Loading\u2026" }) })) : games.length === 0 ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.7 }, children: "No AT0-M games registered yet." }) })) : (games.map((g) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { "flow-children": "horizontal", className: "uran-game-row", children: [SP_JSX.jsx(DFL.DialogButton, { className: "uran-game-pill", onClick: () => openGame(g.app_id), children: SP_JSX.jsx("span", { style: {
+      ` }), SP_JSX.jsx(DFL.PanelSection, { title: `AT0-M Games (${games.length})`, children: loading ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.7 }, children: "Loading\u2026" }) })) : games.length === 0 ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.7 }, children: "No AT0-M games registered yet." }) })) : (games.map((g) => (SP_JSX.jsx(DFL.PanelSectionRow, { style: { marginBottom: "6px" }, children: SP_JSX.jsxs(DFL.Focusable, { "flow-children": "horizontal", className: "uran-game-row", children: [SP_JSX.jsx(DFL.DialogButton, { className: "uran-game-pill", onClick: () => openGame(g.app_id), children: SP_JSX.jsx("span", { style: {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
@@ -4160,7 +4188,6 @@ const AtomGamesTab = () => {
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab = () => {
     const [showRestartButton, setShowRestartButton] = SP_REACT.useState(false);
-    const [fetchDlcsOnInject, setFetchDlcsOnInject] = SP_REACT.useState(false);
     const [manifestIdPinning, setManifestIdPinning] = SP_REACT.useState(false);
     const [notificationMode, setNotificationModeState] = SP_REACT.useState("auto");
     const [msg, setMsg] = SP_REACT.useState("");
@@ -4183,16 +4210,14 @@ const SettingsTab = () => {
         let alive = true;
         (async () => {
             try {
-                const [srb, fdl, mip, nm] = await Promise.all([
+                const [srb, mip, nm] = await Promise.all([
                     getSetting("show_restart_button", false),
-                    getSetting("fetch_dlcs_on_inject", false),
                     getSetting("manifestid_pinning", false),
                     getSetting("notification_mode", "auto"),
                 ]);
                 if (!alive)
                     return;
                 setShowRestartButton(!!srb);
-                setFetchDlcsOnInject(!!fdl);
                 setManifestIdPinning(!!mip);
                 if (nm)
                     setNotificationModeState(nm);
@@ -4305,9 +4330,6 @@ const SettingsTab = () => {
                                             : ""}` }) })] })), qrError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: qrError }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.75, lineHeight: 1.5 }, children: ["The key is shared with ASSella via", " ", SP_JSX.jsx("code", { children: "~/.config/Tachibana Labs/ACCELA.conf" }), "."] }) }), stats.ok && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", lineHeight: 1.7, opacity: 0.9 }, children: [stats.username && (SP_JSX.jsxs("div", { children: ["Account ", SP_JSX.jsx("b", { children: stats.username })] })), stats.requests_remaining != null && (SP_JSX.jsxs("div", { children: ["Requests today: ", stats.daily_usage, "/", stats.daily_limit, " (", stats.requests_remaining, " left)"] })), stats.expires_at && SP_JSX.jsxs("div", { children: ["Key expires: ", stats.expires_at] })] }) })), !stats.ok && stats.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", color: "#e57373" }, children: stats.error }) }))] }), SP_JSX.jsx(DFL.PanelSection, { title: "Notifications", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Notification channel", rgOptions: NOTIFICATION_MODE_OPTIONS, selectedOption: notificationMode, onChange: changeNotificationMode }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Injection", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Pin ManifestIds", description: "Write ManifestIds pins for fetched depots.", checked: manifestIdPinning, onChange: (v) => {
                                 setManifestIdPinning(v);
                                 setSetting("manifestid_pinning", v);
-                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Fetch DLCs on inject", description: "Also register the game's DLC AppIDs.", checked: fetchDlcsOnInject, onChange: (v) => {
-                                setFetchDlcsOnInject(v);
-                                setSetting("fetch_dlcs_on_inject", v);
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Exit Steam button", description: "Show a manual Exit Steam button on store pages.", checked: showRestartButton, onChange: (v) => {
                                 setShowRestartButton(v);
                                 setSetting("show_restart_button", v);
