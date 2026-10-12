@@ -19,6 +19,7 @@ second host would burn quota or mask a real error.
 
 import json
 import logging
+import threading
 import time
 
 from .http import ConnectionError_, Timeout, requests
@@ -35,6 +36,29 @@ GATEWAY_LABELS = {
     "direct": "Direct only — never use the proxy",
     "proxy": "Edge proxy only",
 }
+
+# Minimum spacing between Hubcap requests, in seconds.
+#
+# /manifest/{id}/contents is free of generation quota, but it is still a public
+# endpoint on someone else's machine, and a batch check over a large library
+# would otherwise fire dozens of requests back to back. This is a *shared* gate
+# rather than a per-thread sleep: the lock covers the wait, so N worker threads
+# are still spaced by MIN_REQUEST_INTERVAL instead of all sleeping in parallel
+# and then firing together.
+MIN_REQUEST_INTERVAL = 0.25
+
+_request_lock = threading.Lock()
+_last_request_at = 0.0
+
+
+def _throttle() -> None:
+    """Block until MIN_REQUEST_INTERVAL has passed since the previous request."""
+    global _last_request_at
+    with _request_lock:
+        wait = _last_request_at + MIN_REQUEST_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_at = time.monotonic()
 
 
 def is_blocked_transport_error(exc: BaseException) -> bool:
@@ -127,6 +151,7 @@ def _mark(route: str, state: str, error: str = "") -> None:
 
 
 def _get(url: str, headers: dict | None, timeout: int, stream: bool):
+    _throttle()
     try:
         response = requests.get(url, headers=headers, timeout=timeout, stream=stream)
     except Exception as exc:  # noqa: BLE001 - classified by the caller
@@ -173,6 +198,7 @@ def request(
 
 
 def _proxy_get(url: str, headers: dict | None, timeout: int, stream: bool, reason: str):
+    _throttle()
     try:
         response = requests.get(
             _proxy_url(url), headers=headers, timeout=timeout, stream=stream
@@ -200,6 +226,7 @@ def probe_routes(api_key: str = "") -> dict:
         target = f"{url}/user/stats"
         entry = {"ok": False, "detail": "", "ms": 0}
         start = time.monotonic()
+        _throttle()
         try:
             response = requests.get(target, headers=headers, timeout=12)
             entry["ms"] = int((time.monotonic() - start) * 1000)

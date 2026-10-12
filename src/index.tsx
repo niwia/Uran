@@ -244,16 +244,30 @@ type UpdateInfo = {
 };
 const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
 const getPluginInfo = callable<[], { name: string; version: string }>("get_plugin_info");
-const checkAtomGameUpdates = callable<
-  [app_id: string],
-  { ok: boolean; status?: string; new_depots?: any[]; missing_count?: number; ready_count?: number; error?: string }
->("check_atom_game_updates");
+type AtomUpdate = {
+  ok?: boolean;
+  status?: "up_to_date" | "update_available" | "key_pending" | "error" | string;
+  has_update?: boolean;
+  new_depots?: { id: string; name?: string }[];
+  pending_depots?: { id: string; name?: string }[];
+  cooldown_hours?: number;
+  from?: string;
+  error?: string;
+};
+
+const checkAtomGameUpdates = callable<[app_id: string], AtomUpdate>(
+  "check_atom_game_updates",
+);
 const checkAllAtomUpdates = callable<
   [],
   {
     ok: boolean;
-    updates?: Record<string, { has_update: boolean; new_depots?: any[]; status?: string }>;
+    updates?: Record<string, AtomUpdate>;
     update_count?: number;
+    error_count?: number;
+    pending_count?: number;
+    checked?: number;
+    cached?: number;
     error?: string;
   }
 >("check_all_atom_updates");
@@ -694,30 +708,54 @@ const AtomGamesTab: React.FC = () => {
   const [loading, setLoading] = React.useState(true);
   const [detail, setDetail] = React.useState<AtomDetail | null>(null);
   const [checkingUpdates, setCheckingUpdates] = React.useState(false);
-  const [atomUpdates, setAtomUpdates] = React.useState<
-    Record<string, { has_update: boolean; new_depots?: any[]; status?: string }>
-  >({});
+  const [atomUpdates, setAtomUpdates] = React.useState<Record<string, AtomUpdate>>({});
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  const detailUpdate = detail ? atomUpdates[detail.app_id] : undefined;
 
   const handleCheckAllUpdates = async () => {
     setCheckingUpdates(true);
     setMsg("Checking AT0-M games against Hubcap…");
     try {
       const res = await checkAllAtomUpdates();
-      if (res?.ok) {
-        setAtomUpdates(res.updates || {});
-        const count = res.update_count ?? 0;
-        if (count > 0) {
-          notify("Uran", `${count} game update${count > 1 ? "s" : ""} available on Hubcap`);
-          setMsg(`${count} game update${count > 1 ? "s" : ""} ready on Hubcap.`);
-        } else {
-          notify("Uran", "All AT0-M games are up to date with Hubcap");
-          setMsg("All AT0-M games are up to date.");
-        }
-      } else {
-        setMsg(`Update check failed: ${res?.error || "Unknown error"}`);
+      const updates = res?.updates || {};
+      setAtomUpdates(updates);
+      const count = res?.update_count ?? 0;
+      const failed = res?.error_count ?? 0;
+      const pending = res?.pending_count ?? 0;
+      const cached = res?.cached ?? 0;
+
+      // A failed check is not "no updates". Never summarise a partial sweep as
+      // a clean one — that is how a missing API key used to read as
+      // "everything is up to date".
+      const parts: string[] = [];
+      if (count > 0) {
+        parts.push(`${count} update${count > 1 ? "s" : ""} ready on Hubcap`);
       }
+      if (pending > 0) {
+        parts.push(`${pending} waiting on Hubcap keys`);
+      }
+      if (failed > 0) {
+        parts.push(`${failed} could not be checked`);
+      }
+
+      if (parts.length === 0) {
+        notify("Uran", "All AT0-M games are up to date with Hubcap");
+        setMsg(
+          cached > 0
+            ? `All ${res?.checked ?? 0} games up to date (${cached} answered from ASSella's cache).`
+            : "All AT0-M games are up to date.",
+        );
+        return;
+      }
+
+      const summary = parts.join(" · ");
+      notify("Uran", summary);
+      setMsg(
+        failed > 0 && count === 0 && pending === 0
+          ? `${summary}. ${res?.error || "Check failed."}`
+          : summary,
+      );
     } catch (e: any) {
       setMsg(`Update check failed: ${e}`);
     } finally {
@@ -1042,17 +1080,46 @@ const AtomGamesTab: React.FC = () => {
           )}
         </PanelSection>
 
-        {atomUpdates[detail.app_id]?.has_update && (
+        {detailUpdate && detailUpdate.status !== "up_to_date" && (
           <PanelSection title="Hubcap Updates">
             <PanelSectionRow>
               <div style={{ width: "100%", fontSize: "12px", lineHeight: 1.6 }}>
-                <div>
-                  <div style={{ color: "#7ee2a8", fontWeight: 600, marginBottom: "4px" }}>
-                    Update Available ({atomUpdates[detail.app_id]?.new_depots?.length || 0} new depots ready)
+                {detailUpdate.status === "key_pending" ? (
+                  <div>
+                    <div style={{ color: "#f0c674", fontWeight: 600, marginBottom: "4px" }}>
+                      Waiting on Hubcap keys
+                    </div>
+                    <div style={{ opacity: 0.8, marginBottom: detailUpdate.pending_depots?.length ? "8px" : "0" }}>
+                      Steam lists {detailUpdate.pending_depots?.length || 0} depot
+                      {(detailUpdate.pending_depots?.length || 0) === 1 ? "" : "s"} that
+                      Hubcap has not generated yet. Nothing to fetch right now — they
+                      will be picked up on a later check
+                      {detailUpdate.cooldown_hours
+                        ? ` (checked at most every ${detailUpdate.cooldown_hours}h).`
+                        : "."}
+                    </div>
+                    {!!detailUpdate.pending_depots?.length && (
+                      <div style={{ marginBottom: "4px" }}>
+                        {detailUpdate.pending_depots.map((d) => (
+                          <div key={d.id} style={{ opacity: 0.75 }}>
+                            &bull; {d.name || `Depot ${d.id}`}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div style={{ opacity: 0.8, marginBottom: "8px" }}>
-                    New depots or keys are ready on Hubcap for this game.
+                ) : detailUpdate.status === "error" ? (
+                  <div style={{ color: "#ff9a9a" }}>
+                    Could not check Hubcap: {detailUpdate.error || "unknown error"}
                   </div>
+                ) : (
+                  <div>
+                    <div style={{ color: "#7ee2a8", fontWeight: 600, marginBottom: "4px" }}>
+                      Update Available ({detailUpdate.new_depots?.length || 0} new depots ready)
+                    </div>
+                    <div style={{ opacity: 0.8, marginBottom: "8px" }}>
+                      New depots or keys are ready on Hubcap for this game.
+                    </div>
                   <ButtonItem
                     layout="below"
                     disabled={busy}
@@ -1081,6 +1148,7 @@ const AtomGamesTab: React.FC = () => {
                     Fetch &amp; Apply Updates
                   </ButtonItem>
                 </div>
+                )}
               </div>
             </PanelSectionRow>
           </PanelSection>
@@ -1200,6 +1268,8 @@ const AtomGamesTab: React.FC = () => {
         ) : (
           games.map((g) => {
             const hasUpdate = !!atomUpdates[g.app_id]?.has_update;
+            const isPending = atomUpdates[g.app_id]?.status === "key_pending";
+            const checkError = atomUpdates[g.app_id]?.status === "error";
             return (
               <PanelSectionRow key={g.app_id} style={{ marginBottom: "6px" }}>
                 <Focusable
@@ -1215,6 +1285,24 @@ const AtomGamesTab: React.FC = () => {
                       {hasUpdate && (
                         <span className="uran-game-pill-badge" title="Update available on Hubcap">
                           ⬆
+                        </span>
+                      )}
+                      {isPending && (
+                        <span
+                          className="uran-game-pill-badge"
+                          style={{ opacity: 0.65 }}
+                          title="Waiting for Hubcap to generate keys for new depots"
+                        >
+                          ⏳
+                        </span>
+                      )}
+                      {checkError && (
+                        <span
+                          className="uran-game-pill-badge"
+                          style={{ color: "#ff9a9a" }}
+                          title="Last check failed"
+                        >
+                          !
                         </span>
                       )}
                     </div>

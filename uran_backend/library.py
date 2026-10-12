@@ -20,6 +20,8 @@ from .paths import SHARED_REDISTS
 from .sls_config import (
     SlsConfig,
     _HEX_64_RE,
+    parse_key_section,
+    parse_list_section,
     remove_in_memory,
     sanitize_comment,
     sanitize_id,
@@ -383,3 +385,186 @@ class PluginLibrary:
         except Exception as exc:  # noqa: BLE001
             logger.debug("DLC depot lookup failed for %s: %s", app_id, exc)
             return set()
+
+    # -- ASSella's update-check cache ----------------------------------------
+    #
+    # ASSella already computes and persists this exact answer in
+    # `at0m_update_status`. Reading it means a check Uran has already paid for
+    # costs zero network calls, and both tools agree by construction.
+    #
+    # Read-only: Uran never writes here, so the two tools can never disagree in
+    # a way that corrupts ASSella's state.
+    UP_TO_DATE_TTL = 24 * 3600
+    KEY_PENDING_COOLDOWN = 6 * 3600
+
+    def _has_table(self, db_path: Path, table: str) -> bool:
+        if not db_path.exists():
+            return False
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    def cached_update_status(self, app_id: str) -> dict | None:
+        """ASSella's last recorded status for this appid, if still trustworthy.
+
+        Returns None when the row is absent, malformed, or past the point where
+        its answer is still meaningful. Mirrors At0mUpdateChecker's tier-1
+        rules: a key_pending row inside its cooldown is authoritative, and an
+        up_to_date row is only trusted for UP_TO_DATE_TTL.
+        """
+        aid = str(app_id).strip()
+        if not aid.isdigit():
+            return None
+
+        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        if not self._has_table(db_path, "at0m_update_status"):
+            return None
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT appid, game_title, last_timeupdated, last_checked, "
+                    "status, new_depots, cooldown_until "
+                    "FROM at0m_update_status WHERE appid = ?",
+                    (aid,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.debug("at0m_update_status read failed: %s", exc)
+            return None
+
+        if row is None:
+            return None
+
+        try:
+            new_depots = json.loads(row["new_depots"] or "[]")
+        except Exception:  # noqa: BLE001 - a bad cell must not break the check
+            new_depots = []
+        if not isinstance(new_depots, list):
+            new_depots = []
+
+        now = int(time.time())
+        status = (row["status"] or "").strip()
+        cooldown_until = int(row["cooldown_until"] or 0)
+        last_checked = int(row["last_checked"] or 0)
+
+        # A pending key is still pending until the cooldown expires; re-asking
+        # Hubcap before then is exactly the traffic the cooldown exists to stop.
+        if status == "key_pending" and now < cooldown_until:
+            return {
+                "appid": aid,
+                "game_title": row["game_title"] or "",
+                "status": status,
+                "new_depots": new_depots,
+                "last_checked": last_checked,
+                "cooldown_until": cooldown_until,
+                "from": "assella_cache",
+            }
+
+        if status == "up_to_date" and last_checked and (now - last_checked) < self.UP_TO_DATE_TTL:
+            return {
+                "appid": aid,
+                "game_title": row["game_title"] or "",
+                "status": status,
+                "new_depots": new_depots,
+                "last_checked": last_checked,
+                "from": "assella_cache",
+            }
+
+        # update_available is never cached: it is an actionable state and the
+        # user should be told the moment it is computed.
+        return None
+
+    def pending_hubcap_depots(self, app_id: str) -> list[dict]:
+        """ASSella's record of depots Hubcap could not supply yet."""
+        aid = str(app_id).strip()
+        if not aid.isdigit():
+            return []
+
+        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        if not self._has_table(db_path, "missing_hubcap_depots"):
+            return []
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT depot_id, manifest_id, depot_name FROM missing_hubcap_depots "
+                    "WHERE appid = ?",
+                    (aid,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            logger.debug("missing_hubcap_depots read failed: %s", exc)
+            return []
+
+        return [
+            {
+                "id": str(r["depot_id"]),
+                "name": r["depot_name"] or f"Depot {r['depot_id']}",
+                "manifest_id": r["manifest_id"] or "",
+            }
+            for r in rows
+        ]
+
+    def known_depots_for(self, app_id: str, record: dict) -> set[str]:
+        """Every depot ID this machine already knows about for an appid.
+
+        Mirrors At0mUpdateChecker.get_locally_known_depots: the registry record,
+        config.yaml (DecryptionKeys and AdditionalDepots both count) and the
+        local key cache. Reading config.yaml matters because ASSella writes
+        there too, so a game it registered can be absent from the record.
+        """
+        aid = str(app_id).strip()
+        known = {str(d) for d in (record.get("depots") or [])}
+        known |= {str(k) for k in (record.get("keys") or {}).keys()}
+
+        cfg = self.ctx.sls_config()
+        if cfg and cfg.exists():
+            try:
+                content = cfg.read_text(encoding="utf-8", errors="replace")
+                keys, _ = parse_key_section(content, "DecryptionKeys")
+                depots = parse_list_section(content, "AdditionalDepots")
+                known |= {str(k) for k in keys.keys()}
+                known |= {str(d) for d in depots.keys()}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("config depot scan failed for %s: %s", aid, exc)
+
+        known |= {str(d) for d in self.local_depot_keys(aid).keys()}
+
+        # Shared redistributables belong to every game and are never a delta.
+        known.difference_update(SHARED_REDISTS)
+        return known
+
+    def depot_name(self, depot_id: str) -> str:
+        """Best available human name for a depot.
+
+        Prefers the cache filled during a manifest parse, then ASSella's
+        enrichment table, then the ID itself.
+        """
+        did = str(depot_id)
+        cached = self.ctx.depot_names.get(did)
+        if cached:
+            return cached
+        return self.enrichment_name(did) or f"Depot {did}"
+
+    def enrichment_name(self, depot_id: str) -> str:
+        """Depot name from ASSella's enrichment table, if it has one."""
+        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        if not self._has_table(db_path, "depot_enrichments"):
+            return ""
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT name FROM depot_enrichments WHERE depot_id = ?",
+                    (str(depot_id),),
+                ).fetchone()
+            return str(row[0]) if row and row[0] else ""
+        except sqlite3.Error as exc:
+            logger.debug("depot_enrichments name lookup failed for %s: %s", depot_id, exc)
+            return ""

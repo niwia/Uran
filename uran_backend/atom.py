@@ -6,6 +6,7 @@ and exposes the state the AT0-M tab renders.
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .context import Context
@@ -22,6 +23,11 @@ from .sls_config import (
 from .steammeta import SteamMeta
 
 logger = logging.getLogger("Uran")
+
+# Batch checks fan out across a few threads; request pacing is enforced in
+# hubcap._throttle, so this only needs to be small enough to overlap network
+# latency with the next request.
+CHECK_WORKERS = 3
 
 
 class AtomLibrary:
@@ -175,63 +181,98 @@ class AtomLibrary:
             "dlcs_injected": dlcs_injected,
         }
 
-    def check_updates(self, app_id: str) -> dict:
-        """Check if an AT0-M game has new depots/keys ready in Hubcap.
+    def check_updates(self, app_id: str, use_cache: bool = True) -> dict:
+        """Check whether an AT0-M game has new depots/keys ready on Hubcap.
 
-        Mirrors ASSella's At0mUpdateChecker:
-          1. Collects locally known depots/keys.
-          2. Compares against Steam's current content depots.
-          3. Checks Hubcap free preflight (/manifest/{appid}/contents).
+        Tiered, cheapest first:
+
+          0. ASSella's persisted ``at0m_update_status`` — free, no network, and
+             identical to what the desktop tool concluded.
+          1. Hubcap's free ``/manifest/{id}/contents`` preflight.
+          2. Delta: what Hubcap holds minus what this machine already knows.
+
+        Three states are reported, matching ASSella's vocabulary so the cached
+        and freshly-computed answers are interchangeable:
+
+          up_to_date       nothing on Hubcap that we do not already have
+          update_available Hubcap holds depots we lack — a refetch gains something
+          key_pending      Steam knows depots we lack that Hubcap has not
+                           generated yet; re-check after the cooldown
         """
         aid = sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
 
         record = self.library.load().get(aid) or {}
-        cached_depots = {
-            str(d) for d in (record.get("depots") or [])
-        } | {
-            str(k) for k in (record.get("keys") or {}).keys()
-        }
 
-        # Query Hubcap contents (free / zero quota)
+        # Tier 0 — ASSella already computed this; trust it while it is fresh.
+        if use_cache:
+            cached = self.library.cached_update_status(aid)
+            if cached:
+                return {
+                    "ok": True,
+                    "app_id": aid,
+                    "status": cached["status"],
+                    "has_update": cached["status"] == "update_available",
+                    "new_depots": cached["new_depots"] or [],
+                    "from": cached["from"],
+                    "last_checked": cached.get("last_checked", 0),
+                }
+
+        # Tier 1 — Hubcap's free preflight.
         contents = self.manifests.contents(aid)
         if contents.get("error"):
+            # An error is NOT "no updates". Reporting it as one turns a missing
+            # API key into a confident "everything is up to date".
             return {
-                "ok": True,
+                "ok": False,
                 "app_id": aid,
                 "status": "error",
-                "error": contents["error"],
                 "has_update": False,
                 "new_depots": [],
+                "error": contents["error"],
             }
 
         hubcap_depots: set[str] = set()
-        for m in contents.get("manifests", []):
-            if isinstance(m, dict) and m.get("depot_id"):
-                hubcap_depots.add(str(m["depot_id"]))
+        for entry in contents.get("manifests", []):
+            if isinstance(entry, dict) and entry.get("depot_id"):
+                hubcap_depots.add(str(entry["depot_id"]))
         if not hubcap_depots and contents.get("manifest_map"):
             hubcap_depots = {str(k) for k in contents["manifest_map"].keys()}
         if not hubcap_depots and contents.get("depot_ids"):
             hubcap_depots = {str(d) for d in contents["depot_ids"]}
 
-        valid_hubcap_depots = {
+        known = self.library.known_depots_for(aid, record)
+        offerable = {
             d for d in hubcap_depots
             if d.isdigit() and d not in SHARED_REDISTS and d != aid
         }
+        new_depots = offerable - known
 
-        new_depots = valid_hubcap_depots - cached_depots
         if new_depots:
-            new_depots_info = [
-                {"id": did, "name": f"Depot {did}"}
-                for did in sorted(new_depots, key=lambda x: int(x) if x.isdigit() else 0)
-            ]
             return {
                 "ok": True,
                 "app_id": aid,
                 "status": "update_available",
                 "has_update": True,
-                "new_depots": new_depots_info,
+                "new_depots": self._describe(sorted(new_depots)),
+                "from": "live",
+            }
+
+        # Tier 2 — nothing new on Hubcap. If Steam knows about depots we lack
+        # that Hubcap has not generated yet, that is `key_pending`, not
+        # `up_to_date`: a refetch now would gain nothing, but it will soon.
+        pending = self._pending_depots(aid, record)
+        if pending:
+            return {
+                "ok": True,
+                "app_id": aid,
+                "status": "key_pending",
+                "has_update": False,
+                "new_depots": [],
+                "pending_depots": self._describe(sorted(pending)),
+                "cooldown_hours": self.library.KEY_PENDING_COOLDOWN // 3600,
+                "from": "live",
             }
 
         return {
@@ -240,39 +281,89 @@ class AtomLibrary:
             "status": "up_to_date",
             "has_update": False,
             "new_depots": [],
+            "from": "live",
         }
 
-    def check_all_updates(self) -> dict:
-        """Batch-checks all registered AT0-M games against Hubcap.
+    def _describe(self, depot_ids) -> list[dict]:
+        """Depot records with real names where the local cache has them."""
+        return [{"id": did, "name": self.library.depot_name(did)} for did in depot_ids]
 
-        Queries Hubcap contents concurrently with rate-limiting.
-        Returns a dict mapping app_id -> { has_update: bool, new_depots: [...] }.
+    def _pending_depots(self, aid: str, record: dict) -> set[str]:
+        """Depots Steam knows about that we lack and Hubcap has not supplied.
+
+        Only meaningful when we can see Steam's current depot list; without it
+        we have no evidence a depot is missing, so we report nothing rather
+        than guess.
         """
-        import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        details = self.steam.app_details(aid)
+        steam_depots = {
+            str(d)
+            for d in details.get("depots", [])
+            if str(d).isdigit() and str(d) not in SHARED_REDISTS and str(d) != aid
+        }
+        if not steam_depots:
+            return set()
 
+        known = self.library.known_depots_for(aid, record)
+        return steam_depots - known
+
+    def check_all_updates(self, use_cache: bool = True) -> dict:
+        """Check every registered AT0-M game against Hubcap.
+
+        Returns per-app results plus an aggregate that never hides a failure:
+        `error_count` games could not be checked, and `ok` is false when any
+        of them failed, so the UI cannot report a clean sweep it never did.
+
+        Requests are spaced by hubcap.MIN_REQUEST_INTERVAL through a shared
+        lock, so worker threads do not fire in parallel.
+        """
         games = self.library.load() or {}
-        results = {}
         if not games:
-            return {"ok": True, "updates": {}, "update_count": 0}
+            return {
+                "ok": True,
+                "updates": {},
+                "update_count": 0,
+                "error_count": 0,
+                "pending_count": 0,
+                "checked": 0,
+                "cached": 0,
+            }
 
         def _check_one(aid: str) -> tuple[str, dict]:
-            time.sleep(0.04)  # 40ms interval
             try:
-                res = self.check_updates(aid)
-                return aid, res
-            except Exception as e:
-                return aid, {"ok": False, "app_id": aid, "has_update": False, "error": str(e)}
+                return aid, self.check_updates(aid, use_cache=use_cache)
+            except Exception as exc:  # noqa: BLE001 - one bad game must not abort the batch
+                return aid, {
+                    "ok": False,
+                    "app_id": aid,
+                    "status": "error",
+                    "has_update": False,
+                    "new_depots": [],
+                    "error": str(exc),
+                }
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        results: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=CHECK_WORKERS) as executor:
             futures = [executor.submit(_check_one, aid) for aid in games.keys()]
-            for f in as_completed(futures):
-                aid, r = f.result()
-                results[aid] = r
+            for future in as_completed(futures):
+                aid, result = future.result()
+                results[aid] = result
 
+        error_count = sum(1 for r in results.values() if r.get("status") == "error")
+        pending_count = sum(1 for r in results.values() if r.get("status") == "key_pending")
         update_count = sum(1 for r in results.values() if r.get("has_update"))
+        cached = sum(1 for r in results.values() if r.get("from") == "assella_cache")
+
+        first_error = next(
+            (r["error"] for r in results.values() if r.get("status") == "error"), ""
+        )
         return {
-            "ok": True,
+            "ok": error_count == 0,
             "updates": results,
             "update_count": update_count,
+            "error_count": error_count,
+            "pending_count": pending_count,
+            "checked": len(results),
+            "cached": cached,
+            "error": first_error if error_count else "",
         }
