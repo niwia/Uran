@@ -188,65 +188,91 @@ class AtomLibrary:
             return {"ok": False, "error": "Invalid AppID"}
 
         record = self.library.load().get(aid) or {}
-        known_depots = {str(d) for d in (record.get("depots") or [])}
-        known_keys = {str(k) for k in (record.get("keys") or {}).keys()}
-
-        # Steam content depots
-        details = self.steam.app_details(aid)
-        steam_depots = {
-            str(d)
-            for d in details.get("depots", [])
-            if str(d).isdigit() and str(d) not in SHARED_REDISTS and str(d) != aid
+        cached_depots = {
+            str(d) for d in (record.get("depots") or [])
+        } | {
+            str(k) for k in (record.get("keys") or {}).keys()
         }
 
-        missing_depots = steam_depots - (known_depots | known_keys)
-        if not missing_depots:
-            return {
-                "ok": True,
-                "app_id": aid,
-                "status": "up_to_date",
-                "missing_count": 0,
-                "new_depots": [],
-            }
-
-        # Hubcap preflight (free / zero quota)
+        # Query Hubcap contents (free / zero quota)
         contents = self.manifests.contents(aid)
         if contents.get("error"):
             return {
                 "ok": True,
                 "app_id": aid,
-                "status": "unknown",
+                "status": "error",
                 "error": contents["error"],
-                "missing_count": len(missing_depots),
+                "has_update": False,
                 "new_depots": [],
             }
 
-        hubcap_depots = set()
+        hubcap_depots: set[str] = set()
         for m in contents.get("manifests", []):
             if isinstance(m, dict) and m.get("depot_id"):
                 hubcap_depots.add(str(m["depot_id"]))
         if not hubcap_depots and contents.get("manifest_map"):
             hubcap_depots = {str(k) for k in contents["manifest_map"].keys()}
+        if not hubcap_depots and contents.get("depot_ids"):
+            hubcap_depots = {str(d) for d in contents["depot_ids"]}
 
-        ready_depots = missing_depots & hubcap_depots
-        if ready_depots:
-            new_depots_info = []
-            for did in sorted(ready_depots, key=lambda x: int(x) if x.isdigit() else 0):
-                new_depots_info.append({"id": did, "name": f"Depot {did}"})
+        valid_hubcap_depots = {
+            d for d in hubcap_depots
+            if d.isdigit() and d not in SHARED_REDISTS and d != aid
+        }
+
+        new_depots = valid_hubcap_depots - cached_depots
+        if new_depots:
+            new_depots_info = [
+                {"id": did, "name": f"Depot {did}"}
+                for did in sorted(new_depots, key=lambda x: int(x) if x.isdigit() else 0)
+            ]
             return {
                 "ok": True,
                 "app_id": aid,
                 "status": "update_available",
-                "missing_count": len(missing_depots),
+                "has_update": True,
                 "new_depots": new_depots_info,
-                "ready_count": len(ready_depots),
             }
 
         return {
             "ok": True,
             "app_id": aid,
             "status": "up_to_date",
-            "missing_pending": list(missing_depots),
-            "missing_count": len(missing_depots),
+            "has_update": False,
             "new_depots": [],
+        }
+
+    def check_all_updates(self) -> dict:
+        """Batch-checks all registered AT0-M games against Hubcap.
+
+        Queries Hubcap contents concurrently with rate-limiting.
+        Returns a dict mapping app_id -> { has_update: bool, new_depots: [...] }.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        games = self.library.load() or {}
+        results = {}
+        if not games:
+            return {"ok": True, "updates": {}, "update_count": 0}
+
+        def _check_one(aid: str) -> tuple[str, dict]:
+            time.sleep(0.04)  # 40ms interval
+            try:
+                res = self.check_updates(aid)
+                return aid, res
+            except Exception as e:
+                return aid, {"ok": False, "app_id": aid, "has_update": False, "error": str(e)}
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_check_one, aid) for aid in games.keys()]
+            for f in as_completed(futures):
+                aid, r = f.result()
+                results[aid] = r
+
+        update_count = sum(1 for r in results.values() if r.get("has_update"))
+        return {
+            "ok": True,
+            "updates": results,
+            "update_count": update_count,
         }

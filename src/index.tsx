@@ -248,6 +248,15 @@ const checkAtomGameUpdates = callable<
   [app_id: string],
   { ok: boolean; status?: string; new_depots?: any[]; missing_count?: number; ready_count?: number; error?: string }
 >("check_atom_game_updates");
+const checkAllAtomUpdates = callable<
+  [],
+  {
+    ok: boolean;
+    updates?: Record<string, { has_update: boolean; new_depots?: any[]; status?: string }>;
+    update_count?: number;
+    error?: string;
+  }
+>("check_all_atom_updates");
 const refetchManifests = callable<
   [app_id: string],
   { ok?: boolean; error?: string; updated?: boolean }
@@ -684,15 +693,37 @@ const AtomGamesTab: React.FC = () => {
   const [games, setGames] = React.useState<AtomGame[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [detail, setDetail] = React.useState<AtomDetail | null>(null);
-  const [updateStatus, setUpdateStatus] = React.useState<{
-    checking?: boolean;
-    status?: string;
-    new_depots?: any[];
-    ready_count?: number;
-    error?: string;
-  }>({});
+  const [checkingUpdates, setCheckingUpdates] = React.useState(false);
+  const [atomUpdates, setAtomUpdates] = React.useState<
+    Record<string, { has_update: boolean; new_depots?: any[]; status?: string }>
+  >({});
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+
+  const handleCheckAllUpdates = async () => {
+    setCheckingUpdates(true);
+    setMsg("Checking AT0-M games against Hubcap…");
+    try {
+      const res = await checkAllAtomUpdates();
+      if (res?.ok) {
+        setAtomUpdates(res.updates || {});
+        const count = res.update_count ?? 0;
+        if (count > 0) {
+          notify("Uran", `${count} game update${count > 1 ? "s" : ""} available on Hubcap`);
+          setMsg(`${count} game update${count > 1 ? "s" : ""} ready on Hubcap.`);
+        } else {
+          notify("Uran", "All AT0-M games are up to date with Hubcap");
+          setMsg("All AT0-M games are up to date.");
+        }
+      } else {
+        setMsg(`Update check failed: ${res?.error || "Unknown error"}`);
+      }
+    } catch (e: any) {
+      setMsg(`Update check failed: ${e}`);
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
 
   const load = React.useCallback(async () => {
     try {
@@ -712,7 +743,6 @@ const AtomGamesTab: React.FC = () => {
 
   const openGame = async (appId: string) => {
     setMsg("");
-    setUpdateStatus({});
     try {
       const d = await getAtomGame(appId);
       if (d?.ok) setDetail(d as AtomDetail);
@@ -1012,15 +1042,13 @@ const AtomGamesTab: React.FC = () => {
           )}
         </PanelSection>
 
-        <PanelSection title="Hubcap Updates">
-          <PanelSectionRow>
-            <div style={{ width: "100%", fontSize: "12px", lineHeight: 1.6 }}>
-              {updateStatus.checking ? (
-                <div>Checking Hubcap for new depots &amp; keys…</div>
-              ) : updateStatus.status === "update_available" ? (
+        {atomUpdates[detail.app_id]?.has_update && (
+          <PanelSection title="Hubcap Updates">
+            <PanelSectionRow>
+              <div style={{ width: "100%", fontSize: "12px", lineHeight: 1.6 }}>
                 <div>
                   <div style={{ color: "#7ee2a8", fontWeight: 600, marginBottom: "4px" }}>
-                    Update Available ({updateStatus.new_depots?.length || 0} new depots ready)
+                    Update Available ({atomUpdates[detail.app_id]?.new_depots?.length || 0} new depots ready)
                   </div>
                   <div style={{ opacity: 0.8, marginBottom: "8px" }}>
                     New depots or keys are ready on Hubcap for this game.
@@ -1030,13 +1058,16 @@ const AtomGamesTab: React.FC = () => {
                     disabled={busy}
                     onClick={async () => {
                       setBusy(true);
-                      notify("Uran", `Fetching updates for ${detail.name}...`);
+                      notify("Uran", `Fetching updates for ${detail.name}…`);
                       try {
                         const r = await refetchManifests(detail.app_id);
                         if (r?.ok) {
                           notify("Uran", `Updated ${detail.name}!`);
                           setMsg(`Updated ${detail.name} with new depots and keys.`);
-                          setUpdateStatus({ status: "up_to_date" });
+                          setAtomUpdates((prev) => ({
+                            ...prev,
+                            [detail.app_id]: { has_update: false, new_depots: [] },
+                          }));
                           await refreshDetail();
                         } else {
                           notify("Uran", `Update failed: ${r?.error || "Error"}`);
@@ -1050,43 +1081,10 @@ const AtomGamesTab: React.FC = () => {
                     Fetch &amp; Apply Updates
                   </ButtonItem>
                 </div>
-              ) : updateStatus.status === "up_to_date" ? (
-                <div style={{ color: "#7ee2a8" }}>All depots and keys are up to date with Hubcap.</div>
-              ) : (
-                <div style={{ opacity: 0.75 }}>Check if newer depots or keys are ready in Hubcap.</div>
-              )}
-            </div>
-          </PanelSectionRow>
-          {!updateStatus.checking && updateStatus.status !== "update_available" && (
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                disabled={busy}
-                onClick={async () => {
-                  setUpdateStatus({ checking: true });
-                  try {
-                    const r = await checkAtomGameUpdates(detail.app_id);
-                    setUpdateStatus({
-                      checking: false,
-                      status: r?.status,
-                      new_depots: r?.new_depots,
-                      ready_count: r?.ready_count,
-                    });
-                    if (r?.status === "update_available") {
-                      notify("Uran", `Update available for ${detail.name}!`);
-                    } else if (r?.status === "up_to_date") {
-                      notify("Uran", `${detail.name} is up to date.`);
-                    }
-                  } catch (e: any) {
-                    setUpdateStatus({ checking: false, error: String(e) });
-                  }
-                }}
-              >
-                Check Hubcap Updates
-              </ButtonItem>
+              </div>
             </PanelSectionRow>
-          )}
-        </PanelSection>
+          </PanelSection>
+        )}
 
         <PanelSection>
           <PanelSectionRow>
@@ -1134,14 +1132,28 @@ const AtomGamesTab: React.FC = () => {
           overflow: hidden !important;
           border-radius: 8px !important;
         }
-        .uran-game-pill > div,
-        .uran-game-pill > span {
+        .uran-game-pill-content {
+          display: flex !important;
+          align-items: center !important;
+          justify-content: space-between !important;
           width: 100% !important;
+          min-width: 0 !important;
+          gap: 6px !important;
+        }
+        .uran-game-pill-title {
+          flex: 1 1 0% !important;
           min-width: 0 !important;
           overflow: hidden !important;
           text-overflow: ellipsis !important;
           white-space: nowrap !important;
           text-align: left !important;
+          font-size: 13px !important;
+        }
+        .uran-game-pill-badge {
+          flex-shrink: 0 !important;
+          font-size: 13px !important;
+          color: #7ee2a8 !important;
+          font-weight: 700 !important;
         }
         .uran-uninstall-btn {
           width: 38px !important;
@@ -1164,6 +1176,17 @@ const AtomGamesTab: React.FC = () => {
       `}</style>
 
       <PanelSection title={`AT0-M Games (${games.length})`}>
+        {games.length > 0 && (
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              disabled={busy || checkingUpdates}
+              onClick={handleCheckAllUpdates}
+            >
+              {checkingUpdates ? "Checking Updates…" : "Check Updates"}
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
         {loading ? (
           <PanelSectionRow>
             <div style={{ fontSize: "12px", opacity: 0.7 }}>Loading…</div>
@@ -1175,39 +1198,38 @@ const AtomGamesTab: React.FC = () => {
             </div>
           </PanelSectionRow>
         ) : (
-          games.map((g) => (
-            <PanelSectionRow key={g.app_id} style={{ marginBottom: "6px" }}>
-              <Focusable
-                flow-children="horizontal"
-                className="uran-game-row"
-              >
-                <DialogButton
-                  className="uran-game-pill"
-                  onClick={() => openGame(g.app_id)}
+          games.map((g) => {
+            const hasUpdate = !!atomUpdates[g.app_id]?.has_update;
+            return (
+              <PanelSectionRow key={g.app_id} style={{ marginBottom: "6px" }}>
+                <Focusable
+                  flow-children="horizontal"
+                  className="uran-game-row"
                 >
-                  <span
-                    style={{
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      display: "block",
-                      width: "100%",
-                      fontSize: "13px",
-                    }}
+                  <DialogButton
+                    className="uran-game-pill"
+                    onClick={() => openGame(g.app_id)}
                   >
-                    {g.name}
-                  </span>
-                </DialogButton>
-                <DialogButton
-                  className="uran-uninstall-btn"
-                  disabled={busy}
-                  onClick={() => askUninstall(g)}
-                >
-                  <TrashIcon size={16} />
-                </DialogButton>
-              </Focusable>
-            </PanelSectionRow>
-          ))
+                    <div className="uran-game-pill-content">
+                      <span className="uran-game-pill-title">{g.name}</span>
+                      {hasUpdate && (
+                        <span className="uran-game-pill-badge" title="Update available on Hubcap">
+                          ⬆
+                        </span>
+                      )}
+                    </div>
+                  </DialogButton>
+                  <DialogButton
+                    className="uran-uninstall-btn"
+                    disabled={busy}
+                    onClick={() => askUninstall(g)}
+                  >
+                    <TrashIcon size={16} />
+                  </DialogButton>
+                </Focusable>
+              </PanelSectionRow>
+            );
+          })
         )}
       </PanelSection>
 
@@ -1238,7 +1260,6 @@ function formatExpiry(raw?: string): string {
 
 // -- Settings Tab -------------------------------------------------------------
 const SettingsTab: React.FC = () => {
-  const [showRestartButton, setShowRestartButton] = React.useState(false);
   const [steamStoreEnabled, setSteamStoreEnabled] = React.useState(true);
   const [storeStatus, setStoreStatus] = React.useState<{
     available: boolean;
@@ -1307,9 +1328,8 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
+        const [mip, nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
           await Promise.all([
-            getSetting("show_restart_button", false),
             getSetting("manifestid_pinning", false),
             getSetting("notification_mode", "auto"),
             getSetting("steam_store_enabled", true),
@@ -1319,7 +1339,6 @@ const SettingsTab: React.FC = () => {
             getHubcapRoutes(),
           ]);
         if (!alive) return;
-        setShowRestartButton(!!srb);
         setManifestIdPinning(!!mip);
         setSteamStoreEnabled(storeEnabled !== false);
         setStorePatchEnabled(storeEnabled !== false);
@@ -1688,17 +1707,6 @@ const SettingsTab: React.FC = () => {
             onChange={(v) => {
               setManifestIdPinning(v);
               setSetting("manifestid_pinning", v);
-            }}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="Show Exit Steam button"
-            description="Show a manual Exit Steam button on store pages."
-            checked={showRestartButton}
-            onChange={(v) => {
-              setShowRestartButton(v);
-              setSetting("show_restart_button", v);
             }}
           />
         </PanelSectionRow>

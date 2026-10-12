@@ -252,6 +252,9 @@ class Plugin:
     async def check_atom_game_updates(self, app_id: str) -> dict:
         return await asyncio.to_thread(self.s.atom.check_updates, app_id)
 
+    async def check_all_atom_updates(self) -> dict:
+        return await asyncio.to_thread(self.s.atom.check_all_updates)
+
     async def preview_atom_uninstall(self, app_id: str) -> dict:
         return await asyncio.to_thread(self.s.uninstaller.preview, app_id)
 
