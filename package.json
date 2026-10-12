@@ -1,13 +1,13 @@
 {
   "name": "uran",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "description": "Decky companion plugin for ASSella: search games, inject SLSsteam config, and manage Hubcap manifests and depot keys",
   "type": "module",
   "scripts": {
     "build": "shx rm -rf dist && rollup -c",
     "package": "shx rm -rf dist && rollup -c && python3 build_zip.py",
     "watch": "rollup -c -w",
-    "test": "echo \"No tests specified\""
+    "test": "python3 tests/run_all.py"
   },
   "keywords": [
     "decky",

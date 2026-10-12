@@ -44,10 +44,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Read version from package.json
+      - name: Verify version consistency
+        run: python3 check_version.py
+
+      - name: Run backend tests
+        run: python3 tests/run_all.py
+
+      - name: Read version from plugin.json
         id: get_version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "require('./plugin.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install dependencies

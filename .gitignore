@@ -1,6 +1,10 @@
 node_modules/
 __pycache__/
 *.pyc
-defaults
 .idea
 *.zip
+
+# Build output: `npm run build` regenerates this, and the release zip is
+# published as a GitHub Release artifact. Committing it only produced merge
+# conflicts and shipped a source map to users.
+dist/

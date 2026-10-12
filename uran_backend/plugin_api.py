@@ -1,200 +1,306 @@
-"""Thin Decky callable adapter; feature logic lives in the backend modules."""
+"""Decky callable surface.
 
-_core = None
+These method names and signatures ARE the plugin's RPC contract: the frontend
+resolves `callable("inject_game")` against them, so they must stay stable even
+as the implementation moves behind them. Everything here is a thin delegation.
+"""
+
+import asyncio
+import logging
+import os
+import shutil
+import subprocess
+
+logger = logging.getLogger("Uran")
+
+_services = None
 
 
-def bind_core(core) -> None:
-    global _core
-    _core = core
+def default_services(decky_module=None) -> "Services":
+    """Build the service graph on first use.
+
+    Imported lazily so `main.py` stays a thin composition root and this module
+    has no import-time dependency on the concrete services.
+    """
+    global _services
+    if _services is None:
+        from uran_backend import services
+
+        _services = services.build(decky_module)
+    return _services
+
+
+class Services:
+    """Everything the RPC surface needs, wired once at startup."""
+
+    def __init__(self, ctx, sls, steam, library, manifests, integrations,
+                 injector, guards, keycare, store_debugger, atom, uninstaller):
+        self.ctx = ctx
+        self.sls = sls
+        self.steam = steam
+        self.library = library
+        self.manifests = manifests
+        self.integrations = integrations
+        self.injector = injector
+        self.guards = guards
+        self.keycare = keycare
+        self.store_debugger = store_debugger
+        self.atom = atom
+        self.uninstaller = uninstaller
 
 
 class Plugin:
+    """Decky instantiates this with no arguments; services arrive via a default."""
+
+    def __init__(self, services: "Services | None" = None, decky_module=None):
+        self.s = services if services is not None else default_services(decky_module)
+
     async def _main(self) -> None:
-        core = _core
-        core.logger.info("Uran plugin loaded")
-        cache = core._manifest_cache_dir()
-        depotcache = core._depotcache_dir()
+        ctx = self.s.ctx
+        logger.info("Uran plugin loaded")
+        # Restore any manifests we cached last session into depotcache.
+        cache = ctx.manifest_cache_dir()
+        depotcache = ctx.depotcache()
         if depotcache and cache.exists():
             seeded = 0
             for manifest in cache.glob("*.manifest"):
                 target = depotcache / manifest.name
                 if not target.exists():
                     try:
-                        core.shutil.copy2(manifest, target)
+                        shutil.copy2(manifest, target)
                         seeded += 1
                     except OSError:
                         pass
             if seeded:
-                core.logger.info("Restored %s cached manifest(s) to depotcache", seeded)
+                logger.info("Restored %s cached manifest(s) to depotcache", seeded)
 
     async def _unload(self) -> None:
         try:
-            _core.stop_keycare_server()
-        except Exception as e:
-            _core.logger.debug("keycare cleanup on unload: %s", e)
-        _core.logger.info("Uran plugin unloaded")
+            self.s.keycare.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("keycare cleanup on unload: %s", exc)
+        logger.info("Uran plugin unloaded")
 
     async def _uninstall(self) -> None:
-        path = _core._settings_path()
-        path.unlink(missing_ok=True)
-        _core.logger.info("Uran settings cleared on uninstall")
+        self.s.keycare.stop()
+        self.s.ctx.settings.path.unlink(missing_ok=True)
+        logger.info("Uran settings cleared on uninstall")
 
+    # -- diagnostics ---------------------------------------------------------
     async def discover_store_tab(self) -> dict | None:
-        return _core.discover_store_tab()
+        return self.s.store_debugger.discover()
 
     async def get_store_debug_status(self, refresh: bool = False) -> dict:
-        return _core.get_store_debug_status(refresh)
-
-    async def get_setting(self, key: str, default=None):
-        return _core._get_setting(key, default)
-
-    async def set_setting(self, key: str, value) -> None:
-        _core._set_setting(key, value)
-
-    async def read_clipboard(self) -> dict:
-        return _core.read_clipboard()
+        return self.s.store_debugger.status(refresh)
 
     async def fe_debug(self, msg: str) -> None:
-        _core._store_debugger.record_log(msg)
-        _core.logger.debug("[FE] %s", msg)
+        self.s.store_debugger.record_log(msg)
+        logger.debug("[FE] %s", msg)
+
+    async def read_clipboard(self) -> dict:
+        """Read clipboard text using wl-paste or xclip."""
+        for cmd in (["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]):
+            try:
+                result = subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2
+                )
+                if result.returncode == 0 and result.stdout:
+                    return {"ok": True, "text": result.stdout.strip()}
+            except Exception:  # noqa: BLE001
+                continue
+        return {"ok": False, "error": "Clipboard unavailable"}
 
     async def restart_steam(self) -> None:
-        _core.restart_steam()
+        """Close Steam so SLSsteam picks up the new config on next launch."""
+        try:
+            subprocess.run(["pkill", "-TERM", "steam"], timeout=5)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Stop steam error: %s", exc)
 
+    # -- settings ------------------------------------------------------------
+    async def get_setting(self, key: str, default=None):
+        return self.s.ctx.read_setting(key, default)
+
+    async def set_setting(self, key: str, value) -> None:
+        self.s.ctx.write_setting(key, value)
+
+    async def get_plugin_info(self) -> dict:
+        from .updates import plugin_info
+
+        return plugin_info(self.s.ctx)
+
+    async def check_for_updates(self) -> dict:
+        from .updates import check_for_updates
+
+        return await asyncio.to_thread(check_for_updates, self.s.ctx)
+
+    # -- search & inject -----------------------------------------------------
     async def search_games(self, query: str, limit: int = 20, appid: bool = False) -> dict:
-        return _core.search_games(query, limit=limit, appid=appid)
+        return await asyncio.to_thread(self.s.steam.search, query, limit, appid)
 
     async def inject_game(self, app_id: str) -> dict:
-        return _core.inject_game(app_id)
+        return self.s.injector.inject(app_id)
 
     async def get_inject_status(self, app_id: str) -> dict | None:
-        return _core.get_inject_status(app_id)
+        return self.s.injector.status(app_id)
 
     async def get_recent_injects(self) -> list[dict]:
-        return _core.get_recent_injects()
-
-    async def list_backups(self) -> list[dict]:
-        return _core.list_backups()
-
-    async def create_backup(self) -> str:
-        return _core.create_backup("manual")
-
-    async def restore_backup(self, backup_name: str) -> dict:
-        return _core.restore_backup(backup_name)
-
-    async def get_fake_app_ids(self) -> dict:
-        return _core.get_fake_app_ids()
-
-    async def add_fake_app_id(self, app_id: str) -> dict:
-        return _core.add_fake_app_id(app_id)
-
-    async def remove_fake_app_id(self, app_id: str) -> dict:
-        return _core.remove_fake_app_id(app_id)
+        return self.s.injector.recent()
 
     async def fetch_dlcs_for_app(self, app_id: str) -> dict:
-        return _core.fetch_dlcs_for_app(app_id)
+        return await asyncio.to_thread(self.s.injector.fetch_dlcs, app_id)
 
     async def toggle_game_dlcs(self, app_id: str, enable: bool) -> dict:
-        return _core.toggle_game_dlcs(app_id, enable)
+        return await asyncio.to_thread(self.s.injector.toggle_dlcs, app_id, enable)
 
-    async def refetch_manifests(self, app_id: str) -> dict:
-        return _core.refetch_manifests(app_id)
+    async def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
+        return await asyncio.to_thread(self.s.injector.toggle_additional_app, app_id, dlc_appid, enable)
 
-    async def remove_manifest_id_pins(self, app_id: str) -> dict:
-        return _core.remove_manifest_id_pins(app_id)
+    # -- backups -------------------------------------------------------------
+    async def list_backups(self) -> list[dict]:
+        return self.s.sls.list_backups()
+
+    async def create_backup(self) -> str:
+        return self.s.sls.create_backup("manual")
+
+    async def restore_backup(self, backup_name: str) -> dict:
+        return await asyncio.to_thread(self.s.sls.restore_backup, backup_name)
+
+    # -- library / FakeAppIds ------------------------------------------------
+    async def get_fake_app_ids(self) -> dict:
+        return self.s.integrations.list_fake_app_ids()
+
+    async def add_fake_app_id(self, app_id: str) -> dict:
+        return self.s.integrations.add_fake_app_id(app_id)
+
+    async def remove_fake_app_id(self, app_id: str) -> dict:
+        return self.s.integrations.remove_fake_app_id(app_id)
+
+    async def is_app_added(self, app_id: str) -> bool:
+        return self.s.guards.is_app_added(app_id)
+
+    async def get_added_app_ids(self) -> list[str]:
+        return self.s.guards.get_added_app_ids()
 
     async def why_not_downloading(self, app_id: str) -> dict:
-        return _core.why_not_downloading(app_id)
+        from .manifests import configured_depot_keys
 
-    async def send_notification(self, title: str, body: str) -> dict:
-        try:
-            _core.subprocess.run(["notify-send", title, body], timeout=2)
-            return {"ok": True}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        ctx = self.s.ctx
+        cfg = ctx.sls_config()
+        if not cfg or not cfg.exists():
+            return {"ok": False, "message": "SLS config.yaml not found"}
+        configured_keys = configured_depot_keys(ctx)["keys"]
+        details = self.s.steam.app_details(str(app_id))
+        depots = details.get("depots", [])
+        missing = [d for d in depots if d not in configured_keys]
+        msg = f"App {app_id}: {len(depots)} depot(s)."
+        if missing:
+            msg += f" {len(missing)} depot(s) lack decryption keys."
+        else:
+            msg += " All depots have decryption keys."
+        return {"ok": True, "message": msg}
 
+    # -- manifests -----------------------------------------------------------
+    async def refetch_manifests(self, app_id: str) -> dict:
+        return await asyncio.to_thread(self.s.manifests.refetch, app_id)
+
+    async def remove_manifest_id_pins(self, app_id: str) -> dict:
+        return self.s.manifests.remove_pins(app_id)
+
+    async def hubcap_manifest_contents(self, app_id: str) -> dict:
+        return await asyncio.to_thread(self.s.manifests.contents, app_id)
+
+    async def get_hubcap_routes(self) -> dict:
+        """Current gateway mode and whether each route is reachable."""
+        return await asyncio.to_thread(self.s.manifests.route_status)
+
+    async def test_hubcap_routes(self) -> dict:
+        """Actively probe both routes and report the result."""
+        return await asyncio.to_thread(self.s.manifests.probe_routes)
+
+    # -- Hubcap key ----------------------------------------------------------
     async def get_hubcap_key_status(self) -> dict:
-        return _core.get_hubcap_key_status()
+        return self.s.keycare.key_status()
 
     async def start_key_server(self) -> dict:
-        return _core.start_keycare_server()
+        return self.s.keycare.start()
 
     async def key_server_status(self) -> dict:
-        return _core.get_keycare_status()
+        return self.s.keycare.status()
 
     async def stop_key_server(self) -> dict:
-        return _core.stop_keycare_server()
+        return self.s.keycare.stop()
 
     async def validate_hubcap_key(self, key: str) -> dict:
-        ok, message, detail = _core.validate_hubcap_key(key)
+        ok, message, detail = await asyncio.to_thread(self.s.keycare.validate, key)
         return {"ok": ok, "message": message, "detail": detail}
 
     async def save_hubcap_key(self, key: str) -> dict:
-        ok, message = _core.save_hubcap_key(key)
+        ok, message = await asyncio.to_thread(self.s.keycare.save, key)
         return {"ok": ok, "message": message}
 
     async def get_hubcap_user_stats(self) -> dict:
-        return _core.get_hubcap_user_stats()
+        return await asyncio.to_thread(self.s.keycare.user_stats)
 
-    async def hubcap_manifest_contents(self, app_id: str) -> dict:
-        return _core.hubcap_manifest_contents(app_id)
-
+    # -- AT0-M library -------------------------------------------------------
     async def list_plugin_games(self) -> dict:
-        return {"ok": True, "games": _core.list_atom_games()}
+        return {"ok": True, "games": self.s.atom.list_games()}
 
     async def get_atom_game(self, app_id: str) -> dict:
-        return _core.get_atom_game_detail(app_id)
+        return await asyncio.to_thread(self.s.atom.detail, app_id)
+
+    async def check_atom_game_updates(self, app_id: str) -> dict:
+        return await asyncio.to_thread(self.s.atom.check_updates, app_id)
 
     async def preview_atom_uninstall(self, app_id: str) -> dict:
-        return _core.preview_atom_uninstall(app_id)
+        return await asyncio.to_thread(self.s.uninstaller.preview, app_id)
 
     async def uninstall_atom_game(self, app_id: str) -> dict:
-        return _core.uninstall_atom_game(app_id)
+        return await asyncio.to_thread(self.s.uninstaller.uninstall, app_id)
 
     async def set_slsonline(self, app_id: str, enabled: bool, fake_appid: str = "480") -> dict:
-        if _core.is_global_slsonline_enabled():
+        if self.s.integrations.global_slsonline_enabled():
             return {"ok": False, "error": "Global SLS Online is active for all games"}
         if enabled:
-            return _core.set_fake_appid(app_id, fake_appid or "480")
-        _core.set_fake_appid(app_id, "")
-        _core.set_netsock(app_id, False)
+            return self.s.integrations.set_fake_appid(app_id, fake_appid or "480")
+        self.s.integrations.set_fake_appid(app_id, "")
+        self.s.integrations.set_netsock(app_id, False)
         return {"ok": True, "fake_appid": ""}
 
-    async def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
-        return _core.toggle_additional_app(app_id, dlc_appid, enable)
-
     async def is_global_slsonline_enabled(self) -> dict:
-        return {"ok": True, "enabled": _core.is_global_slsonline_enabled()}
+        return {"ok": True, "enabled": self.s.integrations.global_slsonline_enabled()}
 
     async def set_global_slsonline(self, enabled: bool) -> dict:
-        return _core.set_global_slsonline(enabled)
+        return self.s.integrations.set_global_slsonline(enabled)
 
     async def set_netsock_toggle(self, app_id: str, enabled: bool) -> dict:
-        return _core.set_netsock(app_id, enabled)
+        return await asyncio.to_thread(self.s.integrations.set_netsock, app_id, enabled)
 
     async def set_eos_toggle(self, app_id: str, enabled: bool) -> dict:
-        return _core.set_eos_proxy(app_id, enabled)
+        return await asyncio.to_thread(self.s.integrations.set_eos_proxy, app_id, enabled)
 
     async def set_eos_netsock(self, app_id: str, enabled: bool) -> dict:
-        eos = _core.set_eos_proxy(app_id, enabled) if enabled else {"ok": True}
-        net = _core.set_netsock(app_id, enabled)
+        eos = await asyncio.to_thread(self.s.integrations.set_eos_proxy, app_id, enabled) if enabled else {"ok": True}
+        net = await asyncio.to_thread(self.s.integrations.set_netsock, app_id, enabled)
         if not eos.get("ok"):
             return eos
         return net if not net.get("ok") else {"ok": True, "eos": True, "netsock": enabled}
 
     async def unregister_plugin_game(self, app_id: str) -> dict:
-        return {"ok": _core.unregister_plugin_game(app_id)}
+        return {"ok": self.s.library.unregister(app_id)}
+
+    # -- notifications -------------------------------------------------------
+    async def send_notification(self, title: str, body: str) -> dict:
+        try:
+            subprocess.run(["notify-send", title, body], timeout=2)
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
     async def get_notification_channel(self, gaming_ui: bool | None = None) -> dict:
-        mode = _core._get_setting("notification_mode", "auto")
+        mode = self.s.ctx.read_setting("notification_mode", "auto")
         if mode == "auto":
-            channel = "steam" if (gaming_ui or _core.os.environ.get("SteamGamepadUI")) else "desktop"
+            channel = "steam" if (gaming_ui or os.environ.get("SteamGamepadUI")) else "desktop"
         else:
             channel = mode
         return {"ok": True, "channel": channel}
-
-    async def check_for_updates(self) -> dict:
-        return _core.check_for_plugin_updates()
-
-    async def apply_update(self, download_url: str = "") -> dict:
-        return _core.apply_plugin_update(download_url)

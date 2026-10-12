@@ -111,8 +111,7 @@ def is_plugins_toggle_enabled(config_path: Path) -> bool:
         content = config_path.read_text(encoding="utf-8", errors="replace")
         match = re.search(r"^([ \t]*)Plugins[ \t]*:[ \t]*([^\r\n#]+)", content, re.MULTILINE | re.IGNORECASE)
         if match:
-            raw = match.group(2).strip().lower()
-            return raw in ("yes", "true", "1", "on")
+            return match.group(2).strip().lower() in ("yes", "true", "1", "on")
     except Exception as e:
         logger.debug("Failed reading Plugins toggle from %s: %s", config_path, e)
     return False
@@ -126,9 +125,12 @@ class GuardService:
 
     def check_sls_environment(self) -> dict:
         """Verify that SLSsteam is installed, configured, and ready for operations."""
+        from .sls_config import ensure_plugins_enabled
+
         core = self.core
-        home = core._user_home()
-        cfg = core._find_sls_config()
+        ctx = core.ctx
+        home = ctx.home
+        cfg = ctx.sls_config()
 
         if not cfg or not cfg.exists():
             return {
@@ -158,12 +160,14 @@ class GuardService:
                 "error": "SLSsteam.so was not found on your system. Please install SLSsteam.",
             }
 
-        # Check Plugins: yes toggle
+        # Check Plugins: yes toggle — attempt silent auto-enable
         plugins_on = is_plugins_toggle_enabled(cfg)
         if not plugins_on:
-            # Attempt to auto-enable it silently
             try:
-                core._ensure_plugins_enabled(cfg)
+                content = cfg.read_text(encoding="utf-8", errors="replace")
+                updated = ensure_plugins_enabled(content)
+                if updated != content:
+                    core.sls.write(updated)
                 plugins_on = is_plugins_toggle_enabled(cfg)
             except Exception as e:
                 logger.warning("Could not auto-enable Plugins toggle: %s", e)
@@ -184,9 +188,6 @@ class GuardService:
                 "error": "No Lua download plugin found in your SLSsteam plugins folder. Please add the required Lua plugin.",
             }
 
-        # Check Hubcap key
-        hubcap_key = core._detect_assella_canary_hubcap_key()
-
         return {
             "ok": True,
             "sls_active": sls_active,
@@ -194,41 +195,40 @@ class GuardService:
             "plugins_enabled": True,
             "plugin_dir": str(plugin_dir) if plugin_dir else "",
             "lua_plugins": lua_files,
-            "has_hubcap_key": bool(hubcap_key),
+            "has_hubcap_key": bool(ctx.hubcap_key.current()),
         }
 
     def is_app_added(self, app_id: str) -> bool:
         """Check if an AppID is already added to SLS / AT0M library."""
-        core = self.core
-        aid = core._sanitize_id(str(app_id))
+        from .sls_config import parse_key_section, parse_list_section, sanitize_id, section_bounds
+
+        ctx = self.core.ctx
+        aid = sanitize_id(str(app_id))
         if not aid:
             return False
 
-        # 1. Check ACCELA plugin_library.json
-        lib = core.load_plugin_library()
-        if aid in lib:
+        # 1. Check plugin_library.json
+        if aid in self.core.library.load():
             return True
 
         # 2. Check FakeAppIds
-        fakes = core.get_fake_app_ids().get("ids", [])
-        if aid in fakes:
+        if aid in self.core.integrations.list_fake_app_ids().get("ids", []):
             return True
 
-        # 3. Check SLS config.yaml sections directly
-        cfg = core._find_sls_config()
+        # 3. Check config.yaml sections directly
+        cfg = ctx.sls_config()
         if cfg and cfg.exists():
             try:
                 content = cfg.read_text(encoding="utf-8", errors="replace")
                 for sec in ("FakeAppIds", "AppId"):
-                    bounds = core._get_section_bounds(content, sec)
+                    bounds = section_bounds(content, sec)
                     if bounds:
                         sub = content[bounds[0]:bounds[1]]
                         if sec == "FakeAppIds":
-                            if aid in core._parse_key_section(sub):
+                            if aid in parse_key_section(sub, "FakeAppIds")[0]:
                                 return True
-                        else:
-                            if aid in core._parse_list_section(sub):
-                                return True
+                        elif aid in parse_list_section(sub, "AppId"):
+                            return True
             except Exception:
                 pass
 
@@ -236,37 +236,35 @@ class GuardService:
 
     def get_added_app_ids(self) -> list[str]:
         """Return a list of all registered AppIDs."""
-        core = self.core
+        from .sls_config import parse_key_section, parse_list_section, sanitize_id, section_bounds
+
+        ctx = self.core.ctx
         added = set()
 
-        # 1. From plugin library
-        lib = core.load_plugin_library()
-        for k in lib.keys():
-            aid = core._sanitize_id(str(k))
+        for key in self.core.library.load().keys():
+            aid = sanitize_id(str(key))
             if aid:
                 added.add(aid)
 
-        # 2. From FakeAppIds
-        for fid in core.get_fake_app_ids().get("ids", []):
-            aid = core._sanitize_id(str(fid))
+        for fid in self.core.integrations.list_fake_app_ids().get("ids", []):
+            aid = sanitize_id(str(fid))
             if aid:
                 added.add(aid)
 
-        # 3. From config.yaml AppId list
-        cfg = core._find_sls_config()
+        cfg = ctx.sls_config()
         if cfg and cfg.exists():
             try:
                 content = cfg.read_text(encoding="utf-8", errors="replace")
                 for sec in ("FakeAppIds", "AppId"):
-                    bounds = core._get_section_bounds(content, sec)
+                    bounds = section_bounds(content, sec)
                     if bounds:
                         sub = content[bounds[0]:bounds[1]]
-                        items = core._parse_key_section(sub) if sec == "FakeAppIds" else core._parse_list_section(sub)
+                        items = parse_key_section(sub, "FakeAppIds")[0] if sec == "FakeAppIds" else parse_list_section(sub, "AppId")
                         for item in items:
-                            aid = core._sanitize_id(str(item))
+                            aid = sanitize_id(str(item))
                             if aid:
                                 added.add(aid)
             except Exception:
                 pass
 
-        return sorted(list(added))
+        return sorted(added)

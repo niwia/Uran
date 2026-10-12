@@ -51,7 +51,7 @@ class StoreDebugger:
                 if store_tab:
                     result["message"] = "Steam Store page detected. Uran is trying the button injection; Valve's current page layout may affect placement."
                 else:
-                    result["message"] = "CEF debugging is available; open a Steam Store page to check its webview."
+                    result["message"] = "CEF debugging is available; open a Steam Store page to check your webview."
                 self._cache(result)
                 return {
                     **{key: value for key, value in result.items() if not key.startswith("_")},

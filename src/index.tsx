@@ -233,23 +233,87 @@ const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>
 const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; enabled: boolean }>(
   "set_global_slsonline",
 );
-const checkForUpdates = callable<
-  [],
-  {
-    ok: boolean;
-    current_version?: string;
-    latest_version?: string;
-    has_update?: boolean;
-    notes?: string;
-    download_url?: string;
-    published_at?: string;
-    error?: string;
+type UpdateInfo = {
+  ok: boolean;
+  current_version?: string;
+  latest_version?: string;
+  has_update?: boolean;
+  notes?: string;
+  published_at?: string;
+  error?: string;
+};
+const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
+const getPluginInfo = callable<[], { name: string; version: string }>("get_plugin_info");
+const checkAtomGameUpdates = callable<
+  [app_id: string],
+  { ok: boolean; status?: string; new_depots?: any[]; missing_count?: number; ready_count?: number; error?: string }
+>("check_atom_game_updates");
+const refetchManifests = callable<
+  [app_id: string],
+  { ok?: boolean; error?: string; updated?: boolean }
+>("refetch_manifests");
+const openExternalUrl = callable<
+  [url: string],
+  { ok?: boolean; error?: string }
+>("open_external_url");
+// -- Hubcap gateway ---------------------------------------------------------
+type GatewayMode = "auto" | "direct" | "proxy";
+type RouteState = "unknown" | "ok" | "blocked" | "failed";
+
+const HUBCAP_HOST = "hubcapmanifest.com";
+const GATEWAY_LABELS: Record<GatewayMode, string> = {
+  auto: "Automatic — try direct, fall back to the edge proxy if blocked",
+  direct: "Direct only — never use the proxy",
+  proxy: "Edge proxy only",
+};
+const GATEWAY_OPTIONS: { data: GatewayMode; label: string }[] = (
+  ["auto", "direct", "proxy"] as GatewayMode[]
+).map((data) => ({ data, label: GATEWAY_LABELS[data] }));
+
+type RouteStatus = {
+  mode?: GatewayMode;
+  direct: RouteState;
+  proxy: RouteState;
+  fallback_used?: boolean;
+  last_error?: string;
+};
+
+type RouteProbe = {
+  ok?: boolean;
+  mode?: GatewayMode;
+  routes?: {
+    direct?: { ok?: boolean; detail?: string; ms?: number };
+    proxy?: { ok?: boolean; detail?: string; ms?: number };
+  };
+};
+
+const getHubcapRoutes = callable<[], RouteStatus>("get_hubcap_routes");
+const testHubcapRoutes = callable<[], RouteProbe>("test_hubcap_routes");
+
+function routeLabel(state: RouteState): string {
+  switch (state) {
+    case "ok":
+      return "reachable";
+    case "blocked":
+      return "blocked";
+    case "failed":
+      return "unreachable";
+    default:
+      return "not checked";
   }
->("check_for_updates");
-const applyUpdate = callable<
-  [download_url: string],
-  { ok: boolean; message?: string; error?: string }
->("apply_update");
+}
+
+function routeTone(state: RouteState): string {
+  switch (state) {
+    case "ok":
+      return "#7ee2a8";
+    case "blocked":
+    case "failed":
+      return "#ff9a9a";
+    default:
+      return "#9aa4b2";
+  }
+}
 const getInjectStatus = callable<
   [app_id: string],
   {
@@ -270,7 +334,6 @@ const getInjectStatus = callable<
 // -- Search Tab ---------------------------------------------------------------
 const SearchTab: React.FC = () => {
   const [query, setQuery] = React.useState("");
-  const [searchByAppId, setSearchByAppId] = React.useState(false);
   const [results, setResults] = React.useState<SearchResult[]>([]);
   const [searching, setSearching] = React.useState(false);
   const [msg, setMsg] = React.useState("");
@@ -286,21 +349,25 @@ const SearchTab: React.FC = () => {
 
   React.useEffect(() => {
     loadRecent();
-    const t = setInterval(loadRecent, 5000);
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void loadRecent();
+    }, 5000);
     return () => clearInterval(t);
   }, []);
 
-  const doSearch = async () => {
-    const q = query.trim();
-    const minLen = searchByAppId ? 1 : 3;
-    if (q.length < minLen) {
-      setMsg(searchByAppId ? "Enter an App ID" : "Enter at least 3 characters");
-      return;
-    }
+  const searchSeq = React.useRef(0);
+
+  const runSearch = async (raw: string) => {
+    const q = raw.trim();
+    const isAppId = /^\d+$/.test(q);
+    const minLen = isAppId ? 1 : 3;
+    if (q.length < minLen) return;
+    const seq = ++searchSeq.current;
     setSearching(true);
     setMsg("");
     try {
-      const r = await searchGames(q, 20, searchByAppId);
+      const r = await searchGames(q, 20, isAppId);
+      if (seq !== searchSeq.current) return;
       if (r?.error) {
         setMsg(r.error);
         setResults([]);
@@ -314,17 +381,43 @@ const SearchTab: React.FC = () => {
         );
       }
     } catch (e: any) {
+      if (seq !== searchSeq.current) return;
       setMsg(`Search error: ${e}`);
       setResults([]);
+    } finally {
+      if (seq === searchSeq.current) setSearching(false);
     }
-    setSearching(false);
   };
 
-  const doInject = async (appId: string, title: string) => {
-    if (addedAppIds.has(appId)) {
-      const msg = `${title} is already registered in your library.`;
-      notify("Uran", msg);
-      setMsg(msg);
+  React.useEffect(() => {
+    const isAppId = /^\d+$/.test(query.trim());
+    const minLen = isAppId ? 1 : 3;
+    if (query.trim().length < minLen) {
+      setResults([]);
+      setMsg("");
+      setSearching(false);
+      return;
+    }
+    const t = setTimeout(() => void runSearch(query), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  const doInject = async (appId: string, title: string, force: boolean = false) => {
+    if (addedAppIds.has(appId) && !force) {
+      showModal(
+        <ConfirmModal
+          onOK={() => void doInject(appId, title, true)}
+          onCancel={() => {}}
+          bOKDisabled={false}
+          strTitle="Already in Library"
+          strDescription={`${title} (${appId}) is already registered in your library. Would you like to re-inject and refresh its manifests?`}
+          strOKButtonText="Re-inject"
+          strCancelButtonText="Cancel"
+        />,
+        undefined,
+        { bNeverPopOut: true },
+      );
       return;
     }
     pendingAppIds.add(appId);
@@ -332,18 +425,27 @@ const SearchTab: React.FC = () => {
     setMsg(`Adding ${title} to SLS...`);
     try {
       const r = await injectGame(appId);
-      if ((r as any)?.already_added) {
+      if ((r as any)?.already_added && !force) {
         pendingAppIds.delete(appId);
         addedAppIds.add(appId);
         bumpVersion();
-        const err = (r as any).error || `${title} is already registered in your library.`;
-        notify("Uran", err);
-        setMsg(err);
+        showModal(
+          <ConfirmModal
+            onOK={() => void doInject(appId, title, true)}
+            onCancel={() => {}}
+            bOKDisabled={false}
+            strTitle="Already in Library"
+            strDescription={`${title} (${appId}) is already registered in your library. Would you like to re-inject and refresh its manifests?`}
+            strOKButtonText="Re-inject"
+            strCancelButtonText="Cancel"
+          />,
+          undefined,
+          { bNeverPopOut: true },
+        );
         return;
       }
       if (r && !r.error) {
         const name = r.name ?? title;
-        const depots = r.depots?.length ?? 0;
         const toastMsg = `Added ${name} to SLS`;
         notify("Uran", toastMsg);
         setMsg(toastMsg);
@@ -385,33 +487,28 @@ const SearchTab: React.FC = () => {
     }
   };
 
+  const isAppIdInput = /^\d+$/.test(query.trim());
+
   return (
     <>
       <PanelSection title="Search Games">
         <PanelSectionRow>
           <TextField
-            label={searchByAppId ? "App ID (numeric)" : "Game Name"}
+            label="Game Name or App ID"
             value={query}
             onChange={(e: any) => setQuery(e.target.value)}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="Search by App ID"
-            description="Match exact game_id instead of name"
-            checked={searchByAppId}
-            onChange={setSearchByAppId}
+            onSubmit={() => void runSearch(query)}
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
             disabled={
-              searching || query.trim().length < (searchByAppId ? 1 : 3)
+              searching || query.trim().length < (isAppIdInput ? 1 : 3)
             }
-            onClick={doSearch}
+            onClick={() => void runSearch(query)}
           >
-            {searching ? "Searching..." : "Search"}
+            {searching ? "Searching..." : isAppIdInput ? "Search App ID" : "Search Games"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
@@ -467,14 +564,14 @@ const SearchTab: React.FC = () => {
                     <DialogButton
                       style={{
                         height: "28px",
-                        minWidth: "70px",
+                        minWidth: "75px",
                         padding: "0 10px",
                         fontSize: "12px",
                       }}
-                      disabled={isAdded || isPending}
+                      disabled={isPending}
                       onClick={() => doInject(item.app_id, item.title)}
                     >
-                      {isAdded ? "Added" : isPending ? "Adding..." : "Add"}
+                      {isAdded ? "In Library" : isPending ? "Adding..." : "Add"}
                     </DialogButton>
                   </div>
                 </div>
@@ -587,6 +684,13 @@ const AtomGamesTab: React.FC = () => {
   const [games, setGames] = React.useState<AtomGame[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [detail, setDetail] = React.useState<AtomDetail | null>(null);
+  const [updateStatus, setUpdateStatus] = React.useState<{
+    checking?: boolean;
+    status?: string;
+    new_depots?: any[];
+    ready_count?: number;
+    error?: string;
+  }>({});
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
 
@@ -608,6 +712,7 @@ const AtomGamesTab: React.FC = () => {
 
   const openGame = async (appId: string) => {
     setMsg("");
+    setUpdateStatus({});
     try {
       const d = await getAtomGame(appId);
       if (d?.ok) setDetail(d as AtomDetail);
@@ -907,6 +1012,82 @@ const AtomGamesTab: React.FC = () => {
           )}
         </PanelSection>
 
+        <PanelSection title="Hubcap Updates">
+          <PanelSectionRow>
+            <div style={{ width: "100%", fontSize: "12px", lineHeight: 1.6 }}>
+              {updateStatus.checking ? (
+                <div>Checking Hubcap for new depots &amp; keys…</div>
+              ) : updateStatus.status === "update_available" ? (
+                <div>
+                  <div style={{ color: "#7ee2a8", fontWeight: 600, marginBottom: "4px" }}>
+                    Update Available ({updateStatus.new_depots?.length || 0} new depots ready)
+                  </div>
+                  <div style={{ opacity: 0.8, marginBottom: "8px" }}>
+                    New depots or keys are ready on Hubcap for this game.
+                  </div>
+                  <ButtonItem
+                    layout="below"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      notify("Uran", `Fetching updates for ${detail.name}...`);
+                      try {
+                        const r = await refetchManifests(detail.app_id);
+                        if (r?.ok) {
+                          notify("Uran", `Updated ${detail.name}!`);
+                          setMsg(`Updated ${detail.name} with new depots and keys.`);
+                          setUpdateStatus({ status: "up_to_date" });
+                          await refreshDetail();
+                        } else {
+                          notify("Uran", `Update failed: ${r?.error || "Error"}`);
+                          setMsg(`Update failed: ${r?.error || "Error"}`);
+                        }
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Fetch &amp; Apply Updates
+                  </ButtonItem>
+                </div>
+              ) : updateStatus.status === "up_to_date" ? (
+                <div style={{ color: "#7ee2a8" }}>All depots and keys are up to date with Hubcap.</div>
+              ) : (
+                <div style={{ opacity: 0.75 }}>Check if newer depots or keys are ready in Hubcap.</div>
+              )}
+            </div>
+          </PanelSectionRow>
+          {!updateStatus.checking && updateStatus.status !== "update_available" && (
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={busy}
+                onClick={async () => {
+                  setUpdateStatus({ checking: true });
+                  try {
+                    const r = await checkAtomGameUpdates(detail.app_id);
+                    setUpdateStatus({
+                      checking: false,
+                      status: r?.status,
+                      new_depots: r?.new_depots,
+                      ready_count: r?.ready_count,
+                    });
+                    if (r?.status === "update_available") {
+                      notify("Uran", `Update available for ${detail.name}!`);
+                    } else if (r?.status === "up_to_date") {
+                      notify("Uran", `${detail.name} is up to date.`);
+                    }
+                  } catch (e: any) {
+                    setUpdateStatus({ checking: false, error: String(e) });
+                  }
+                }}
+              >
+                Check Hubcap Updates
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+
         <PanelSection>
           <PanelSectionRow>
             <ButtonItem
@@ -1069,24 +1250,19 @@ const SettingsTab: React.FC = () => {
   } | null>(null);
   const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
-  const [ispDoh, setIspDoh] = React.useState(false);
-  const [ispWirecutter, setIspWirecutter] = React.useState(false);
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
-  const [updating, setUpdating] = React.useState(false);
-  const [updateInfo, setUpdateInfo] = React.useState<{
-    ok: boolean;
-    current_version?: string;
-    latest_version?: string;
-    has_update?: boolean;
-    notes?: string;
-    download_url?: string;
-    published_at?: string;
-    error?: string;
-  } | null>(null);
+  const [gatewayMode, setGatewayMode] = React.useState<GatewayMode>("auto");
+  const [routeStatus, setRouteStatus] = React.useState<RouteStatus | null>(null);
+  const [testingRoutes, setTestingRoutes] = React.useState(false);
+  const [updateInfo, setUpdateInfo] = React.useState<UpdateInfo | null>(null);
   const [notificationMode, setNotificationModeState] = React.useState<
     "auto" | "steam" | "desktop" | "none"
   >("auto");
   const [msg, setMsg] = React.useState("");
+  const [pluginInfo, setPluginInfo] = React.useState<{ name: string; version: string }>({
+    name: "Uran",
+    version: "",
+  });
   const [stats, setStats] = React.useState<{
     ok: boolean;
     username?: string;
@@ -1096,6 +1272,17 @@ const SettingsTab: React.FC = () => {
     expires_at?: string;
     error?: string;
   }>({ ok: false });
+
+  // Version comes from the backend, which reads plugin.json — the single
+  // source of truth. Never hardcode it here.
+  React.useEffect(() => {
+    void getPluginInfo()
+      .then((info) => info && setPluginInfo(info))
+      .catch(() => {});
+    void checkForUpdates()
+      .then((res) => res?.ok && setUpdateInfo(res))
+      .catch(() => {});
+  }, []);
 
   // -- QR key capture --
   const [keyServer, setKeyServer] = React.useState<{
@@ -1120,16 +1307,17 @@ const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls, dohVal, wcVal] = await Promise.all([
-          getSetting("show_restart_button", false),
-          getSetting("manifestid_pinning", false),
-          getSetting("notification_mode", "auto"),
-          getSetting("steam_store_enabled", true),
-          getStoreDebugStatus(false),
-          isGlobalSlsOnlineEnabled(),
-          getSetting("isp_bypass_doh", false),
-          getSetting("isp_bypass_wirecutter", false),
-        ]);
+        const [srb, mip, nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
+          await Promise.all([
+            getSetting("show_restart_button", false),
+            getSetting("manifestid_pinning", false),
+            getSetting("notification_mode", "auto"),
+            getSetting("steam_store_enabled", true),
+            getStoreDebugStatus(false),
+            isGlobalSlsOnlineEnabled(),
+            getSetting("hubcap_gateway", "auto"),
+            getHubcapRoutes(),
+          ]);
         if (!alive) return;
         setShowRestartButton(!!srb);
         setManifestIdPinning(!!mip);
@@ -1137,8 +1325,10 @@ const SettingsTab: React.FC = () => {
         setStorePatchEnabled(storeEnabled !== false);
         setStoreStatus(initialStoreStatus);
         setGlobalSlsOnlineState(!!gSls?.enabled);
-        setIspDoh(!!dohVal);
-        setIspWirecutter(!!wcVal);
+        setGatewayMode(
+          gw === "direct" || gw === "proxy" ? (gw as GatewayMode) : "auto",
+        );
+        setRouteStatus(routes ?? null);
         if (nm) setNotificationModeState(nm);
       } catch {}
       loadStats();
@@ -1366,28 +1556,98 @@ const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="ISP Bypass">
+      <PanelSection title="Hubcap Connection">
         <PanelSectionRow>
-          <ToggleField
-            label="DNS-over-HTTPS (DoH)"
-            description="Resolve Hubcap API via Cloudflare/Google over HTTPS to bypass local DNS blocks."
-            checked={ispDoh}
-            onChange={(v) => {
-              setIspDoh(v);
-              setSetting("isp_bypass_doh", v);
+          <DropdownItem
+            label="Route"
+            description={
+              GATEWAY_LABELS[gatewayMode] ??
+              "Automatic (try direct, fall back to the edge proxy if blocked)"
+            }
+            rgOptions={GATEWAY_OPTIONS}
+            selectedOption={gatewayMode}
+            onChange={(opt: any) => {
+              const next = opt?.data ?? opt;
+              setGatewayMode(next);
+              setSetting("hubcap_gateway", next);
+              notify("Uran", `Hubcap route: ${GATEWAY_LABELS[next] ?? next}`);
             }}
           />
         </PanelSectionRow>
+
         <PanelSectionRow>
-          <ToggleField
-            label="Wirecutter Edge Proxy"
-            description="Route Hubcap API requests through Cloudflare Worker proxy to bypass ISP SNI/IP blocks."
-            checked={ispWirecutter}
-            onChange={(v) => {
-              setIspWirecutter(v);
-              setSetting("isp_bypass_wirecutter", v);
+          <div
+            style={{ fontSize: "12px", opacity: 0.85, lineHeight: 1.6, width: "100%" }}
+          >
+            <div style={{ marginBottom: "6px", fontWeight: 600 }}>Route status</div>
+            {routeStatus ? (
+              <>
+                <div style={{ color: routeTone(routeStatus.direct) }}>
+                  &bull; Direct ({HUBCAP_HOST}): {routeLabel(routeStatus.direct)}
+                </div>
+                <div style={{ color: routeTone(routeStatus.proxy) }}>
+                  &bull; Edge proxy: {routeLabel(routeStatus.proxy)}
+                </div>
+                {routeStatus.fallback_used && (
+                  <div style={{ color: "#f0c674", marginTop: "2px" }}>
+                    The edge proxy is in use because the direct route is blocked.
+                  </div>
+                )}
+                {routeStatus.last_error && (
+                  <div
+                    style={{
+                      marginTop: "4px",
+                      opacity: 0.7,
+                      fontSize: "11px",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    Last detail: {routeStatus.last_error}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ opacity: 0.6 }}>Not checked yet.</div>
+            )}
+          </div>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={testingRoutes}
+            onClick={async () => {
+              setTestingRoutes(true);
+              const r = await testHubcapRoutes();
+              setTestingRoutes(false);
+              if (!r) {
+                notify("Uran", "Could not test the routes.");
+                return;
+              }
+              const direct = r.routes?.direct?.ok;
+              const proxy = r.routes?.proxy?.ok;
+              setRouteStatus({
+                direct: direct ? "ok" : "blocked",
+                proxy: proxy ? "ok" : "failed",
+                fallback_used: false,
+                last_error: `direct: ${r.routes?.direct?.detail ?? "?"} · proxy: ${
+                  r.routes?.proxy?.detail ?? "?"
+                }`,
+              });
+              notify(
+                "Uran",
+                direct && proxy
+                  ? "Both routes reachable."
+                  : direct
+                    ? "Direct works; the edge proxy is unreachable."
+                    : proxy
+                      ? "Direct is blocked; the edge proxy works."
+                      : "Neither route is reachable.",
+              );
             }}
-          />
+          >
+            {testingRoutes ? "Testing…" : "Test Connection"}
+          </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
@@ -1444,7 +1704,7 @@ const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Updates">
+      <PanelSection>
         <PanelSectionRow>
           <div
             style={{
@@ -1453,89 +1713,30 @@ const SettingsTab: React.FC = () => {
               alignItems: "center",
               width: "100%",
               fontSize: "12px",
+              padding: "4px 0",
             }}
           >
-            <span style={{ opacity: 0.7 }}>Installed version:</span>
-            <span style={{ fontWeight: 600 }}>v0.2.3</span>
-          </div>
-        </PanelSectionRow>
-
-        {updateInfo?.has_update && (
-          <PanelSectionRow>
-            <div
-              style={{
-                background: "rgba(126, 226, 168, 0.12)",
-                border: "1px solid rgba(126, 226, 168, 0.35)",
-                borderRadius: "8px",
-                padding: "10px",
-                width: "100%",
-                boxSizing: "border-box",
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px",
-              }}
-            >
-              <div style={{ color: "#7ee2a8", fontWeight: "bold", fontSize: "12px" }}>
-                Update Available: v{updateInfo.latest_version}
-              </div>
-              {updateInfo.notes && (
-                <div
-                  style={{
-                    fontSize: "11px",
-                    opacity: 0.85,
-                    maxHeight: "80px",
-                    overflowY: "auto",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {updateInfo.notes}
-                </div>
-              )}
-              <ButtonItem
-                layout="inline"
-                disabled={updating}
-                onClick={async () => {
-                  setUpdating(true);
-                  notify("Uran", "Downloading update package...");
-                  const res = await applyUpdate(updateInfo.download_url || "");
-                  setUpdating(false);
-                  if (res?.ok) {
-                    notify("Uran", "Uran updated! Please reload plugin.");
-                    setUpdateInfo((u) => (u ? { ...u, has_update: false } : null));
-                  } else {
-                    notify("Uran", `Update failed: ${res?.error || "Error"}`);
-                  }
+            <span style={{ opacity: 0.65 }}>
+              Uran v{pluginInfo.version || "0.3.1"}
+            </span>
+            {updateInfo?.has_update && (
+              <Focusable
+                style={{
+                  color: "#7ee2a8",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  const url = updateInfo.release_url;
+                  if (url) void openExternalUrl(url);
                 }}
               >
-                {updating ? "Updating…" : `Install v${updateInfo.latest_version}`}
-              </ButtonItem>
-            </div>
-          </PanelSectionRow>
-        )}
-
-        <PanelSectionRow>
-          <ButtonItem
-            layout="inline"
-            disabled={checkingUpdate || updating}
-            onClick={async () => {
-              setCheckingUpdate(true);
-              notify("Uran", "Checking GitHub for updates…");
-              const res = await checkForUpdates();
-              setCheckingUpdate(false);
-              if (res?.ok) {
-                setUpdateInfo(res);
-                if (res.has_update) {
-                  notify("Uran", `Update available: v${res.latest_version}`);
-                } else {
-                  notify("Uran", `Uran is up to date (v${res.current_version})`);
-                }
-              } else {
-                notify("Uran", `Update check failed: ${res?.error || "Network error"}`);
-              }
-            }}
-          >
-            {checkingUpdate ? "Checking…" : "Check for Updates"}
-          </ButtonItem>
+                v{updateInfo.latest_version} update available
+              </Focusable>
+            )}
+          </div>
         </PanelSectionRow>
       </PanelSection>
 
