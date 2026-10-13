@@ -34,7 +34,8 @@ class Services:
     """Everything the RPC surface needs, wired once at startup."""
 
     def __init__(self, ctx, sls, steam, library, manifests, integrations,
-                 injector, guards, keycare, store_debugger, atom, uninstaller):
+                 injector, guards, keycare, store_debugger, atom, uninstaller,
+                 health=None):
         self.ctx = ctx
         self.sls = sls
         self.steam = steam
@@ -47,6 +48,7 @@ class Services:
         self.store_debugger = store_debugger
         self.atom = atom
         self.uninstaller = uninstaller
+        self.health = health
 
 
 class Plugin:
@@ -257,9 +259,15 @@ class Plugin:
 
     async def preview_atom_uninstall(self, app_id: str) -> dict:
         return await asyncio.to_thread(self.s.uninstaller.preview, app_id)
-
     async def uninstall_atom_game(self, app_id: str) -> dict:
         return await asyncio.to_thread(self.s.uninstaller.uninstall, app_id)
+
+    # -- health (read-only) --------------------------------------------------
+    async def get_health_status(self) -> dict:
+        return await asyncio.to_thread(self.s.health.status)
+
+    async def check_config_status(self, online: bool = True) -> dict:
+        return await asyncio.to_thread(self.s.health.check_config, online)
 
     async def set_slsonline(self, app_id: str, enabled: bool, fake_appid: str = "480") -> dict:
         if self.s.integrations.global_slsonline_enabled():

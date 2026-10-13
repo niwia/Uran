@@ -5,6 +5,7 @@ import logging
 from .atom import AtomLibrary
 from .context import build_context
 from .guards import GuardService
+from .health import Health
 from .http import HAS_REQUESTS, requests
 from .inject import Injector
 from .integrations import Integrations
@@ -63,6 +64,7 @@ def build(decky_module=None):
     store_debugger = StoreDebugger(requests, logger)
     atom = AtomLibrary(ctx, sls, steam, library, manifests, integrations)
     uninstaller = AtomUninstallService(ctx, sls, steam, library, integrations, guards)
+    health = Health(ctx, sls)
 
     from .plugin_api import Services
 
@@ -80,4 +82,5 @@ def build(decky_module=None):
         store_debugger=store_debugger,
         atom=atom,
         uninstaller=uninstaller,
+        health=health,
     )
