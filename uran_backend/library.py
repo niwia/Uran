@@ -96,11 +96,15 @@ class PluginLibrary:
         installdir: str = "",
         depot_names: dict | None = None,
         dlc_appids: list | None = None,
+        enabled_dlc_appids: list | None = None,
     ) -> bool:
         """Register a game in the AT0-M library.
 
         Schema is taken verbatim from ASSella's register_plugin_game so ASSella
         treats games injected here identically to games it injected itself.
+        ``enabled_dlc_appids`` records the DLC layers a base-game install has
+        switched on (distinct from ``dlc_appids``, ASSella's DLC-only mode); a
+        later uninstall removes both sets.
         """
         appid_str = str(appid).strip()
         if not appid_str.isdigit() or appid_str in ("0", "N/A", "unknown"):
@@ -108,11 +112,15 @@ class PluginLibrary:
             return False
 
         clean_dlc = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
+        clean_enabled = sorted({
+            str(d).strip() for d in (enabled_dlc_appids or []) if str(d).strip().isdigit()
+        })
         clean_depots = [
             str(d).strip() for d in (depot_ids or [])
             if str(d).strip().isdigit()
             and str(d).strip() != appid_str
             and str(d).strip() not in clean_dlc
+            and str(d).strip() not in clean_enabled
         ]
 
         clean_keys = {
@@ -147,6 +155,7 @@ class PluginLibrary:
             "depot_names": clean_names,
             "dlc_only": bool(clean_dlc),
             "dlc_appids": clean_dlc,
+            "enabled_dlc_appids": clean_enabled,
             "updated_at": int(time.time()),
             "source": "plugin_native",
         }
@@ -174,6 +183,7 @@ class PluginLibrary:
             return False
 
         dlc_appids = {str(d) for d in (record.get("dlc_appids") or [])}
+        dlc_appids |= {str(d) for d in (record.get("enabled_dlc_appids") or [])}
         target_depots = {str(d) for d in (record.get("depots") or [])}
         target_keys = {str(d) for d in (record.get("keys") or {})}
         target_keys.add(appid_str)  # the root AppKey lives under the AppID
@@ -385,6 +395,76 @@ class PluginLibrary:
         except Exception as exc:  # noqa: BLE001
             logger.debug("DLC depot lookup failed for %s: %s", app_id, exc)
             return set()
+
+    def app_to_depots(
+        self,
+        app_id: str,
+        record: dict | None = None,
+        depot_dlc: dict | None = None,
+    ) -> dict[str, set[str]]:
+        """Attribute every depot this machine knows for a game to its owner.
+
+        Returns ``{owner: {depot_ids}}`` where ``owner`` is ``"base"`` for the
+        base game or a DLC AppID. This is what lets the UI toggle whole apps
+        instead of individual depots: turning a DLC off removes exactly the
+        depots that DLC owns.
+
+        Sources, in priority order:
+          1. SteamCMD's per-depot ``dlcappid`` (passed in as ``depot_dlc``) —
+             authoritative and dependency-free.
+          2. The ``[DLC NNN]`` prefix ASSella writes into some enrichment names.
+          3. A DLC whose AppID doubles as its depot ID.
+        Anything unattributable is treated as base-game content: mounting a
+        surplus keyed depot is harmless, hiding a needed one is not.
+        """
+        aid = sanitize_id(app_id)
+        if not aid:
+            return {}
+        if record is None:
+            record = self.load().get(aid) or {}
+        enrich = self.depot_enrichments(aid)
+
+        dlc_ids: set[str] = {str(d) for d in (record.get("dlc_appids") or [])}
+        dlc_ids |= {str(d) for d in (record.get("enabled_dlc_appids") or [])}
+        dlc_ids |= {d for d, info in enrich.items() if info.get("is_dlc")}
+        dlc_ids.discard(aid)
+
+        owners: dict[str, set[str]] = {"base": set()}
+        placed: set[str] = set()
+
+        def place(owner: str, did) -> None:
+            clean = sanitize_id(did)
+            if not clean or clean == aid or clean in SHARED_REDISTS or clean in placed:
+                return
+            placed.add(clean)
+            owners.setdefault(str(owner), set()).add(clean)
+
+        # 1. Authoritative: SteamCMD's per-depot dlcappid.
+        for did, dlc in (depot_dlc or {}).items():
+            clean = sanitize_id(dlc)
+            if clean and clean != aid:
+                place(clean, did)
+
+        # 2. ASSella tags DLC depots in the enrichment name as "[DLC NNN]".
+        for did, info in enrich.items():
+            match = re.search(r"\[DLC\s*(\d+)\]", info.get("name") or "", re.IGNORECASE)
+            if match:
+                place(match.group(1), did)
+
+        # 3. A DLC-owner depot is sometimes stored under the DLC's own AppID.
+        for dlc in dlc_ids:
+            place(dlc, dlc)
+
+        # Everything else we know about is base-game content.
+        known = {str(d) for d in (record.get("depots") or [])}
+        known |= {str(k) for k in (record.get("keys") or {}).keys()}
+        known |= set(enrich)
+        known |= {str(d) for d in (depot_dlc or {})}
+        known |= {str(d) for d in self.local_depot_keys(aid)}
+        for did in known:
+            place("base", did)
+
+        return {owner: ids for owner, ids in owners.items() if ids}
 
     # -- ASSella's update-check cache ----------------------------------------
     #

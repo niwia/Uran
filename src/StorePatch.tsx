@@ -22,7 +22,6 @@ const POLL_MS = 2000;
 const BUTTON_COLOR_BG = "#a1cd44";
 const BUTTON_COLOR_TEXT = "#beee11";
 const ASSELLA_TAG = "ASSELLA:";
-const RESTART_TAG = "RESTART:";
 
 
 // -- State --------------------------------------------------------------------
@@ -62,7 +61,6 @@ const getSetting = callable<[key: string, defaultValue: any], any>(
   "get_setting",
 );
 const injectGame = callable<[app_id: string], InjectResult & { already_added?: boolean }>("inject_game");
-const restartSteam = callable<[], void>("restart_steam");
 const discoverStoreTab = callable<[], StoreTab | null>("discover_store_tab");
 const isAppAdded = callable<[app_id: string], boolean>("is_app_added");
 const getAddedAppIds = callable<[], string[]>("get_added_app_ids");
@@ -139,11 +137,10 @@ function buildInjectScript(): string {
       var BG = ${JSON.stringify(BUTTON_COLOR_BG)};
       var FG = ${JSON.stringify(BUTTON_COLOR_TEXT)};
       var ASSELLA_TAG = ${JSON.stringify(ASSELLA_TAG)};
-      var RESTART_TAG = ${JSON.stringify(RESTART_TAG)};
 
       function getState() {
         if (!window.__assellaStoreState) {
-          window.__assellaStoreState = { appId: '', label: 'ADD TO URAN', locked: false, showRestart: false };
+          window.__assellaStoreState = { appId: '', label: 'ADD TO URAN', locked: false };
         }
         return window.__assellaStoreState;
       }
@@ -154,8 +151,8 @@ function buildInjectScript(): string {
         b.textContent = text;
         b.setAttribute('data-assella-action', tag);
         b.tabIndex = 0;
-        var bg = customBg || (tag === RESTART_TAG ? '#3a3a4c' : BG);
-        var fg = customFg || (tag === RESTART_TAG ? '#ffffff' : FG);
+        var bg = customBg || BG;
+        var fg = customFg || FG;
         b.style.cssText =
           (isWishlistStyle ? 'width:100%;' : '') +
           'height:36px;' +
@@ -230,13 +227,6 @@ function buildInjectScript(): string {
           mainBtn.disabled = !!S.locked;
         }
 
-        var restart = existing.querySelector('button[data-assella-action="' + RESTART_TAG + '"]');
-        if (S.showRestart && !restart) {
-          var isWish = existing.classList.contains('Panel');
-          existing.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, isWish, '#3a3a4c', '#ffffff'));
-        } else if (!S.showRestart && restart) {
-          restart.remove();
-        }
         return true;
       }
 
@@ -253,9 +243,6 @@ function buildInjectScript(): string {
           w.style.cssText = 'display:inline-flex; align-items:center; gap:6px; margin-right:6px;';
         }
         w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, isWishlistStyle));
-        if (S.showRestart) {
-          w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, isWishlistStyle, '#3a3a4c', '#ffffff'));
-        }
         return w;
       }
 
@@ -311,9 +298,6 @@ function buildInjectScript(): string {
           btn.style.alignItems = 'center';
           btn.style.fontSize = '12px';
           w.appendChild(btn);
-          if (S.showRestart) {
-            w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, false, '#3a3a4c', '#ffffff'));
-          }
           if (colItem.nextSibling) {
             colContainer.insertBefore(w, colItem.nextSibling);
           } else {
@@ -410,9 +394,6 @@ function buildInjectScript(): string {
         w.setAttribute('data-assella-appid', S.appId);
         w.style.cssText = 'padding:14px; margin:12px 0; background:rgba(0,0,0,0.35); border-radius:6px; display:flex; gap:8px; align-items:center;';
         w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false));
-        if (S.showRestart) {
-          w.appendChild(makeButton('RESTART STEAM', RESTART_TAG, 'RESTARTING...', false, false, '#3a3a4c', '#ffffff'));
-        }
         host.prepend(w);
         log('fallback banner injected for ' + S.appId);
         return true;
@@ -485,12 +466,6 @@ async function inject(
     } catch {}
   }
 
-  let showRestart = false;
-  try {
-    const s = await getSetting("show_restart_button", false);
-    showRestart = s === true;
-  } catch {}
-
   const isAdded = addedAppIds.has(appId);
   const isPending = !isAdded && pendingAppIds.has(appId);
   const label =
@@ -507,8 +482,6 @@ async function inject(
     JSON.stringify(label) +
     ";S.locked=" +
     JSON.stringify(locked) +
-    ";S.showRestart=" +
-    JSON.stringify(showRestart) +
     ";}catch(e){}})();";
   wsSend({
     id: messageId++,
@@ -639,8 +612,6 @@ async function connect(tab: StoreTab): Promise<void> {
                   notify("Uran", `Failed to add game ${appId}: ${e}`);
                   inject(appId, true);
                 });
-            } else if (arg.value.startsWith(RESTART_TAG)) {
-              restartSteam();
             }
           }
         }

@@ -66,12 +66,14 @@ export type AtomDepotInfo = {
   is_dlc: boolean;
   is_shared: boolean;
   os: string;
+  owner?: string;
 };
 
 export type AtomDlcInfo = {
   id: string;
   name: string;
   in_config: boolean;
+  depot_count?: number;
 };
 
 export type AtomDetail = AtomGame & {
@@ -297,6 +299,10 @@ export const toggleAdditionalApp = callable<
   [app_id: string, dlc_appid: string, enable: boolean],
   { ok: boolean; error?: string; dlc_id?: string; enabled?: boolean }
 >("toggle_additional_app");
+export const refreshGame = callable<
+  [app_id: string],
+  { ok: boolean; error?: string; depots_added?: string[]; keys_added?: string[] }
+>("refresh_game");
 export const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>(
   "is_global_slsonline_enabled",
 );

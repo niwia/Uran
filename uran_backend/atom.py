@@ -79,11 +79,16 @@ class AtomLibrary:
         return games
 
     def inspect(self, aid: str, record: dict) -> tuple[list[dict], list[dict], bool]:
-        """Cross-reference a game's depots and DLCs against the live config."""
+        """Cross-reference a game's depots and DLCs against the live config.
+
+        The DLC list is the union of every attribution source we have, so a DLC
+        that owns depots still shows up even when Steam's own ``dlc`` list omits
+        it. Each DLC carries ``depot_count`` so the UI can show what toggling it
+        will add or remove.
+        """
         record_depots = {str(d) for d in record.get("depots", [])}
         record_keys = {str(d): str(k) for d, k in (record.get("keys", {}) or {}).items()}
         record_names = {str(d): str(n) for d, n in (record.get("depot_names", {}) or {}).items()}
-        record_dlcs = [str(d) for d in record.get("dlc_appids", [])]
 
         enrichments = self.library.depot_enrichments(aid)
         for did, key in self.library.local_depot_keys(aid).items():
@@ -102,25 +107,44 @@ class AtomLibrary:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("SLS config parse error: %s", exc)
 
-        if not record_dlcs:
-            try:
-                record_dlcs = [str(d) for d in self.steam.app_details(aid).get("dlc", [])]
-            except Exception:  # noqa: BLE001
-                pass
-        for did, info in enrichments.items():
-            if info.get("is_dlc") and did not in record_dlcs:
-                record_dlcs.append(did)
+        try:
+            details = self.steam.app_details(aid) or {}
+        except Exception:  # noqa: BLE001
+            details = {}
+        steam_depots = {str(d) for d in (details.get("depots") or []) if str(d).isdigit()}
+        depot_dlc = {str(k): str(v) for k, v in (details.get("depot_dlc") or {}).items()}
+
+        # Same attribution the projection uses: depot id -> owning appid.
+        owner_map = self.library.app_to_depots(aid, record=record, depot_dlc=depot_dlc)
+        owner_of: dict[str, str] = {}
+        for owner, ids in owner_map.items():
+            for did in ids:
+                owner_of[str(did)] = "" if owner == "base" else str(owner)
+
+        # DLC universe: attribution + Steam's list + record + enrichment flag.
+        dlc_ids = set(owner_map) - {"base"}
+        dlc_ids |= {str(d) for d in (details.get("dlc") or []) if str(d).isdigit()}
+        dlc_ids |= {str(d) for d in (record.get("dlc_appids") or []) if str(d).isdigit()}
+        dlc_ids |= {str(d) for d in (record.get("enabled_dlc_appids") or []) if str(d).isdigit()}
+        dlc_ids |= {str(d) for d in depot_dlc.values() if str(d).isdigit()}
+        dlc_ids |= {d for d, info in enrichments.items() if info.get("is_dlc")}
+        dlc_ids.discard(aid)
 
         dlcs_list: list[dict] = []
-        for did in sorted(set(record_dlcs), key=lambda x: int(x) if x.isdigit() else 0):
+        for did in sorted(dlc_ids, key=lambda x: int(x) if x.isdigit() else 0):
             raw_name = enrichments.get(did, {}).get("name") or record_names.get(did) or f"DLC {did}"
+            owned = owner_map.get(did) or set()
             dlcs_list.append({
                 "id": did,
                 "name": re.sub(r"^\[DLC\s*\d+\]\s*", "", raw_name),
                 "in_config": did in live_apps,
+                "depot_count": len(owned),
             })
 
-        all_depots = (record_depots | set(enrichments.keys()) | set(record_keys.keys())) - {aid}
+        all_depots = (record_depots | set(enrichments) | set(record_keys) | steam_depots) - {aid}
+        for ids in owner_map.values():
+            all_depots |= ids
+        all_depots = {d for d in all_depots if d not in dlc_ids}
         depots_list: list[dict] = []
         for did in sorted(all_depots, key=lambda x: int(x) if x.isdigit() else 0):
             enrich = enrichments.get(did, {})
@@ -138,6 +162,7 @@ class AtomLibrary:
                 "is_dlc": enrich.get("is_dlc", False) or "[dlc" in dname.lower(),
                 "is_shared": did in SHARED_REDISTS,
                 "os": enrich.get("oslist", ""),
+                "owner": owner_of.get(did, ""),
             })
 
         dlcs_injected = bool(dlcs_list and all(d["in_config"] for d in dlcs_list))

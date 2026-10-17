@@ -21,6 +21,8 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 
 ### AT0-M Library Manager
 - **Game List**: Every game registered in AT0-M mode, with install state and size. Click a game to open its page.
+- **Per-game AppIDs**: the base game is always included; toggle each DLC to add or remove the depots and keys it owns. Toggling one off removes exactly what toggling it on added — no leftover entries.
+- **Refresh Keys & Depots**: re-checks Hubcap and rewrites the game's depots and keys in one pass, so a key that arrives after the game was added gets the depot it mounts (a plain manifest update only writes the key).
 - **Per-game integrations**:
   - **SLSonline** — maps the game to Spacewar (480) via `FakeAppIds`.
   - **NetSock** — Steam Networking Sockets patch via `LaunchOptions` (`env LD_AUDIT=…`).
@@ -45,9 +47,8 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 - **Depotcache pre-seeding**: extracts `.manifest` files into Steam's `depotcache/`.
 - **Manifest pinning**: optional `ManifestIds` pins in `config.yaml`.
 
-### Library Menus & Backups
+### Library Menus
 - **Game context menu hooks** in Steam's "Manage" submenu: Add/Remove FakeAppId (480), Fetch DLCs, Fetch/Update Manifest, Remove Pinned Manifests, Why not downloading?
-- **Config backups**: automatic timestamped backup before every write, with one-click restore.
 
 ---
 
@@ -65,7 +66,6 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 1. **Search** — search games, inject into SLSsteam, view recent injects.
 2. **AT0-M** — manage your AT0-M library: per-game integrations and uninstall.
 3. **Settings** — Hubcap key, Steam Store status and logs, manifest pinning, and notifications.
-4. **Backups** — browse and restore `config.yaml` snapshots.
 
 ---
 
@@ -124,7 +124,7 @@ and receives its collaborators explicitly:
 | `paths.py` | SLSsteam / Steam / ACCELA path discovery and shared INI edits |
 | `settings.py` | Plugin settings and the shared Hubcap key |
 | `hubcap.py` | Hubcap API client and the blocked-route proxy fallback |
-| `sls_config.py` | Comment- and inode-preserving YAML engine, plus backups |
+| `sls_config.py` | Comment- and inode-preserving YAML engine |
 | `library.py` | `plugin_library.json` registry and the local depot key cache |
 | `manifests.py` | Hubcap bundle download, depotcache seeding, manifest pins |
 | `manifest_lua.py` | Comment-aware parsing of Hubcap's Lua |

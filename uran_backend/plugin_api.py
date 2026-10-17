@@ -112,13 +112,6 @@ class Plugin:
                 continue
         return {"ok": False, "error": "Clipboard unavailable"}
 
-    async def restart_steam(self) -> None:
-        """Close Steam so SLSsteam picks up the new config on next launch."""
-        try:
-            subprocess.run(["pkill", "-TERM", "steam"], timeout=5)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Stop steam error: %s", exc)
-
     # -- settings ------------------------------------------------------------
     async def get_setting(self, key: str, default=None):
         return self.s.ctx.read_setting(key, default)
@@ -157,6 +150,14 @@ class Plugin:
 
     async def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
         return await asyncio.to_thread(self.s.injector.toggle_additional_app, app_id, dlc_appid, enable)
+
+    async def refresh_game(self, app_id: str) -> dict:
+        """Re-project a game's config from the freshest keys/depots.
+
+        The base game stays on and enabled DLCs are preserved; this is how a
+        freshly fetched base-game key gets its depot mounted.
+        """
+        return await asyncio.to_thread(self.s.injector.refresh, app_id)
 
     # -- backups -------------------------------------------------------------
     async def list_backups(self) -> list[dict]:

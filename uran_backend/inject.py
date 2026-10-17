@@ -52,67 +52,85 @@ class Injector:
         self.manifests = manifests
         self.guards = guards
 
-    # -- config rewrite -------------------------------------------------------
-    def _inject_config(
+    # -- config projection ----------------------------------------------------
+    @staticmethod
+    def _owned(comment: str, aid: str) -> bool:
+        """True when a config comment marks an entry as ours for this game.
+
+        Both shapes count: the per-depot projection tag ``(app_id)`` and the
+        legacy DLC-toggle marker ``uran:dlc:app_id``.
+        """
+        c = comment or ""
+        return f"({aid})" in c or f"uran:dlc:{aid}" in c
+
+    def _depot_keys_for(self, app_id: str, record: dict, use_hubcap: bool) -> tuple[dict, dict, dict]:
+        """Harvest every depot key we can for a game, plus its depot->owner map.
+
+        Returns ``(depot_keys, owner_map, details)``. Keys come from the library
+        record, config.yaml (scoped to this game), the local SQLite cache and,
+        when ``use_hubcap`` is set, a fresh Hubcap bundle fetched WITHOUT writing
+        config — the caller writes everything in one atomic pass.
+        """
+        details = self.steam.app_details(app_id)
+        if not isinstance(details, dict):
+            details = {}
+        owner_map = self.library.app_to_depots(
+            app_id, record=record, depot_dlc=details.get("depot_dlc") or {}
+        )
+
+        depot_keys: dict[str, str] = {
+            str(d): str(k) for d, k in (record.get("keys") or {}).items()
+        }
+        depot_keys = self._merge_existing_keys(
+            app_id, depot_keys, set(owner_map.get("base", ()))
+        )
+        for did, key in self.library.local_depot_keys(app_id).items():
+            depot_keys.setdefault(str(did), str(key))
+
+        if use_hubcap:
+            res = self.manifests.fetch(app_id, persist_config=False)
+            if res.get("ok"):
+                depot_keys.update(res.get("depot_keys", {}))
+                if res.get("game_name"):
+                    details.setdefault("name", res["game_name"])
+        return depot_keys, owner_map, details
+
+    def _project_config(
         self,
         app_id: str,
         name: str,
         depot_keys: dict,
-        manifest_ids: dict | None = None,
-        dlc_appids: set | None = None,
+        owner_map: dict,
+        enabled_dlc_ids,
         candidate_depots: set | None = None,
+        manifest_ids: dict | None = None,
     ) -> dict:
-        """Inject one game into config.yaml in a SINGLE atomic pass.
+        """Write config.yaml as the projection of the base game + enabled DLCs.
 
-        Mirrors ASSella's `_patch_config` (NativeSteamDownloadTask) semantics:
+        This is the ASSella model: the config is a *projection* of what the user
+        selected, rewritten whole each time, so turning a DLC off removes
+        exactly what turning it on added. One atomic pass:
 
-          1. Plugins: yes              (required by the library-inject loader)
-          2. AdditionalApps:           `  - {appid} # {game_name}`
-          3. AdditionalDepots:         `  - {depot} # {game} [{desc}] ({appid})`, rebuilt
-                                       sorted, ONLY depots that have keys (or are
-                                       shared redists). Never an AppID.
-          4. DecryptionKeys:           `  {depot}: {key} # ...`, rebuilt sorted. The root
-                                       AppKey IS allowed here and is tagged `[AppKey]`.
-          5. SmartTickets: 0x1
+          1. Plugins: yes
+          2. AdditionalApps:   base AppID + every ENABLED DLC AppID; our own
+                               now-disabled DLC entries are removed.
+          3. AdditionalDepots: base + enabled-DLC depots that have a key (or are
+                               shared redists). Never an AppID; never a depot
+                               owned by a disabled DLC.
+          4. DecryptionKeys:   keys for exactly those depots + the root AppKey.
+          5. SmartTickets: 0x1 (+ optional ManifestIds pins).
 
-        Only depots that actually have a decryption key are registered: Steam
-        fails the download with DepotWithoutKey otherwise. DLC AppIDs are
-        excluded from AdditionalDepots/DecryptionKeys so they don't clobber the
-        parent game's data.
+        Ownership rides in the comment as ``{game} ... ({app_id})`` so a later
+        projection or uninstall can rewrite or remove exactly our lines.
         """
-        app_id = sanitize_id(app_id)
-        if not app_id:
+        aid = sanitize_id(app_id)
+        if not aid:
             return {"ok": False, "error": "Invalid AppID"}
 
         cfg = self.ctx.sls_config()
         if cfg is None:
             return {"ok": False, "error": "SLSsteam config not found"}
 
-        # Guard: refuse to register a game with no usable keys. Without an
-        # AppKey Steam cannot download the game at all, and depots without keys
-        # abort with DepotWithoutKey — a half-registered game is worse than none.
-        if not depot_keys:
-            return {
-                "ok": False,
-                "error": "No depot decryption keys available for this game — cannot register it.",
-                "reason": "no_keys",
-            }
-
-        game_name = sanitize_comment(name) or f"App {app_id}"
-        dlc_appids = {d for d in (sanitize_id(x) for x in (dlc_appids or ())) if d}
-        content = cfg.read_text(encoding="utf-8", errors="ignore") if cfg.exists() else "Plugins: yes\nAdditionalApps:\n"
-
-        # 1. Plugins: yes
-        content = ensure_plugins_enabled(content)
-
-        # 2. AdditionalApps
-        content, _ = upsert_in_memory(content, "AdditionalApps", app_id, comment=game_name)
-
-        # 3. AdditionalDepots — rebuilt sorted, keyed/shared only, never an AppID.
-        # Candidates are the depots we hold a key for, plus any shared
-        # redistributable the game actually reported. We never blanket-add the
-        # whole SHARED_REDISTS set — that would claim every shared depot in
-        # existence and take ownership of them on cleanup.
         keyed: dict[str, str] = {}
         for raw_id, raw_key in (depot_keys or {}).items():
             clean_id = sanitize_id(raw_id)
@@ -122,63 +140,118 @@ class Injector:
             elif raw_key:
                 logger.warning("Skipping malformed key for %s", raw_id)
 
+        # Without a usable key we cannot register the game at all (Steam aborts
+        # with DepotWithoutKey), so refuse rather than half-register.
+        if not keyed:
+            return {
+                "ok": False,
+                "error": "No depot decryption keys available for this game — cannot register it.",
+                "reason": "no_keys",
+            }
+
+        enabled = {d for d in (sanitize_id(x) for x in (enabled_dlc_ids or ())) if d and d != aid}
+
+        # depot id -> owning AppID ("" = base game). Depots we cannot attribute
+        # are treated as base content: mounting a surplus keyed depot is
+        # harmless, whereas hiding a needed one breaks the download.
+        owner_of: dict[str, str] = {}
+        for owner, ids in (owner_map or {}).items():
+            if owner == "base":
+                continue
+            for did in ids or ():
+                clean = sanitize_id(did)
+                if clean and clean != aid:
+                    owner_of.setdefault(clean, str(owner))
+        for did in keyed:
+            owner_of.setdefault(did, "")
+
+        # Depots to mount: base + enabled DLCs, keyed (or shared redist).
         candidates = set(keyed)
         candidates |= {
             d for d in (sanitize_id(x) for x in (candidate_depots or ()))
             if d and d in SHARED_REDISTS
         }
-        depot_ids = [
-            d for d in sort_ids(candidates)
-            if d != app_id and d not in dlc_appids and (d in SHARED_REDISTS or d in keyed)
-        ]
-
-        depot_comments = {
-            d: comment for d, comment in parse_list_section(content, "AdditionalDepots").items()
-            # never keep base AppIDs in AdditionalDepots
-            if d != app_id and d not in dlc_appids
+        selected = {
+            d for d in candidates
+            if d != aid
+            and (d in SHARED_REDISTS or d in keyed)
+            and (owner_of.get(d, "") == "" or owner_of.get(d, "") in enabled)
         }
-        for d in depot_ids:
-            if d in SHARED_REDISTS:
-                # Magic marker: marks these exempt from uninstall cleanup.
-                depot_comments[d] = SHARED_COMMENT
-            else:
-                desc = sanitize_comment(self.ctx.depot_names.get(d, ""))
-                depot_comments[d] = f"{game_name} [{desc}] ({app_id})" if desc else f"{game_name} ({app_id})"
 
+        game_name = sanitize_comment(name) or f"App {aid}"
+        content = cfg.read_text(encoding="utf-8", errors="ignore") if cfg.exists() else "Plugins: yes\nAdditionalApps:\n"
+        content = ensure_plugins_enabled(content)
+
+        def tag(did: str) -> str:
+            owner = owner_of.get(did, "")
+            return f" [DLC {owner}]" if owner else ""
+
+        def desc(did: str) -> str:
+            return sanitize_comment(self.ctx.depot_names.get(did, ""))
+
+        # 2. AdditionalApps — base + enabled DLCs; drop our now-disabled entries.
+        for eid, comment in parse_list_section(content, "AdditionalApps").items():
+            if eid != aid and eid not in enabled and self._owned(comment, aid):
+                content, _ = remove_in_memory(content, "AdditionalApps", eid, is_list=True)
+        content, _ = upsert_in_memory(content, "AdditionalApps", aid, comment=game_name)
+        for dlc in sort_ids(enabled):
+            content, _ = upsert_in_memory(
+                content, "AdditionalApps", dlc,
+                comment=f"{game_name} [DLC {dlc}] ({aid})",
+            )
+
+        # 3. AdditionalDepots — rebuild ours, keep other owners' comments.
+        depot_comments: dict[str, str] = {}
+        for d, c in parse_list_section(content, "AdditionalDepots").items():
+            if d == aid or d in enabled or self._owned(c, aid):
+                continue
+            depot_comments[d] = c
+        for did in sort_ids(selected):
+            if did in SHARED_REDISTS:
+                depot_comments[did] = SHARED_COMMENT
+                continue
+            dsc = desc(did)
+            depot_comments[did] = (
+                f"{game_name}{tag(did)} [{dsc}] ({aid})" if dsc
+                else f"{game_name}{tag(did)} ({aid})"
+            )
         content = replace_section_block(content, "AdditionalDepots", [
             f"  - {d} # {depot_comments[d]}" if depot_comments.get(d) else f"  - {d}"
             for d in sort_ids(depot_comments)
         ])
 
-        # 4. DecryptionKeys — merge into existing, sorted, DLC AppIDs excluded.
+        # 4. DecryptionKeys — ours only, sorted; root AppKey allowed.
         all_keys, key_comments = parse_key_section(content, "DecryptionKeys")
-        for d in dlc_appids:
-            all_keys.pop(d, None)
-            key_comments.pop(d, None)
-        for d, k in keyed.items():
-            # A DLC AppID is stored as appid==depotid in AdditionalApps, so
-            # writing it here would claim ownership of another game's data.
-            if d in dlc_appids:
+        for did in list(all_keys):
+            if did == aid or did in selected:
                 continue
-            all_keys[d] = k
-            if d in SHARED_REDISTS:
-                key_comments[d] = SHARED_COMMENT
-            elif d == app_id:
-                # The root AppKey is legitimate here (unlike AdditionalDepots).
-                key_comments[d] = f"{game_name} [AppKey] ({app_id})"
+            if did in SHARED_REDISTS and did not in keyed:
+                continue
+            if self._owned(key_comments.get(did, ""), aid):
+                all_keys.pop(did, None)
+                key_comments.pop(did, None)
+        for did in sort_ids(selected):
+            if did not in keyed:
+                continue
+            all_keys[did] = keyed[did]
+            if did in SHARED_REDISTS:
+                key_comments[did] = SHARED_COMMENT
             else:
-                desc = sanitize_comment(self.ctx.depot_names.get(d, ""))
-                key_comments[d] = f"{game_name} [{desc}] ({app_id})" if desc else game_name
-
+                dsc = desc(did)
+                key_comments[did] = (
+                    f"{game_name}{tag(did)} [{dsc}] ({aid})" if dsc
+                    else f"{game_name}{tag(did)} ({aid})"
+                )
+        if aid in keyed:
+            all_keys[aid] = keyed[aid]
+            key_comments[aid] = f"{game_name} [AppKey] ({aid})"
         content = replace_section_block(content, "DecryptionKeys", [
             f"  {d}: {all_keys[d]} # {key_comments[d]}" if key_comments.get(d) else f"  {d}: {all_keys[d]}"
             for d in sort_ids(all_keys)
         ])
 
-        # 5. SmartTickets
+        # 5. SmartTickets (+ optional manifest pins).
         content = ensure_smart_tickets(content)
-
-        # Optional manifest pinning (append, preserving the section as-is).
         for did, mid in (manifest_ids or {}).items():
             if sanitize_id(did) and sanitize_id(mid):
                 content, _ = upsert_in_memory(content, "ManifestIds", did, value=str(mid))
@@ -187,15 +260,16 @@ class Injector:
             return {"ok": False, "error": "Failed to write SLSsteam config"}
 
         logger.info(
-            "Injected %s (%s): %d depot(s), %d key(s) in a single pass",
-            game_name, app_id, len(depot_ids), len(keyed),
+            "Projected %s (%s): %d depot(s), %d key(s), %d DLC(s)",
+            game_name, aid, len(selected), len(keyed), len(enabled),
         )
         return {
             "ok": True,
-            "app_id": app_id,
+            "app_id": aid,
             "name": game_name,
-            "depots_added": depot_ids,
-            "keys_added": sort_ids(keyed),
+            "depots_added": sort_ids(selected),
+            "keys_added": sort_ids(d for d in selected if d in keyed),
+            "dlc_appids": sort_ids(enabled),
         }
 
     def _merge_existing_keys(self, app_id: str, depot_keys: dict, candidate_depots: set) -> dict:
@@ -249,7 +323,6 @@ class Injector:
             #    inject lands as one atomic write below.
             manifest_res = self.manifests.fetch(app_id, persist_config=False)
             manifest_ids: dict[str, str] = {}
-            resolved_dlcs = set(dlc_appids or ())
             resolved_name = name
 
             if manifest_res.get("ok"):
@@ -264,7 +337,6 @@ class Injector:
                 # The Lua carries the authoritative game name and DLC list.
                 if manifest_res.get("game_name"):
                     resolved_name = manifest_res["game_name"]
-                resolved_dlcs |= {d for d in (manifest_res.get("dlc_appids") or []) if d}
             elif depot_keys:
                 logger.info(
                     "Hubcap inquiry failed (%s), proceeding with %d cached keys",
@@ -277,8 +349,14 @@ class Injector:
             # 3. Top up from keys already in config, scoped to this game.
             depot_keys = self._merge_existing_keys(app_id, depot_keys, candidate_depots or set())
 
-            result = self._inject_config(
-                app_id, resolved_name, depot_keys, manifest_ids, resolved_dlcs, candidate_depots
+            # 4. Project the config: base game only on inject (DLCs are opt-in).
+            details = self.steam.app_details(app_id)
+            owner_map = self.library.app_to_depots(
+                app_id, depot_dlc=((details or {}).get("depot_dlc") or {}),
+            )
+            result = self._project_config(
+                app_id, resolved_name, depot_keys, owner_map, set(),
+                candidate_depots=candidate_depots, manifest_ids=manifest_ids,
             )
             if not result.get("ok"):
                 status["error"] = result.get("error")
@@ -288,7 +366,7 @@ class Injector:
                 status["injected_depots"] = result.get("depots_added", [])
                 status["injected_keys"] = result.get("keys_added", [])
 
-                # 4. Register in the AT0-M library so ASSella manages this game
+                # 5. Register in the AT0-M library so ASSella manages this game
                 #    exactly as if it had injected the game itself.
                 depots_added = result.get("depots_added", [])
                 if self.library.register(
@@ -298,10 +376,8 @@ class Injector:
                     depot_keys,
                     installdir="",
                     depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
-                    # This UI injects the base game in normal AT0-M mode. The
-                    # resolved DLC IDs above are metadata used to keep DLC AppIDs
-                    # out of AdditionalDepots/DecryptionKeys; ASSella only stores
-                    # dlc_appids for an actual DLC-only download.
+                    # This UI injects the base game in normal AT0-M mode. DLC
+                    # layers are opt-in and enabled later via set_game_apps.
                     dlc_appids=[],
                 ):
                     status["registered"] = True
@@ -311,7 +387,7 @@ class Injector:
                         "Config injected but plugin_library.json registration failed for %s", app_id
                     )
 
-                # 5. Optional DLC registration (separate, batched write)
+                # 6. Optional DLC registration (separate, batched write)
                 if self.ctx.read_setting("fetch_dlcs_on_inject"):
                     self.fetch_dlcs(app_id)
 
@@ -388,217 +464,171 @@ class Injector:
             out.append(merged)
         return out
 
-    # -- DLCs -----------------------------------------------------------------
-    def fetch_dlcs(self, app_id: str) -> dict:
-        """Register a game's DLC AppIDs in AdditionalApps, in one batched write.
-
-        DLCs are added as AdditionalApps entries only — never AdditionalDepots.
-        ASSella permits a DLC AppID in AdditionalDepots (Steam stores DLC as
-        appid==depotid), but mixing them in here would also drag in unrelated
-        depots, so we keep DLC handling to AdditionalApps.
-        """
-        details = self.steam.app_details(app_id)
-        dlc_ids = [d for d in (sanitize_id(x) for x in details.get("dlc", [])) if d]
-        if not dlc_ids:
-            return {"ok": True, "count": 0, "message": "No DLCs found"}
-        if self.ctx.sls_config() is None:
-            return {"ok": False, "error": "SLSsteam config not found"}
-
-        game_name = sanitize_comment(details.get("name") or f"App {app_id}")
-
-        # Harvest from the base game's bundle (it usually carries DLC keys).
-        manifest_res = self.manifests.fetch(app_id, persist_config=False)
-        depot_keys = manifest_res.get("depot_keys", {}) if manifest_res.get("ok") else {}
-        if not manifest_res.get("ok"):
-            logger.warning("DLC fetch for %s: no Hubcap bundle (%s)", app_id, manifest_res.get("error"))
-
-        keys_added: list[str] = []
-        with self.sls.edit() as editor:
-            editor.content = ensure_plugins_enabled(editor.content)
-            editor.has_changes = True
-            for dlc_id in dlc_ids:
-                editor.add_app(dlc_id, comment=f"{game_name} DLC ({dlc_id})")
-            for did, key in (depot_keys or {}).items():
-                if editor.add_key(did, key, comment=self.ctx.depot_names.get(did, "")):
-                    keys_added.append(did)
-
-        if not editor.committed_successfully:
-            return {"ok": False, "error": "Failed to write SLSsteam config"}
-        return {
-            "ok": True,
-            "count": len(dlc_ids),
-            "dlc_ids": dlc_ids,
-            "apps_added": dlc_ids,
-            "depots_added": [],
-            "keys_added": sort_ids(keys_added),
+    # -- appid-driven projection ----------------------------------------------
+    def _enabled_dlcs(self, app_id: str) -> list[str]:
+        """DLC AppIDs currently enabled for a game, read from the live config."""
+        aid = sanitize_id(app_id)
+        if not aid:
+            return []
+        cfg = self.ctx.sls_config()
+        record = self.library.load().get(aid) or {}
+        known = {str(d) for d in (record.get("enabled_dlc_appids") or []) if str(d).isdigit()}
+        known |= {str(d) for d in (record.get("dlc_appids") or []) if str(d).isdigit()}
+        if cfg is None or not cfg.exists():
+            return sort_ids(known)
+        try:
+            content = cfg.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return sort_ids(known)
+        apps = parse_list_section(content, "AdditionalApps")
+        enabled = {
+            d for d, c in apps.items()
+            if d != aid and (self._owned(c, aid) or d in known)
         }
+        return sort_ids(enabled)
 
-    def toggle_dlcs(self, app_id: str, enable: bool) -> dict:
-        """Add or remove a game's DLC AppIDs in AdditionalApps and sync keyed depots."""
+    def set_game_apps(self, app_id: str, enabled_dlc_ids=None, use_hubcap: bool = True) -> dict:
+        """Enable exactly the given DLC AppIDs, reprojecting config.yaml.
+
+        The base game is always included — this only turns DLC layers on and
+        off. Going off removes exactly the depots and keys that DLC contributed
+        (the residue bug in the old per-DLC toggle). The requested set is
+        intersected with the DLCs we can actually see for the game, so a stale
+        id from the UI cannot claim an unrelated app.
+        """
         aid = sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
-
-        if not enable:
-            return self._remove_owned_dlcs(aid)
-
-        dlc_ids = [d for d in (sanitize_id(x) for x in self.steam.app_details(aid).get("dlc", [])) if d]
-        record = self.library.load().get(aid) or {}
-        for did in record.get("dlc_appids", []):
-            clean = sanitize_id(did)
-            if clean and clean not in dlc_ids:
-                dlc_ids.append(clean)
-
-        manifest_res = self.manifests.fetch(aid, persist_config=False)
-        if manifest_res.get("ok"):
-            for did in manifest_res.get("dlc_appids", []):
-                clean = sanitize_id(did)
-                if clean and clean not in dlc_ids:
-                    dlc_ids.append(clean)
-
-        if not dlc_ids:
-            return {"ok": False, "error": f"No DLCs found for AppID {aid}"}
         if self.ctx.sls_config() is None:
             return {"ok": False, "error": "SLSsteam config not found"}
 
-        # DLC AppIDs and depot IDs are different namespaces. Use the database's
-        # depot classification to select DLC depots, then take their keys from
-        # the app bundle/library/database without registering base-game depots.
-        dlc_depot_ids = self.library.dlc_depot_ids(aid)
+        record = self.library.load().get(aid) or {}
+        depot_keys, owner_map, details = self._depot_keys_for(aid, record, use_hubcap)
 
-        all_keys = dict(manifest_res.get("depot_keys", {})) if manifest_res.get("ok") else {}
-        for did, key in (record.get("keys") or {}).items():
-            all_keys.setdefault(str(did), str(key))
-        for did, key in self.library.local_depot_keys(aid, dlc_depot_ids).items():
-            all_keys.setdefault(str(did), str(key))
-        depot_keys = {did: key for did, key in all_keys.items() if did in dlc_depot_ids}
+        known = set(owner_map) - {"base"}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("dlc") or [])) if d}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("depot_dlc") or {}).values()) if d}
+        known |= {str(d) for d in (record.get("dlc_appids") or []) if str(d).isdigit()}
+        known |= {str(d) for d in (record.get("enabled_dlc_appids") or []) if str(d).isdigit()}
+        known.discard(aid)
 
-        marker = _dlc_marker(aid)
-        with self.sls.edit() as editor:
-            editor.content = ensure_plugins_enabled(editor.content)
-            editor.has_changes = True
-            existing_apps = parse_list_section(editor.content, "AdditionalApps")
-            existing_depots = parse_list_section(editor.content, "AdditionalDepots")
-            existing_keys, _ = parse_key_section(editor.content, "DecryptionKeys")
-            for dlc_id in dlc_ids:
-                # Only claim entries this feature creates. Existing user entries
-                # retain their comments and are never removed by the off toggle.
-                if dlc_id not in existing_apps:
-                    editor.add_app(dlc_id, comment=marker)
-            for did, key in (depot_keys or {}).items():
-                if did != aid and did not in existing_depots:
-                    editor.add_depot(did, comment=marker)
-                if did != aid and did not in existing_keys:
-                    editor.add_key(did, key, comment=marker)
+        requested = {d for d in (sanitize_id(x) for x in (enabled_dlc_ids or ())) if d and d != aid}
+        enabled = requested & known if known else requested
 
-        if not editor.committed_successfully:
-            return {"ok": False, "error": "Failed to write SLSsteam config"}
+        result = self._project_config(
+            aid,
+            details.get("name") or record.get("name") or f"App {aid}",
+            depot_keys,
+            owner_map,
+            enabled,
+            candidate_depots={str(d) for d in (record.get("depots") or [])},
+        )
+        if result.get("ok"):
+            depots_added = result.get("depots_added", [])
+            self.library.register(
+                aid,
+                result.get("name") or f"App {aid}",
+                depots_added,
+                depot_keys,
+                installdir=record.get("installdir", ""),
+                depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
+                dlc_appids=record.get("dlc_appids", []),
+                enabled_dlc_appids=sort_ids(enabled),
+            )
+            signal_api("RELOAD", logger)
+        return result
 
-        lib = self.library.load()
-        if aid in lib:
-            lib[aid]["dlc_appids"] = dlc_ids
-            lib[aid]["dlcs_injected"] = True
-            self.library.save(lib)
-        return {"ok": True, "count": len(dlc_ids), "dlc_ids": dlc_ids}
+    def refresh(self, app_id: str) -> dict:
+        """Re-project a game's config from the freshest keys and depots.
 
-    def _remove_owned_dlcs(self, aid: str) -> dict:
-        marker = _dlc_marker(aid)
-        removed_apps = 0
-        with self.sls.edit() as editor:
-            for entry_id, comment in parse_list_section(editor.content, "AdditionalApps").items():
-                if comment == marker:
-                    removed_apps += editor.remove_app(entry_id)
-            for entry_id, comment in parse_list_section(editor.content, "AdditionalDepots").items():
-                if comment == marker:
-                    editor.remove_depot(entry_id)
-            _, key_comments = parse_key_section(editor.content, "DecryptionKeys")
-            for entry_id, comment in key_comments.items():
-                if comment == marker:
-                    editor.remove_key(entry_id)
+        The base game always stays on and currently-enabled DLCs are preserved.
+        This is how a freshly fetched base-game key gets its depot mounted: a
+        plain manifest refetch only writes the key into DecryptionKeys and never
+        touches AdditionalDepots, so before this the depot was never mounted.
+        """
+        aid = sanitize_id(app_id)
+        if not aid:
+            return {"ok": False, "error": "Invalid AppID"}
+        return self.set_game_apps(aid, self._enabled_dlcs(aid), use_hubcap=True)
 
-        if not editor.committed_successfully:
-            return {"ok": False, "error": "Failed to write SLSsteam config"}
+    # -- DLCs -----------------------------------------------------------------
+    def fetch_dlcs(self, app_id: str) -> dict:
+        """Enable every DLC the game exposes, as one full projection.
 
-        lib = self.library.load()
-        if aid in lib:
-            lib[aid]["dlcs_injected"] = False
-            self.library.save(lib)
-        return {"ok": True, "count": removed_apps}
+        DLC AppIDs land in AdditionalApps and their keyed depots in
+        AdditionalDepots/DecryptionKeys, all tagged so the off path can remove
+        exactly what this added.
+        """
+        aid = sanitize_id(app_id)
+        if not aid:
+            return {"ok": False, "error": "Invalid AppID"}
+        details = self.steam.app_details(aid)
+        dlcs = {d for d in (sanitize_id(x) for x in ((details or {}).get("dlc") or [])) if d}
+        if not dlcs:
+            res = self.manifests.fetch(aid, persist_config=False)
+            if res.get("ok"):
+                dlcs = {d for d in (sanitize_id(x) for x in (res.get("dlc_appids") or [])) if d}
+        if not dlcs:
+            return {"ok": True, "count": 0, "message": "No DLCs found"}
+        result = self.set_game_apps(aid, sort_ids(dlcs), use_hubcap=True)
+        if result.get("ok"):
+            result["count"] = len(dlcs)
+            result["apps_added"] = sort_ids(dlcs)
+        return result
+
+    def toggle_dlcs(self, app_id: str, enable: bool) -> dict:
+        """Turn every DLC of a game on, or off, in one reprojection."""
+        aid = sanitize_id(app_id)
+        if not aid:
+            return {"ok": False, "error": "Invalid AppID"}
+        if not enable:
+            result = self.set_game_apps(aid, [], use_hubcap=True)
+            result.setdefault("count", 0)
+            return result
+
+        record = self.library.load().get(aid) or {}
+        details = self.steam.app_details(aid)
+        if not isinstance(details, dict):
+            details = {}
+        dlcs = {d for d in (sanitize_id(x) for x in (details.get("dlc") or [])) if d}
+        details_dlc = details.get("dlc_appids")
+        if details_dlc:
+            dlcs |= {d for d in (sanitize_id(x) for x in details_dlc) if d}
+        dlcs |= {d for d in (sanitize_id(x) for x in (record.get("dlc_appids") or [])) if d}
+        dlcs.discard(aid)
+        if not dlcs:
+            res = self.manifests.fetch(aid, persist_config=False)
+            if res.get("ok"):
+                dlcs = {d for d in (sanitize_id(x) for x in (res.get("dlc_appids") or [])) if d}
+        if not dlcs:
+            return {"ok": False, "error": f"No DLCs found for AppID {aid}"}
+        result = self.set_game_apps(aid, sort_ids(dlcs), use_hubcap=True)
+        if result.get("ok"):
+            result["count"] = len(dlcs)
+            result["dlc_ids"] = sort_ids(dlcs)
+        return result
 
     def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
-        """Add or remove a single AdditionalApps DLC entry and manage its keys."""
+        """Enable or disable one DLC AppID by reprojecting the whole config.
+
+        Reprojection guarantees a disable removes exactly what the enable added:
+        the DLC's depots and keys disappear with its AdditionalApps entry,
+        instead of lingering because they were written by a different path.
+        """
         aid = sanitize_id(app_id)
         dlc_id = sanitize_id(dlc_appid)
         if not aid or not dlc_id:
             return {"ok": False, "error": "Invalid AppID"}
-        if self.ctx.sls_config() is None:
-            return {"ok": False, "error": "SLSsteam config not found"}
-
-        marker = _dlc_marker(aid)
-
+        enabled = set(self._enabled_dlcs(aid))
         if enable:
-            dlc_keys = self.library.local_depot_keys(dlc_id)
-            if not dlc_keys:
-                parent_keys = self.library.local_depot_keys(aid)
-                if dlc_id in parent_keys:
-                    dlc_keys[dlc_id] = parent_keys[dlc_id]
-
-            dlc_depots = self.library.dlc_depot_ids(aid, dlc_id)
-
-            with self.sls.edit() as editor:
-                editor.content = ensure_plugins_enabled(editor.content)
-                editor.has_changes = True
-                existing_apps = parse_list_section(editor.content, "AdditionalApps")
-                existing_depots = parse_list_section(editor.content, "AdditionalDepots")
-                existing_keys, _ = parse_key_section(editor.content, "DecryptionKeys")
-
-                if dlc_id not in existing_apps:
-                    editor.add_app(dlc_id, comment=marker)
-                for did in dlc_depots:
-                    if did != aid and did not in existing_depots:
-                        editor.add_depot(did, comment=marker)
-                for did, key in dlc_keys.items():
-                    if did != aid and did not in existing_depots:
-                        editor.add_depot(did, comment=marker)
-                    if did != aid and did not in existing_keys:
-                        editor.add_key(did, key, comment=marker)
-
-            if not editor.committed_successfully:
-                return {"ok": False, "error": "Failed to write SLSsteam config"}
-
-            lib = self.library.load()
-            if aid in lib:
-                dlcs = {str(d) for d in lib[aid].get("dlc_appids", [])}
-                dlcs.add(dlc_id)
-                lib[aid]["dlc_appids"] = sort_ids(dlcs)
-                self.library.save(lib)
-
-            signal_api("RELOAD", logger)
-            return {"ok": True, "dlc_id": dlc_id, "enabled": True}
-
-        with self.sls.edit() as editor:
-            apps = parse_list_section(editor.content, "AdditionalApps")
-            if dlc_id in apps:
-                editor.apply(*remove_in_memory(editor.content, "AdditionalApps", dlc_id, is_list=True))
-            depots = parse_list_section(editor.content, "AdditionalDepots")
-            if dlc_id in depots and marker in (depots.get(dlc_id) or ""):
-                editor.apply(*remove_in_memory(editor.content, "AdditionalDepots", dlc_id, is_list=True))
-            _, key_comments = parse_key_section(editor.content, "DecryptionKeys")
-            if dlc_id in key_comments and marker in (key_comments.get(dlc_id) or ""):
-                editor.apply(*remove_in_memory(editor.content, "DecryptionKeys", dlc_id, is_list=False))
-
-        lib = self.library.load()
-        if aid in lib:
-            lib[aid]["dlc_appids"] = [str(d) for d in lib[aid].get("dlc_appids", []) if str(d) != dlc_id]
-            self.library.save(lib)
-
-        signal_api("RELOAD", logger)
-        return {"ok": True, "dlc_id": dlc_id, "enabled": False}
-
-
-def _dlc_marker(aid: str) -> str:
-    """Ownership comment marking entries this plugin's DLC feature created."""
-    return f"uran:dlc:{aid}"
+            enabled.add(dlc_id)
+        else:
+            enabled.discard(dlc_id)
+        result = self.set_game_apps(aid, sort_ids(enabled), use_hubcap=True)
+        if result.get("ok"):
+            result["dlc_id"] = dlc_id
+            result["enabled"] = bool(enable)
+        return result
 
 
 __all__ = ["Injector"]

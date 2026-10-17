@@ -55,15 +55,33 @@ class SteamMeta:
 
         packages = [str(pkg) for pkg in store.get("packages", [])]
         depots = []
+        depot_dlc: dict[str, str] = {}
+        depot_names: dict[str, str] = {}
         depot_dict = cmd.get("depots", {})
         if isinstance(depot_dict, dict):
-            depots = [k for k in depot_dict.keys() if k.isdigit()]
+            for raw_id, raw_info in depot_dict.items():
+                if not raw_id.isdigit():
+                    continue
+                depots.append(raw_id)
+                if not isinstance(raw_info, dict):
+                    continue
+                # SteamCMD marks a DLC-owned depot with `dlcappid`. This is the
+                # authoritative depot -> owning-AppID attribution, and it is
+                # the same field ASSella caches in apps.depots_json.
+                dlc_id = raw_info.get("dlcappid")
+                if dlc_id is not None and str(dlc_id).isdigit():
+                    depot_dlc[raw_id] = str(dlc_id)
+                dname = raw_info.get("name")
+                if dname:
+                    depot_names[raw_id] = str(dname)
 
         return {
             "app_id": app_id,
             "name": store.get("name") or cmd.get("common", {}).get("name") or f"App {app_id}",
             "packages": list(set(packages)),
             "depots": list(set(depots)),
+            "depot_dlc": depot_dlc,
+            "depot_names": depot_names,
             "dlc": [str(d) for d in store.get("dlc", [])],
         }
 

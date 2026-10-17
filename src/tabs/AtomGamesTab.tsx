@@ -22,6 +22,7 @@ import {
   setEos,
   setEosNetsock,
   toggleAdditionalApp,
+  refreshGame,
   AtomGame,
   AtomDetail,
   AtomUpdate,
@@ -318,13 +319,26 @@ export const AtomGamesTab: React.FC = () => {
           </PanelSectionRow>
         </PanelSection>
 
-        <PanelSection title={`AdditionalAppIds / DLCs (${detail.dlcs_detail?.length || 0})`}>
+        <PanelSection title={`AppIDs / DLCs (${detail.dlcs_detail?.length || 0})`}>
+          <PanelSectionRow>
+            <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
+              The base game is always included. Toggle a DLC to add or remove the
+              depots and keys it owns — turning one off removes exactly what it added.
+            </div>
+          </PanelSectionRow>
           {detail.dlcs_detail && detail.dlcs_detail.length > 0 ? (
             detail.dlcs_detail.map((dlc) => (
               <PanelSectionRow key={dlc.id}>
                 <ToggleField
                   label={dlc.name}
-                  description={`AppID: ${dlc.id}`}
+                  description={
+                    `AppID: ${dlc.id}` +
+                    (dlc.depot_count
+                      ? ` · ${dlc.depot_count} depot${
+                          dlc.depot_count === 1 ? "" : "s"
+                        }`
+                      : "")
+                  }
                   checked={dlc.in_config}
                   disabled={busy}
                   onChange={(v) =>
@@ -357,57 +371,43 @@ export const AtomGamesTab: React.FC = () => {
           )}
         </PanelSection>
 
-        <PanelSection title={`Depots (${detail.depots_detail?.length || 0})`}>
-
-          {detail.depots_detail && detail.depots_detail.length > 0 && (
-            <PanelSectionRow>
-              <div style={{ width: "100%", fontSize: "12px" }}>
-                <div style={{ fontWeight: "bold", opacity: 0.85, marginBottom: "6px" }}>
-                  Depots ({detail.depots_detail.length})
-                </div>
-                {detail.depots_detail.map((d) => (
-                  <div
-                    key={d.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "5px 0",
-                      borderBottom: "1px solid rgba(255,255,255,0.05)",
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: "8px" }}>
-                      <div>
-                        <b style={{ fontFamily: "monospace" }}>{d.id}</b>{" "}
-                        <span style={{ opacity: 0.9 }}>{d.name}</span>
-                      </div>
-                      <div style={{ fontSize: "10px", opacity: 0.65, marginTop: "2px" }}>
-                        {d.os ? `[${d.os}] ` : ""}
-                        {d.is_dlc ? "[DLC] " : ""}
-                        {d.is_shared ? "[Shared] " : ""}
-                        {d.has_key ? "Key present" : "No key"}
-                      </div>
-                    </div>
-                    <span
-                      style={{
-                        fontSize: "10px",
-                        padding: "2px 6px",
-                        borderRadius: "4px",
-                        background: d.in_config ? "rgba(126, 226, 168, 0.2)" : "rgba(255, 255, 255, 0.08)",
-                        color: d.in_config ? "#7ee2a8" : "#8a929e",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {d.in_config ? "Added in config" : "Not in config"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </PanelSectionRow>
-          )}
+        <PanelSection title="Keys & Depots">
+          <PanelSectionRow>
+            <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
+              Refresh re-checks Hubcap and rewrites this game&apos;s depots and keys
+              in SLSsteam&apos;s config. Use it when a key arrived after the game was
+              added — a plain update writes the key but not the depot it mounts.
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              disabled={busy}
+              onClick={() =>
+                toggle("Refresh", async () => {
+                  const r = await refreshGame(detail.app_id);
+                  if (r?.ok) {
+                    const added = r.depots_added?.length || 0;
+                    notify(
+                      "Uran",
+                      `Refreshed ${detail.name} (${added} depot${
+                        added === 1 ? "" : "s"
+                      })`,
+                    );
+                  }
+                  return r;
+                })
+              }
+            >
+              Refresh Keys &amp; Depots
+            </ButtonItem>
+          </PanelSectionRow>
         </PanelSection>
 
-        {detailUpdate && detailUpdate.status !== "up_to_date" && (
+        {detailUpdate &&
+          (detailUpdate.status === "update_available" ||
+            detailUpdate.status === "key_pending" ||
+            detailUpdate.status === "error") && (
           <PanelSection title="Hubcap Updates">
             <PanelSectionRow>
               <div style={{ width: "100%", fontSize: "12px", lineHeight: 1.6 }}>
@@ -460,7 +460,12 @@ export const AtomGamesTab: React.FC = () => {
                           setMsg(`Updated ${detail.name} with new depots and keys.`);
                           setAtomUpdates((prev) => ({
                             ...prev,
-                            [detail.app_id]: { has_update: false, new_depots: [] },
+                            [detail.app_id]: {
+                              ...prev[detail.app_id],
+                              has_update: false,
+                              new_depots: [],
+                              status: "up_to_date",
+                            },
                           }));
                           await refreshDetail();
                         } else {

@@ -17,7 +17,6 @@ logger = logging.getLogger("Uran")
 APP_CONFIG_DIR = "assella-decky"
 
 DEFAULTS: dict = {
-    "show_restart_button": False,
     "fetch_dlcs_on_inject": False,
     "manifestid_pinning": False,
     "steam_store_enabled": True,
