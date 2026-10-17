@@ -135,6 +135,9 @@ def parse(lua_text: str, sanitize_key=None) -> dict:
             if named and named.group(1).strip():
                 result["name"] = named.group(1).strip()
             if key and not is_placeholder_key(key):
+                # The first live addappid is the root AppKey. Kept verbatim here
+                # for ASSella parity (ASSella does not sanitize it in parsing);
+                # every write path sanitizes before it reaches the config.
                 result["app_key"] = key
                 result["keys"][did] = key
                 result["depots"].append(did)

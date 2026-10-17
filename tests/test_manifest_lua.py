@@ -79,8 +79,9 @@ check("live setManifestid kept", r["manifests"].get("620"), "999888777666555444"
 
 # --- sanitize_key rejection --------------------------------------------
 # The root AppKey (first addappid) is NOT passed through sanitize_key — ASSella
-# treats it the same way. It is still validated downstream: _inject_sls_config
-# runs every key through sanitize_key and skips anything malformed.
+# treats it the same way. It is still validated downstream: every write path
+# (manifests._persist_keys and inject._project_config) runs keys through
+# sanitize_key and skips anything malformed.
 r = ml.parse(LIVE, lambda k: None)
 check("rejected depot keys are dropped", "621" in r["keys"], False)
 check("root AppKey bypasses sanitize (ASSella parity)", "620" in r["keys"], True)

@@ -1,7 +1,10 @@
 """Steam store + SteamCMD app metadata, search, and library introspection."""
 
+import json
 import logging
+import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -10,53 +13,218 @@ from .http import requests
 
 logger = logging.getLogger("Uran")
 
-_STORE_CACHE_TTL = 300
-_STEAMCMD_CACHE_TTL = 3600
+# How long a cached Steam response stays trustworthy. Steam metadata barely
+# changes, so the window is generous: within it the game page renders straight
+# from disk, and past it the page serves the stale copy and refreshes behind
+# the scenes. Refreshes also happen on every toggle/refresh action.
+_META_TTL = 6 * 3600
+_META_CACHE_VERSION = 1
+_SOURCES = ("store", "steamcmd")
 
 
 class SteamMeta:
-    """App details and search, with per-source caches."""
+    """App details and search, with a persistent two-source disk cache.
 
-    def __init__(self, ctx: Context):
+    SteamCMD costs 1-4s per request and both endpoints change rarely, so each
+    source is cached as JSON under the plugin runtime directory. An entry is
+    *fresh* while younger than ``_META_TTL``, *stale* once older, and *missing*
+    when we have never fetched it (or the cache was unreadable). The game page
+    paints from disk instantly and only talks to the network when a source is
+    not fresh, so it can name what it is waiting for.
+    """
+
+    def __init__(self, ctx: Context, library=None):
         self.ctx = ctx
+        # Optional ASSella library: when present, its cached depot map seeds
+        # this cache so a game page can open with no network call at all.
+        self.library = library
+        self._dir = ctx.runtime_dir / "meta"
+        self._mem: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
-    def _store_details(self, app_id: str) -> dict:
-        cached = self.ctx.store_details_cache.get(app_id)
-        if cached and time.time() - cached["fetchedAt"] < _STORE_CACHE_TTL:
-            return cached["data"]
+    # -- persistent cache -----------------------------------------------------
+    def _path(self, app_id: str) -> Path:
+        return self._dir / f"{app_id}.json"
+
+    def _read(self, app_id: str) -> dict:
+        """Cached record for an app: ``{source: {"at": epoch, "data": {...}}}``."""
+        with self._lock:
+            if app_id in self._mem:
+                return self._mem[app_id]
+        record: dict = {}
+        try:
+            path = self._path(app_id)
+            if path.is_file():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and raw.get("version") == _META_CACHE_VERSION:
+                    for source in _SOURCES:
+                        entry = raw.get(source)
+                        if isinstance(entry, dict) and isinstance(entry.get("data"), dict):
+                            at = entry.get("at")
+                            record[source] = {
+                                "at": float(at) if isinstance(at, (int, float)) else 0.0,
+                                "data": entry["data"],
+                            }
+        except (OSError, ValueError) as exc:
+            logger.debug("Could not read metadata cache for %s: %s", app_id, exc)
+        with self._lock:
+            self._mem[app_id] = record
+        return record
+
+    def _write(self, app_id: str, record: dict) -> None:
+        with self._lock:
+            self._mem[app_id] = record
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            path = self._path(app_id)
+            tmp = path.with_name(f"{path.name}.tmp")
+            payload = {"version": _META_CACHE_VERSION}
+            payload.update(record)
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp, path)  # atomic: a reader never sees a half-written file
+        except OSError as exc:
+            logger.debug("Could not persist metadata cache for %s: %s", app_id, exc)
+
+    @staticmethod
+    def _age_state(entry: dict | None) -> str:
+        """fresh | stale | missing, from an entry's age (presence, not content)."""
+        if not entry:
+            return "missing"
+        return "fresh" if time.time() - entry.get("at", 0) < _META_TTL else "stale"
+
+    def _state(self, record: dict, source: str) -> str:
+        return self._age_state(record.get(source))
+
+    def meta_state(self, app_id: str) -> dict:
+        """Freshness of each source, so the page can say what it is fetching."""
+        record = self._read(app_id)
+        state = {source: self._state(record, source) for source in _SOURCES}
+        state["needs_fetch"] = any(value != "fresh" for value in state.values())
+        return state
+
+    def _cached(self, app_id: str, source: str) -> dict:
+        return dict((self._read(app_id).get(source) or {}).get("data") or {})
+
+    def _local(self, app_id: str, source: str) -> dict | None:
+        """Seed a source from ASSella's cached depot map — never the network.
+
+        Returns ``{"at": epoch, "data": {...}}`` when ASSella has an expanded,
+        authoritative row for this appid, else ``None`` so the caller goes to
+        the network. The timestamp is ASSella's ``apps.last_updated``, so the
+        seed ages exactly like a real fetch: a stale row still triggers the
+        background refresh that only the network can satisfy.
+        """
+        if self.library is None:
+            return None
+        row = self.library.steam_app_depots(app_id)
+        if not row:
+            return None
+        at = float(row.get("at") or 0)
+        if source == "store":
+            return {
+                "at": at,
+                "data": {
+                    "name": row.get("name") or "",
+                    "packages": [],
+                    "dlc": list(row.get("dlc") or []),
+                },
+            }
+        depots: dict[str, dict] = {}
+        for did, info in (row.get("depots") or {}).items():
+            if not isinstance(info, dict):
+                continue
+            size = info.get("size")
+            depots[str(did)] = {
+                "name": info.get("name"),
+                "dlcappid": info.get("dlcappid"),
+                "config": {
+                    "oslist": info.get("oslist") or "",
+                    "osarch": info.get("osarch") or "",
+                    "language": info.get("language") or "",
+                },
+                "manifests": {"public": {"size": size}} if size is not None else {},
+            }
+        return {"at": at, "data": {"common": {"name": row.get("name") or ""}, "depots": depots}}
+
+    def _source(
+        self, app_id: str, source: str, fetch, allow_network: bool, force: bool,
+        local=None,
+    ) -> dict:
+        """Serve a cached source, refreshing it only when it is not fresh.
+
+        A local seed (ASSella's DB) is tried before the network, so a fresh row
+        answers with no request at all. ``allow_network=False`` never issues a
+        request either way: it returns the cached copy (stale is fine) or
+        ``{}``. With ``True`` a stale or missing entry is refreshed from the
+        network, and a failed refresh keeps the existing copy rather than
+        blanking the page. ``force=True`` (an explicit Refresh) skips the local
+        seed and always asks the network for the latest.
+        """
+        record = self._read(app_id)
+        state = self._age_state(record.get(source))
+        if local is not None and state != "fresh" and not force:
+            seed = local(app_id, source)
+            if isinstance(seed, dict) and isinstance(seed.get("data"), dict) and seed["data"]:
+                record[source] = {"at": float(seed.get("at") or 0), "data": seed["data"]}
+                self._write(app_id, record)
+                state = self._age_state(record.get(source))
+        if not allow_network or (state == "fresh" and not force):
+            return self._cached(app_id, source)
+        fetched = fetch(app_id)
+        if fetched is None:
+            return self._cached(app_id, source)
+        record = self._read(app_id)
+        record[source] = {"at": time.time(), "data": fetched}
+        self._write(app_id, record)
+        return fetched
+
+    # -- sources --------------------------------------------------------------
+    def _store_details(self, app_id: str, allow_network: bool = True, force: bool = False) -> dict:
+        return self._source(
+            app_id, "store", self._fetch_store, allow_network, force, self._local
+        )
+
+    def _steamcmd_details(self, app_id: str, allow_network: bool = True, force: bool = False) -> dict:
+        return self._source(
+            app_id, "steamcmd", self._fetch_steamcmd, allow_network, force, self._local
+        )
+
+    @staticmethod
+    def _fetch_store(app_id: str) -> dict | None:
+        """None on failure; a dict (possibly empty) on success."""
         try:
             url = f"https://store.steampowered.com/api/appdetails?appids={app_id}&l=english&cc=US"
             resp = requests.get(url, timeout=10)
             if resp.ok:
-                data = resp.json().get(app_id, {}).get("data", {})
-                self.ctx.store_details_cache[app_id] = {"data": data, "fetchedAt": time.time()}
-                return data
+                return resp.json().get(app_id, {}).get("data", {}) or {}
         except Exception as exc:  # noqa: BLE001
             logger.debug("Store details failed for %s: %s", app_id, exc)
-        return {}
+        return None
 
-    def _steamcmd_details(self, app_id: str) -> dict:
-        cached = self.ctx.steamcmd_details_cache.get(app_id)
-        if cached and time.time() - cached["fetchedAt"] < _STEAMCMD_CACHE_TTL:
-            return cached["data"]
+    @staticmethod
+    def _fetch_steamcmd(app_id: str) -> dict | None:
         try:
             resp = requests.get(f"https://api.steamcmd.net/v1/info/{app_id}", timeout=10)
             if resp.ok:
-                data = resp.json().get("data", {}).get(app_id, {})
-                self.ctx.steamcmd_details_cache[app_id] = {"data": data, "fetchedAt": time.time()}
-                return data
+                return resp.json().get("data", {}).get(app_id, {}) or {}
         except Exception as exc:  # noqa: BLE001
             logger.debug("SteamCMD details failed for %s: %s", app_id, exc)
-        return {}
+        return None
 
-    def app_details(self, app_id: str) -> dict:
-        store = self._store_details(app_id)
-        cmd = self._steamcmd_details(app_id)
+    def app_details(self, app_id: str, allow_network: bool = True, force: bool = False) -> dict:
+        """Store + SteamCMD metadata, with ``depot_dlc`` attribution.
+
+        Answers from the disk cache while it is fresh. ``allow_network=False``
+        never waits on the network (the game page's instant first paint);
+        ``force=True`` refreshes even a fresh entry.
+        """
+        store = self._store_details(app_id, allow_network, force)
+        cmd = self._steamcmd_details(app_id, allow_network, force)
 
         packages = [str(pkg) for pkg in store.get("packages", [])]
         depots = []
         depot_dlc: dict[str, str] = {}
-        depot_names: dict[str, str] = {}
+        depot_meta: dict[str, dict] = {}
         depot_dict = cmd.get("depots", {})
         if isinstance(depot_dict, dict):
             for raw_id, raw_info in depot_dict.items():
@@ -71,9 +239,23 @@ class SteamMeta:
                 dlc_id = raw_info.get("dlcappid")
                 if dlc_id is not None and str(dlc_id).isdigit():
                     depot_dlc[raw_id] = str(dlc_id)
-                dname = raw_info.get("name")
-                if dname:
-                    depot_names[raw_id] = str(dname)
+
+                cfg = raw_info.get("config", {}) if isinstance(raw_info.get("config"), dict) else {}
+                manifests = raw_info.get("manifests", {}) if isinstance(raw_info.get("manifests"), dict) else {}
+                public_manifest = manifests.get("public", {}) if isinstance(manifests.get("public"), dict) else {}
+                size_bytes = public_manifest.get("size")
+                try:
+                    size_num = int(size_bytes) if size_bytes else 0
+                except (ValueError, TypeError):
+                    size_num = 0
+
+                depot_meta[raw_id] = {
+                    "name": raw_info.get("name") or "",
+                    "oslist": cfg.get("oslist") or "",
+                    "osarch": cfg.get("osarch") or "",
+                    "language": cfg.get("language") or "",
+                    "size_bytes": size_num,
+                }
 
         return {
             "app_id": app_id,
@@ -81,7 +263,7 @@ class SteamMeta:
             "packages": list(set(packages)),
             "depots": list(set(depots)),
             "depot_dlc": depot_dlc,
-            "depot_names": depot_names,
+            "depot_meta": depot_meta,
             "dlc": [str(d) for d in store.get("dlc", [])],
         }
 
@@ -171,7 +353,47 @@ class SteamMeta:
                 out[numeric] = int(out.get(numeric) or 0)
             except ValueError:
                 out[numeric] = 0
+        # InstalledDepots carries a per-depot `dlcappid`, which is the same
+        # authoritative depot -> owning-AppID field SteamCMD exposes. For an
+        # installed game this gives us DLC attribution with no network call.
+        out["installed_depots"] = self._parse_installed_depots(content)
         return out
+
+    @staticmethod
+    def _parse_installed_depots(content: str) -> dict:
+        """`{depot_id: {manifest, size, dlcappid}}` from an appmanifest.
+
+        Steam writes an ``InstalledDepots`` block of ``"<depot_id>" { ... }``
+        entries; DLC-owned depots carry a ``"dlcappid"`` line inside them.
+        """
+        depots: dict = {}
+        start = re.search(r'"InstalledDepots"\s*\{', content)
+        if not start:
+            return depots
+        depth = 1
+        current: str | None = None
+        for line in content[start.end():].splitlines():
+            stripped = line.strip()
+            entry = re.match(r'"(\d+)"\s*$', stripped)
+            if entry:
+                current = entry.group(1)
+                depots.setdefault(current, {})
+                continue
+            if stripped.startswith("}"):
+                depth -= 1
+                if depth <= 0:
+                    break
+                current = None
+                continue
+            if stripped.endswith("{"):
+                depth += 1
+                continue
+            if current:
+                for field in ("manifest", "size", "dlcappid"):
+                    match = re.match(rf'"{field}"\s+"([^"]*)"', stripped)
+                    if match:
+                        depots[current][field] = match.group(1)
+        return depots
 
     def install_info(self, app_id: str) -> dict:
         """Locate a game's install dir across every Steam library.
@@ -183,6 +405,7 @@ class SteamMeta:
             "installed": False, "install_path": "", "library_path": "",
             "install_dir": "", "game_name": "", "buildid": "",
             "size_on_disk": 0, "downloading": False, "state_flags": 0,
+            "installed_depots": {},
         }
         libs = self.libraries()
         for lib in libs:
@@ -204,6 +427,7 @@ class SteamMeta:
                 "size_on_disk": data.get("SizeOnDisk", 0),
                 "state_flags": data.get("StateFlags", 0),
                 "acf_path": str(acf),
+                "installed_depots": data.get("installed_depots") or {},
             })
             break
 

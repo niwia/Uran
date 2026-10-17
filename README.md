@@ -21,6 +21,7 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 
 ### AT0-M Library Manager
 - **Game List**: Every game registered in AT0-M mode, with install state and size. Click a game to open its page.
+- **Instant open**: the page renders from local state immediately; Steam metadata (the DLC list and depot attribution) is cached on disk with a TTL and only refetched in the background when it has gone stale, with a "Fetching…" note in the AppIDs / DLCs section.
 - **Per-game AppIDs**: the base game is always included; toggle each DLC to add or remove the depots and keys it owns. Toggling one off removes exactly what toggling it on added — no leftover entries.
 - **Refresh Keys & Depots**: re-checks Hubcap and rewrites the game's depots and keys in one pass, so a key that arrives after the game was added gets the depot it mounts (a plain manifest update only writes the key).
 - **Per-game integrations**:
@@ -134,6 +135,7 @@ and receives its collaborators explicitly:
 | `guards.py` | Environment and already-registered preflight checks |
 | `keycare.py` | LAN key capture server and Hubcap key management |
 | `steam_store.py` | CEF debugging discovery and Store patch diagnostics |
+| `steammeta.py` | Steam store + SteamCMD metadata, search, and the on-disk metadata cache |
 | `uninstall.py` | AT0-M uninstall |
 | `updates.py` | Version and release check |
 

@@ -74,13 +74,22 @@ class Injector:
         details = self.steam.app_details(app_id)
         if not isinstance(details, dict):
             details = {}
+        installed_depots = (
+            (self.steam.install_info(app_id) or {}).get("installed_depots") or {}
+        )
         owner_map = self.library.app_to_depots(
-            app_id, record=record, depot_dlc=details.get("depot_dlc") or {}
+            app_id,
+            record=record,
+            depot_dlc=details.get("depot_dlc") or {},
+            installed_depots=installed_depots,
         )
 
         depot_keys: dict[str, str] = {
             str(d): str(k) for d, k in (record.get("keys") or {}).items()
         }
+        # Scope the merge to the base depots we attributed to this game. The
+        # worker passes its broader candidate set instead, since it also knows
+        # the parent appid's full injected depot list.
         depot_keys = self._merge_existing_keys(
             app_id, depot_keys, set(owner_map.get("base", ()))
         )
@@ -268,7 +277,7 @@ class Injector:
             "app_id": aid,
             "name": game_name,
             "depots_added": sort_ids(selected),
-            "keys_added": sort_ids(d for d in selected if d in keyed),
+            "keys_added": sort_ids(d for d in (selected | {aid}) if d in keyed),
             "dlc_appids": sort_ids(enabled),
         }
 
@@ -290,7 +299,7 @@ class Injector:
 
             owned = {
                 did for did, comment in depot_comments.items()
-                if app_id in (comment or "").lower()
+                if self._owned(comment, app_id)
             }
             owned |= {d for d in candidate_depots if d}
             for did in owned:
@@ -305,7 +314,6 @@ class Injector:
         self,
         app_id: str,
         name: str,
-        dlc_appids: set | None = None,
         candidate_depots: set | None = None,
     ) -> None:
         status = self.ctx.inject_status.setdefault(app_id, {})
@@ -346,13 +354,20 @@ class Injector:
             else:
                 status["manifest_error"] = manifest_res.get("error")
 
-            # 3. Top up from keys already in config, scoped to this game.
+            # 3. Top up from keys already in config, scoped to this game. This
+            #    candidate set is broader than the projection's base set — it
+            #    also covers the parent appid's full injected depot list.
             depot_keys = self._merge_existing_keys(app_id, depot_keys, candidate_depots or set())
 
             # 4. Project the config: base game only on inject (DLCs are opt-in).
             details = self.steam.app_details(app_id)
+            installed_depots = (
+                (self.steam.install_info(app_id) or {}).get("installed_depots") or {}
+            )
             owner_map = self.library.app_to_depots(
-                app_id, depot_dlc=((details or {}).get("depot_dlc") or {}),
+                app_id,
+                depot_dlc=((details or {}).get("depot_dlc") or {}),
+                installed_depots=installed_depots,
             )
             result = self._project_config(
                 app_id, resolved_name, depot_keys, owner_map, set(),
@@ -409,7 +424,6 @@ class Injector:
         details = self.steam.app_details(aid)
         name = details.get("name", f"App {aid}")
         depots = details.get("depots", [])
-        dlc_ids = [sanitize_id(d) for d in details.get("dlc", [])]
 
         # Preflight 1: SLS environment
         env = self.guards.check_sls_environment()
@@ -440,7 +454,7 @@ class Injector:
 
         threading.Thread(
             target=self._worker,
-            args=(aid, name, set(dlc_ids), set(depots)),
+            args=(aid, name, set(depots)),
             daemon=True,
         ).start()
 

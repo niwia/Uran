@@ -222,14 +222,21 @@ class Manifests:
         except Exception:  # noqa: BLE001
             name = f"App {app_id}"
 
+        written: dict[str, str] = {}
         with self.sls.edit() as editor:
             editor.content = ensure_plugins_enabled(editor.content)
             editor.has_changes = True
             for did, key in (depot_keys or {}).items():
-                editor.add_key(did, key, comment=self.ctx.depot_names.get(did, ""))
+                # Sanitize at the write boundary: parsing keeps the root AppKey
+                # verbatim for ASSella parity, so a malformed key must be caught
+                # here before it can reach DecryptionKeys.
+                clean = sanitize_key(key)
+                if clean:
+                    editor.add_key(did, clean, comment=self.ctx.depot_names.get(did, ""))
+                    written[did] = clean
             for did, mid in (manifest_ids or {}).items():
                 editor.add_manifest_id(did, mid)
-        return {"ok": editor.committed_successfully, "keys": list((depot_keys or {}).keys())}
+        return {"ok": editor.committed_successfully, "keys": list(written.keys())}
 
     def refetch(self, app_id: str) -> dict:
         self.remove_pins(app_id)

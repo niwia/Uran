@@ -10,6 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .context import Context
+from .depot_tags import (
+    clean_depot_name,
+    extract_arch_code,
+    extract_language_code,
+    extract_os_list,
+    format_bytes,
+)
 from .integrations import Integrations
 from .library import PluginLibrary
 from .manifests import Manifests
@@ -78,7 +85,7 @@ class AtomLibrary:
         games.sort(key=lambda g: (not g["installed"], g["name"].lower()))
         return games
 
-    def inspect(self, aid: str, record: dict) -> tuple[list[dict], list[dict], bool]:
+    def inspect(self, aid: str, record: dict, allow_network: bool = True) -> tuple[list[dict], list[dict], bool]:
         """Cross-reference a game's depots and DLCs against the live config.
 
         The DLC list is the union of every attribution source we have, so a DLC
@@ -108,14 +115,17 @@ class AtomLibrary:
                 logger.debug("SLS config parse error: %s", exc)
 
         try:
-            details = self.steam.app_details(aid) or {}
+            details = self.steam.app_details(aid, allow_network) or {}
         except Exception:  # noqa: BLE001
             details = {}
         steam_depots = {str(d) for d in (details.get("depots") or []) if str(d).isdigit()}
         depot_dlc = {str(k): str(v) for k, v in (details.get("depot_dlc") or {}).items()}
+        installed_depots = (self.steam.install_info(aid) or {}).get("installed_depots") or {}
 
         # Same attribution the projection uses: depot id -> owning appid.
-        owner_map = self.library.app_to_depots(aid, record=record, depot_dlc=depot_dlc)
+        owner_map = self.library.app_to_depots(
+            aid, record=record, depot_dlc=depot_dlc, installed_depots=installed_depots
+        )
         owner_of: dict[str, str] = {}
         for owner, ids in owner_map.items():
             for did in ids:
@@ -141,6 +151,7 @@ class AtomLibrary:
                 "depot_count": len(owned),
             })
 
+        cmd_meta = details.get("depot_meta") or {}
         all_depots = (record_depots | set(enrichments) | set(record_keys) | steam_depots) - {aid}
         for ids in owner_map.values():
             all_depots |= ids
@@ -148,28 +159,89 @@ class AtomLibrary:
         depots_list: list[dict] = []
         for did in sorted(all_depots, key=lambda x: int(x) if x.isdigit() else 0):
             enrich = enrichments.get(did, {})
-            dname = (
+            cmeta = cmd_meta.get(did, {})
+
+            raw_name = (
                 enrich.get("name")
+                or cmeta.get("name")
                 or record_names.get(did)
                 or self.ctx.depot_names.get(did)
                 or f"Depot {did}"
             )
+            fallback = cmeta.get("name") or record_names.get(did) or ""
+            clean_name = clean_depot_name(did, raw_name, fallback)
+
+            combined_meta = {
+                "name": raw_name,
+                "oslist": enrich.get("oslist") or cmeta.get("oslist") or "",
+                "osarch": enrich.get("osarch") or cmeta.get("osarch") or "",
+                "language": cmeta.get("language") or "",
+            }
+
+            os_str = combined_meta["oslist"]
+            os_list = extract_os_list(os_str)
+            arch_code = extract_arch_code(combined_meta, raw_name)
+            lang_code = extract_language_code(combined_meta, raw_name) or ""
+
+            size_str = enrich.get("size_str") or ""
+            if not size_str:
+                size_bytes = enrich.get("size_bytes") or cmeta.get("size_bytes") or 0
+                if size_bytes:
+                    size_str = format_bytes(size_bytes)
+
+            owner_id = owner_of.get(did, "")
+            is_dlc = bool(enrich.get("is_dlc")) or bool(owner_id) or "[dlc" in raw_name.lower()
+
             depots_list.append({
                 "id": did,
-                "name": dname,
+                "name": clean_name,
+                "raw_name": raw_name,
                 "in_config": did in live_depots,
                 "has_key": did in live_keys or did in record_keys,
-                "is_dlc": enrich.get("is_dlc", False) or "[dlc" in dname.lower(),
+                "is_dlc": is_dlc,
+                "dlc_id": owner_id if (owner_id and owner_id != aid) else "",
                 "is_shared": did in SHARED_REDISTS,
-                "os": enrich.get("oslist", ""),
-                "owner": owner_of.get(did, ""),
+                "os": os_str,
+                "os_list": os_list,
+                "arch": arch_code,
+                "lang": lang_code,
+                "size_str": size_str,
+                "owner": owner_id,
+            })
+
+        # The root AppKey lives under the AppID in DecryptionKeys (SLSsteam needs
+        # it to decrypt the game), but it is not a depot, so it is surfaced here
+        # as its own row rather than being hidden from the page.
+        if aid in live_keys or aid in record_keys:
+            depots_list.insert(0, {
+                "id": aid,
+                "name": "AppKey",
+                "raw_name": "AppKey",
+                "in_config": aid in live_keys,
+                "has_key": True,
+                "is_dlc": False,
+                "dlc_id": "",
+                "is_shared": False,
+                "is_app_key": True,
+                "os": "",
+                "os_list": [],
+                "arch": "",
+                "lang": "",
+                "size_str": "",
+                "owner": "",
             })
 
         dlcs_injected = bool(dlcs_list and all(d["in_config"] for d in dlcs_list))
         return depots_list, dlcs_list, dlcs_injected
 
-    def detail(self, app_id: str) -> dict:
-        """Per-game state for the detail page: toggles, depots, DLCs, install info."""
+    def detail(self, app_id: str, allow_network: bool = True) -> dict:
+        """Per-game state for the detail page: toggles, depots, DLCs, install info.
+
+        With ``allow_network=False`` the page is built purely from local state —
+        the record, the local depot/key caches and any already-cached Steam
+        metadata — so it renders instantly. Callers re-request with
+        ``allow_network=True`` afterwards to fill in the full DLC list.
+        """
         aid = sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
@@ -181,7 +253,7 @@ class AtomLibrary:
         fake = self.integrations.get_fake_appid(aid)
         eos = self.integrations.eos_status(game_dir) if install.get("installed") else "none"
 
-        depots_detail, dlcs_detail, dlcs_injected = self.inspect(aid, record)
+        depots_detail, dlcs_detail, dlcs_injected = self.inspect(aid, record, allow_network)
 
         return {
             "ok": True,
@@ -204,6 +276,7 @@ class AtomLibrary:
             "depots_detail": depots_detail,
             "dlcs_detail": dlcs_detail,
             "dlcs_injected": dlcs_injected,
+            "meta": self.steam.meta_state(aid),
         }
 
     def check_updates(self, app_id: str, use_cache: bool = True) -> dict:

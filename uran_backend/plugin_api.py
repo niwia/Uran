@@ -250,7 +250,12 @@ class Plugin:
         return {"ok": True, "games": self.s.atom.list_games()}
 
     async def get_atom_game(self, app_id: str) -> dict:
-        return await asyncio.to_thread(self.s.atom.detail, app_id)
+        """Local-only detail page — never blocks on Steam's network."""
+        return await asyncio.to_thread(self.s.atom.detail, app_id, False)
+
+    async def refresh_atom_meta(self, app_id: str) -> dict:
+        """Same page, with freshly fetched Steam metadata (full DLC list)."""
+        return await asyncio.to_thread(self.s.atom.detail, app_id, True)
 
     async def check_atom_game_updates(self, app_id: str) -> dict:
         return await asyncio.to_thread(self.s.atom.check_updates, app_id)

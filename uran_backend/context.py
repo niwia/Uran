@@ -35,9 +35,6 @@ class Context:
     inject_status: dict = field(default_factory=dict)
     depot_names: dict = field(default_factory=dict)
 
-    store_details_cache: dict = field(default_factory=dict)
-    steamcmd_details_cache: dict = field(default_factory=dict)
-
     def sls_config(self) -> Path | None:
         return paths.sls_config(self.home)
 

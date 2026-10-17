@@ -165,6 +165,27 @@ class PluginLibrary:
         """Return an AT0-M library record for this appid, if registered."""
         return self.load().get(str(appid).strip())
 
+    @staticmethod
+    def _owned_comment(comment: str, appid: str, game_name: str) -> bool:
+        """True when an ownership comment belongs to this game.
+
+        Matches the paren-guarded AppID Uran writes (``(620)``), the legacy
+        ``uran:dlc:620`` marker, or a whole-word game-name prefix (ASSella writes
+        ``"{name} - {depot} ({did})"``). A bare substring is never used: AppIDs
+        share a numeric namespace, so ``620`` must not match another game's
+        ``(6207)``, and unregistering ``Portal`` must not claim every
+        ``Portal 2 …`` line.
+        """
+        c = (comment or "").strip()
+        if not c:
+            return False
+        if f"({appid})" in c or f"uran:dlc:{appid}" in c:
+            return True
+        g = (game_name or "").strip()
+        return bool(g) and len(g) > 3 and (
+            c == g or c.startswith(g + " -") or c.startswith(g + " [")
+        )
+
     def unregister(self, appid: str, keep_in_additional_apps: bool = False) -> bool:
         """Remove a game from the AT0-M library and clean every config trace.
 
@@ -206,10 +227,10 @@ class PluginLibrary:
                         )
                         if not match:
                             continue
-                        item_id, comment = match.group(1), (match.group(2) or "").lower()
+                        item_id, comment = match.group(1), match.group(2) or ""
                         if item_id in SHARED_REDISTS:
                             continue
-                        if appid_str in comment or (gname and len(gname) > 3 and gname in comment):
+                        if self._owned_comment(comment, appid_str, gname):
                             (target_depots if section == "AdditionalDepots" else target_keys).add(item_id)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("ownership scan failed for %s: %s", appid_str, exc)
@@ -295,6 +316,157 @@ class PluginLibrary:
                 deduped.append(candidate)
         return deduped
 
+    def _steam_headers_db(self) -> Path | None:
+        """First existing ACCELA steam_headers.db, or None when absent."""
+        for db_path in self._db_candidates("steam_headers.db"):
+            if db_path.exists():
+                return db_path
+        return None
+
+    def _accela_dirs(self) -> list[Path]:
+        """Likely ACCELA data roots, most specific first (deduped)."""
+        base = self.ctx.accela_base()
+        candidates = [
+            base,
+            self.ctx.home / ".local/share/ACCELA",
+            self.ctx.home / ".var/app/com.valvesoftware.Steam/data/ACCELA",
+            self.ctx.home / ".var/app/com.valvesoftware.Steam/.local/share/ACCELA",
+            Path("/home/deck/.local/share/ACCELA"),
+        ]
+        seen: set[str] = set()
+        out: list[Path] = []
+        for candidate in candidates:
+            key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+            if key not in seen:
+                seen.add(key)
+                out.append(candidate)
+        return out
+
+    def cached_lua_depots(self, app_id: str) -> dict[str, str] | None:
+        """Depot -> owning AppID from ASSella's cached_luas/<appid>.lua.
+
+        Hubcap's generated Lua groups depots by owner: a "-- MAIN APPLICATION"
+        marker returns ownership to the base game, each "-- <name> (AppID: N)"
+        header claims the ``addappid()`` lines beneath it, and the shared /
+        empty / excluded / unreleased sections claim nothing. Plain text, so it
+        needs no dependency at all, and it works for any game ASSella has
+        cached — even one whose DB row is not DLC-expanded.
+        """
+        aid = sanitize_id(app_id)
+        if not aid:
+            return None
+        for base in self._accela_dirs():
+            path = base / "cached_luas" / f"{aid}.lua"
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                return None
+            owner: str | None = None
+            out: dict[str, str] = {}
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                header = re.search(r"\(AppID:\s*(\d+)\)", line, re.IGNORECASE)
+                if header:
+                    owner = "" if header.group(1) == aid else header.group(1)
+                    continue
+                if line.startswith("-- MAIN APP") or line.startswith("-- MAIN GAME"):
+                    owner = ""
+                    continue
+                if (
+                    line.startswith("-- SHARED")
+                    or line.startswith("-- DLCS WITHOUT")
+                    or line.startswith("-- EXCLUDED")
+                    or line.startswith("-- DLCS EXCLUDED")
+                    or line.startswith("-- EMPTY")
+                    or line.startswith("-- UNRELEASED")
+                ):
+                    owner = None
+                    continue
+                if owner is None:
+                    continue
+                entry = re.match(r"addappid\((\d+)", line)
+                if entry and entry.group(1) != aid:
+                    out.setdefault(entry.group(1), owner)
+            return out or None
+        return None
+
+    def steam_app_depots(self, app_id: str, require_expanded: bool = True) -> dict | None:
+        """ASSella's cached depot map for an AppID, as a local metadata tier.
+
+        ``apps.depots_json`` is a zstandard-compressed JSON blob of
+        ``{depot_id: {name, oslist, osarch, language, size, dlcappid, is_dlc}}``
+        plus the DLC AppID list under ``listofdlc`` — the same attribution the
+        SteamCMD API exposes, so it can seed Uran's metadata cache with no
+        network call.
+
+        Only rows ASSella has actually DLC-expanded (``dlcs_expanded``) are
+        returned by default: for those the ``dlcappid`` map is authoritative. An
+        unexpanded row has an empty ``dlcappid`` that would make Uran misread
+        DLC depots as base-game content, so it is treated as "no local data"
+        and the caller falls back to the network. Pass ``require_expanded=False``
+        for the narrower use of reading one DLC's own depot row during mapping.
+
+        Returns ``None`` when there is no usable row (no ASSella DB, no
+        ``zstandard`` installed, or an undecodable blob). Read-only: Uran never
+        writes ASSella's database.
+        """
+        aid = sanitize_id(app_id)
+        if not aid:
+            return None
+        try:
+            import zstandard  # type: ignore  # optional; Uran stays dependency-free
+        except ImportError:
+            return None
+        db_path = self._steam_headers_db()
+        if db_path is None or not self._has_table(db_path, "apps"):
+            return None
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT name, depots_json, last_updated FROM apps WHERE appid = ?",
+                    (aid,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.debug("apps row read failed for %s: %s", aid, exc)
+            return None
+        if row is None or not row[1]:
+            return None
+        try:
+            parsed = json.loads(
+                zstandard.ZstdDecompressor().decompress(bytes(row[1])).decode("utf-8")
+            )
+        except Exception as exc:  # noqa: BLE001 — any blob problem means "no local data"
+            logger.debug("depots_json decode failed for %s: %s", aid, exc)
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        if require_expanded and not parsed.get("dlcs_expanded"):
+            return None
+        depots = {
+            str(did): info
+            for did, info in parsed.items()
+            if str(did).isdigit() and isinstance(info, dict)
+        }
+        if not depots:
+            return None
+        dlc = sorted(
+            {
+                part.strip()
+                for part in str(parsed.get("listofdlc") or "").split(",")
+                if part.strip().isdigit()
+            }
+        )
+        return {
+            "at": float(row[2] or 0),
+            "name": str(row[0] or ""),
+            "depots": depots,
+            "dlc": dlc,
+        }
+
     def local_depot_keys(self, app_id: str, candidate_depots: set | None = None) -> dict[str, str]:
         """Cached depot keys from the local depot_keys.db for an AppID."""
         aid = sanitize_id(app_id)
@@ -355,23 +527,39 @@ class PluginLibrary:
                 logger.debug("Failed saving keys to %s: %s", db_path, exc)
 
     def depot_enrichments(self, app_id: str) -> dict[str, dict]:
-        """Depot name / DLC / oslist enrichment rows for an AppID."""
-        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        """Depot name / DLC / oslist / osarch / size rows for an AppID.
+
+        Tolerates an older enrichment table that lacks the osarch / size
+        columns — a missing column blanks those fields rather than dropping
+        every row for the AppID.
+        """
+        db_path = self._steam_headers_db()
         out: dict[str, dict] = {}
-        if not db_path.exists():
+        if db_path is None:
             return out
+        full_cols = "depot_id, name, is_dlc, oslist, osarch, size_str, size_bytes"
+        base_cols = "depot_id, name, is_dlc, oslist"
         try:
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
-                rows = cursor.execute(
-                    "SELECT depot_id, name, is_dlc, oslist FROM depot_enrichments WHERE appid = ?",
-                    (app_id,),
-                ).fetchall()
+                try:
+                    rows = cursor.execute(
+                        f"SELECT {full_cols} FROM depot_enrichments WHERE appid = ?",
+                        (app_id,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = cursor.execute(
+                        f"SELECT {base_cols} FROM depot_enrichments WHERE appid = ?",
+                        (app_id,),
+                    ).fetchall()
                 for row in rows:
                     out[str(row[0])] = {
                         "name": str(row[1] or ""),
                         "is_dlc": bool(row[2]),
                         "oslist": str(row[3] or ""),
+                        "osarch": str(row[4] or "") if len(row) > 4 else "",
+                        "size_str": str(row[5] or "") if len(row) > 5 else "",
+                        "size_bytes": (row[6] or 0) if len(row) > 6 else 0,
                     }
         except Exception as exc:  # noqa: BLE001
             logger.debug("depot_enrichments error: %s", exc)
@@ -379,8 +567,8 @@ class PluginLibrary:
 
     def dlc_depot_ids(self, app_id: str, extra_depot: str = "") -> set[str]:
         """Depots classified as DLC for an AppID."""
-        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
-        if not db_path.exists():
+        db_path = self._steam_headers_db()
+        if db_path is None:
             return set()
         try:
             with sqlite3.connect(db_path) as conn:
@@ -401,6 +589,7 @@ class PluginLibrary:
         app_id: str,
         record: dict | None = None,
         depot_dlc: dict | None = None,
+        installed_depots: dict | None = None,
     ) -> dict[str, set[str]]:
         """Attribute every depot this machine knows for a game to its owner.
 
@@ -409,11 +598,16 @@ class PluginLibrary:
         instead of individual depots: turning a DLC off removes exactly the
         depots that DLC owns.
 
-        Sources, in priority order:
-          1. SteamCMD's per-depot ``dlcappid`` (passed in as ``depot_dlc``) —
-             authoritative and dependency-free.
-          2. The ``[DLC NNN]`` prefix ASSella writes into some enrichment names.
-          3. A DLC whose AppID doubles as its depot ID.
+        Mirrors ASSella's multi-source mapping so attribution still works with
+        no network — an installed game, an existing ASSella cache, and Uran's
+        own records all feed it. Sources, in priority order (first claim wins):
+          1. A per-depot ``dlcappid`` from SteamCMD / ASSella's ``depots_json``
+             (passed as ``depot_dlc``) — authoritative.
+          2. ``InstalledDepots`` from this game's appmanifest (``installed_depots``).
+          3. ASSella's cached Lua ``(AppID: N)`` sections.
+          4. Each known DLC's own depot row in ASSella's DB.
+          5. A DLC whose AppID doubles as its depot ID.
+          6. ``[DLC NNN]`` in an enrichment name.
         Anything unattributable is treated as base-game content: mounting a
         surplus keyed depot is harmless, hiding a needed one is not.
         """
@@ -423,11 +617,24 @@ class PluginLibrary:
         if record is None:
             record = self.load().get(aid) or {}
         enrich = self.depot_enrichments(aid)
+        lua = self.cached_lua_depots(aid) or {}
+
+        def owner_id(value) -> str:
+            clean = sanitize_id(value)
+            return clean if clean and clean != aid else ""
 
         dlc_ids: set[str] = {str(d) for d in (record.get("dlc_appids") or [])}
         dlc_ids |= {str(d) for d in (record.get("enabled_dlc_appids") or [])}
         dlc_ids |= {d for d, info in enrich.items() if info.get("is_dlc")}
+        dlc_ids |= {
+            owner_id(info.get("dlcappid"))
+            for info in (installed_depots or {}).values()
+            if isinstance(info, dict)
+        }
+        dlc_ids |= {owner_id(v) for v in lua.values()}
+        dlc_ids |= {owner_id(v) for v in (depot_dlc or {}).values()}
         dlc_ids.discard(aid)
+        dlc_ids.discard("")
 
         owners: dict[str, set[str]] = {"base": set()}
         placed: set[str] = set()
@@ -439,27 +646,45 @@ class PluginLibrary:
             placed.add(clean)
             owners.setdefault(str(owner), set()).add(clean)
 
-        # 1. Authoritative: SteamCMD's per-depot dlcappid.
+        # 1. Authoritative: per-depot dlcappid (SteamCMD / ASSella depots_json).
         for did, dlc in (depot_dlc or {}).items():
-            clean = sanitize_id(dlc)
-            if clean and clean != aid:
-                place(clean, did)
+            place(owner_id(dlc) or "base", did)
 
-        # 2. ASSella tags DLC depots in the enrichment name as "[DLC NNN]".
-        for did, info in enrich.items():
-            match = re.search(r"\[DLC\s*(\d+)\]", info.get("name") or "", re.IGNORECASE)
-            if match:
-                place(match.group(1), did)
+        # 2. This machine's appmanifest InstalledDepots. Only a real dlcappid is
+        #    an attribution here: a depot with none is left to the more specific
+        #    tiers below (Lua grouping, "[DLC NNN]" name) and the base fallback,
+        #    so an installed depot cannot preempt them by claiming base first.
+        for did, info in (installed_depots or {}).items():
+            dlc = owner_id(info.get("dlcappid")) if isinstance(info, dict) else ""
+            if dlc:
+                place(dlc, did)
 
-        # 3. A DLC-owner depot is sometimes stored under the DLC's own AppID.
+        # 3. ASSella's cached Lua grouping.
+        for did, dlc in lua.items():
+            place(owner_id(dlc) or "base", did)
+
+        # 4. Each known DLC's own depot row in ASSella's DB.
+        for dlc in sorted(dlc_ids):
+            row = self.steam_app_depots(dlc, require_expanded=False)
+            for did in (row or {}).get("depots") or {}:
+                place(dlc, did)
+
+        # 5. A DLC-owner depot is sometimes stored under the DLC's own AppID.
         for dlc in dlc_ids:
             place(dlc, dlc)
+
+        # 6. ASSella tags DLC depots in the enrichment name as "[DLC NNN]".
+        for did, info in enrich.items():
+            match = re.search(r"\[DLC\s*(\d+)\]", info.get("name") or "", re.IGNORECASE)
+            place(match.group(1) if match else "base", did)
 
         # Everything else we know about is base-game content.
         known = {str(d) for d in (record.get("depots") or [])}
         known |= {str(k) for k in (record.get("keys") or {}).keys()}
         known |= set(enrich)
         known |= {str(d) for d in (depot_dlc or {})}
+        known |= {str(d) for d in (installed_depots or {})}
+        known |= set(lua)
         known |= {str(d) for d in self.local_depot_keys(aid)}
         for did in known:
             place("base", did)
@@ -477,8 +702,8 @@ class PluginLibrary:
     UP_TO_DATE_TTL = 24 * 3600
     KEY_PENDING_COOLDOWN = 6 * 3600
 
-    def _has_table(self, db_path: Path, table: str) -> bool:
-        if not db_path.exists():
+    def _has_table(self, db_path: Path | None, table: str) -> bool:
+        if db_path is None or not db_path.exists():
             return False
         try:
             with sqlite3.connect(db_path) as conn:
@@ -502,7 +727,7 @@ class PluginLibrary:
         if not aid.isdigit():
             return None
 
-        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        db_path = self._steam_headers_db()
         if not self._has_table(db_path, "at0m_update_status"):
             return None
 
@@ -567,7 +792,7 @@ class PluginLibrary:
         if not aid.isdigit():
             return []
 
-        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        db_path = self._steam_headers_db()
         if not self._has_table(db_path, "missing_hubcap_depots"):
             return []
 
@@ -635,7 +860,7 @@ class PluginLibrary:
 
     def enrichment_name(self, depot_id: str) -> str:
         """Depot name from ASSella's enrichment table, if it has one."""
-        db_path = self.ctx.accela_base() / "db" / "steam_headers.db"
+        db_path = self._steam_headers_db()
         if not self._has_table(db_path, "depot_enrichments"):
             return ""
         try:

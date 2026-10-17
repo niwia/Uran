@@ -170,6 +170,121 @@ _, apps, depots, keys = sections()
 check("refresh keeps an enabled DLC AppID", "700" in apps, True)
 check("refresh keeps an enabled DLC depot", "700" in depots, True)
 
+# ---------------------------------------------------------------------------
+# 6. Local tiers: ASSella's cached Lua and this machine's appmanifest
+# ---------------------------------------------------------------------------
+lua_dir = sandbox / ".local/share/ACCELA" / "cached_luas"
+lua_dir.mkdir(parents=True, exist_ok=True)
+(lua_dir / "620.lua").write_text(
+    "\n".join(
+        [
+            "-- MAIN APPLICATION",
+            "-- MAIN APP DEPOTS",
+            f'addappid(621, 1, "{K621}") -- base depot',
+            "-- SHARED DEPOTS (from other apps)",
+            f'addappid(228989, 1, "{"5" * 64}") -- VC redist',
+            "-- DLCS WITH DEDICATED DEPOTS",
+            "-- Something Extra (AppID: 703)",
+            f'addappid(623, 1, "{"6" * 64}") -- dlc depot',
+            "-- UNRELEASED DLCS (COMMENTED OUT)",
+            f'--addappid(999, 1, "{"7" * 64}")',
+        ]
+    ),
+    encoding="utf-8",
+)
+lua = svc.library.cached_lua_depots("620") or {}
+check("lua attributes a DLC depot to its AppID", lua.get("623"), "703")
+check("lua marks a base depot as base", lua.get("621"), "")
+check("lua ignores shared-depot sections", "228989" in lua, False)
+check("lua ignores commented-out depots", "999" in lua, False)
+
+owners = svc.library.app_to_depots(
+    "620",
+    record={"depots": ["621"], "keys": {}},
+    installed_depots={"624": {"dlcappid": "704"}, "625": {"manifest": "1"}},
+)
+check("lua tier maps depot 623 to its DLC", "623" in owners.get("703", []), True)
+check("appmanifest tier maps depot 624 to its DLC", "624" in owners.get("704", []), True)
+check("appmanifest depot without dlcappid stays base", "625" in owners.get("base", []), True)
+
+# ---------------------------------------------------------------------------
+# 7. the root AppKey is written under the AppID (never dropped)
+# ---------------------------------------------------------------------------
+APPKEY = "9" * 64
+cfg.write_text(
+    "Plugins: yes\n"
+    "AdditionalApps:\n"
+    "  - 620 # Portal 2 (620)\n"
+    "AdditionalDepots:\n"
+    "  - 621 # Portal 2 [base] (620)\n"
+    "DecryptionKeys:\n"
+    f"  621: {K621} # Portal 2 [base] (620)\n"
+    "SmartTickets: 0x1\n",
+    encoding="utf-8",
+)
+svc.manifests.fetch = (
+    lambda aid, persist_config=True: {
+        "ok": True,
+        "depot_keys": {**KEYS, "620": APPKEY},
+        "manifest_ids": {},
+    }
+)
+res = inj.refresh("620")
+_, apps, depots, keys = sections()
+check("refresh writes the root AppKey under the AppID", keys.get("620"), APPKEY)
+check(
+    "the AppKey is tagged in the config",
+    "[AppKey]" in cfg.read_text(encoding="utf-8"),
+    True,
+)
+check("the AppKey is not mounted as a depot", "620" in depots, False)
+check("keys_added reports the AppKey", "620" in (res.get("keys_added") or []), True)
+
+# ---------------------------------------------------------------------------
+# 8. ownership comments are scoped: another game is never claimed
+# ---------------------------------------------------------------------------
+check(
+    "the paren guard rejects a shared numeric prefix",
+    svc.library._owned_comment("Half-Life 2 [base] (6207)", "620", "Portal 2"),
+    False,
+)
+check(
+    "the paren guard accepts our own AppID",
+    svc.library._owned_comment("Portal 2 [base] (620)", "620", "Portal 2"),
+    True,
+)
+check(
+    "an ASSella name-prefix comment is recognised",
+    svc.library._owned_comment("Portal 2 - base depot (621)", "620", "Portal 2"),
+    True,
+)
+check(
+    "a longer game name is not claimed by a prefix",
+    svc.library._owned_comment("Portal 2 Continued [base] (6203)", "620", "Portal 2"),
+    False,
+)
+
+cfg.write_text(
+    "Plugins: yes\n"
+    "AdditionalApps:\n"
+    "  - 620 # Portal 2 (620)\n"
+    "  - 6207 # Portal 2 Continued (6207)\n"
+    "AdditionalDepots:\n"
+    "  - 621 # Portal 2 [base] (620)\n"
+    "  - 6208 # Portal 2 Continued [base] (6207)\n"
+    "DecryptionKeys:\n"
+    f"  620: {KEY} # Portal 2 [AppKey] (620)\n"
+    f"  621: {K621} # Portal 2 [base] (620)\n"
+    f"  6208: {K622} # Portal 2 Continued [base] (6207)\n"
+    "SmartTickets: 0x1\n",
+    encoding="utf-8",
+)
+inj.set_game_apps("620", [])
+_, apps, depots, keys = sections()
+check("another game's AppID is untouched", "6207" in apps, True)
+check("another game's depot is untouched", "6208" in depots, True)
+check("another game's key is untouched", keys.get("6208"), K622)
+
 print()
 if fails:
     print("\n".join(fails))

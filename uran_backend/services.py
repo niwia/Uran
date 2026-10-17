@@ -51,8 +51,10 @@ def build(decky_module=None):
     ctx = build_context(decky_module if decky_module is not None else _load_decky())
 
     sls = SlsConfig(ctx)
-    steam = SteamMeta(ctx)
+    # library precedes SteamMeta so the metadata cache can seed itself from
+    # ASSella's local depot map before ever reaching for the network.
     library = PluginLibrary(ctx, sls)
+    steam = SteamMeta(ctx, library)
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
 

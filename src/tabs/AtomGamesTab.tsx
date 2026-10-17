@@ -13,6 +13,7 @@ import { notify } from "../notify";
 import {
   listAtomGames,
   getAtomGame,
+  refreshAtomMeta,
   previewAtomUninstall,
   uninstallAtomGame,
   checkAllAtomUpdates,
@@ -28,8 +29,190 @@ import {
   AtomUpdate,
 } from "../api";
 import { addedAppIds, syncAddedAppIds } from "../StorePatch";
-import { TrashIcon } from "../components/icons";
+import {
+  TrashIcon,
+  WindowsIcon,
+  LinuxIcon,
+  AppleIcon,
+  AndroidIcon,
+} from "../components/icons";
 import { formatBytes } from "../components/format";
+
+const URAN_STYLES = `
+  .uran-game-row {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    margin-bottom: 8px !important;
+  }
+  .uran-game-pill {
+    min-width: 0 !important;
+    flex: 1 1 0% !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    overflow: hidden !important;
+    border-radius: 8px !important;
+  }
+  .uran-game-pill-content {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    gap: 6px !important;
+  }
+  .uran-game-pill-title {
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    text-align: left !important;
+    font-size: 13px !important;
+  }
+  .uran-game-pill-badge {
+    flex-shrink: 0 !important;
+    font-size: 13px !important;
+    color: #7ee2a8 !important;
+    font-weight: 700 !important;
+  }
+  .uran-uninstall-btn {
+    width: 38px !important;
+    min-width: 38px !important;
+    max-width: 38px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    padding: 0 !important;
+    flex-shrink: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 8px !important;
+  }
+  .uran-uninstall-btn:hover,
+  .uran-uninstall-btn:focus,
+  .uran-uninstall-btn:focus-within {
+    color: #ff6b6b !important;
+  }
+  .uran-depot-container {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+    width: 100% !important;
+  }
+  .uran-depot-filters {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    margin-bottom: 6px !important;
+    flex-wrap: wrap !important;
+  }
+  .uran-depot-card {
+    display: flex !important;
+    flex-direction: column !important;
+    padding: 8px 10px !important;
+    background: rgba(255, 255, 255, 0.04) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 6px !important;
+    gap: 5px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .uran-depot-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 6px !important;
+    width: 100% !important;
+  }
+  .uran-depot-tags {
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    flex-wrap: wrap !important;
+  }
+  .uran-depot-os-group {
+    display: inline-flex !important;
+    align-items: center !important;
+    padding: 2px 4px !important;
+    background: rgba(255, 255, 255, 0.06) !important;
+    border-radius: 4px !important;
+  }
+  .uran-badge {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    padding: 1px 5px !important;
+    border-radius: 4px !important;
+    letter-spacing: 0.3px !important;
+    line-height: 14px !important;
+  }
+  .uran-badge-id {
+    font-family: monospace !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: #c0caf5 !important;
+  }
+  .uran-badge-arch {
+    background: rgba(122, 162, 247, 0.15) !important;
+    color: #7aa2f7 !important;
+    border: 1px solid rgba(122, 162, 247, 0.3) !important;
+  }
+  .uran-badge-lang {
+    background: rgba(224, 175, 104, 0.15) !important;
+    color: #e0af68 !important;
+    border: 1px solid rgba(224, 175, 104, 0.3) !important;
+  }
+  .uran-badge-dlc {
+    background: rgba(187, 154, 247, 0.15) !important;
+    color: #bb9af7 !important;
+    border: 1px solid rgba(187, 154, 247, 0.3) !important;
+  }
+  .uran-badge-key {
+    background: rgba(126, 226, 168, 0.15) !important;
+    color: #7ee2a8 !important;
+    border: 1px solid rgba(126, 226, 168, 0.3) !important;
+  }
+  .uran-badge-nokey {
+    background: rgba(247, 118, 142, 0.12) !important;
+    color: #f7768e !important;
+    border: 1px solid rgba(247, 118, 142, 0.25) !important;
+  }
+  .uran-badge-config {
+    background: rgba(65, 166, 181, 0.15) !important;
+    color: #7dcfff !important;
+    border: 1px solid rgba(65, 166, 181, 0.3) !important;
+  }
+  .uran-depot-name {
+    font-size: 13px !important;
+    color: #ffffff !important;
+    font-weight: 500 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    text-align: left !important;
+  }
+  .uran-depot-size {
+    font-size: 11px !important;
+    color: #9aa4b2 !important;
+    flex-shrink: 0 !important;
+    font-family: monospace !important;
+  }
+`;
+
+/** Plain-language status for the metadata the page is waiting on. */
+function fetchNote(meta?: AtomDetail["meta"]): string {
+  const stale: string[] = [];
+  if (!meta || meta.store !== "fresh") stale.push("AppIDs / DLCs");
+  if (!meta || meta.steamcmd !== "fresh") stale.push("depot info");
+  return `Fetching ${stale.join(" and ")}…`;
+}
 
 export const AtomGamesTab: React.FC = () => {
   const [games, setGames] = React.useState<AtomGame[]>([]);
@@ -38,7 +221,9 @@ export const AtomGamesTab: React.FC = () => {
   const [checkingUpdates, setCheckingUpdates] = React.useState(false);
   const [atomUpdates, setAtomUpdates] = React.useState<Record<string, AtomUpdate>>({});
   const [busy, setBusy] = React.useState(false);
+  const [metaLoading, setMetaLoading] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  const [depotFilter, setDepotFilter] = React.useState<"all" | "windows" | "linux" | "dlc">("all");
   const detailUpdate = detail ? atomUpdates[detail.app_id] : undefined;
 
   const handleCheckAllUpdates = async () => {
@@ -109,10 +294,32 @@ export const AtomGamesTab: React.FC = () => {
 
   const openGame = async (appId: string) => {
     setMsg("");
+    setDepotFilter("all");
     try {
+      // Phase 1: local-only, renders instantly from disk. The Steam metadata
+      // (DLC list + depot attribution) is cached with a TTL, so if it is still
+      // fresh the page is complete without touching the network at all.
       const d = await getAtomGame(appId);
-      if (d?.ok) setDetail(d as AtomDetail);
-      else setMsg(d?.error || "Could not open game");
+      if (!d?.ok) {
+        setMsg(d?.error || "Could not open game");
+        return;
+      }
+      setDetail(d as AtomDetail);
+      // Phase 2: only when a cached source is stale or missing. The page is
+      // already on screen, so the DLC list fills in behind the scenes.
+      if (d.meta?.needs_fetch) {
+        setMetaLoading(true);
+        refreshAtomMeta(appId)
+          .then((full) => {
+            if (full?.ok) {
+              setDetail((cur) =>
+                cur && cur.app_id === full.app_id ? (full as AtomDetail) : cur,
+              );
+            }
+          })
+          .catch(() => {})
+          .finally(() => setMetaLoading(false));
+      }
     } catch (e: any) {
       setMsg(`Error: ${e}`);
     }
@@ -217,8 +424,23 @@ export const AtomGamesTab: React.FC = () => {
   // ---- Detail page ----
   if (detail) {
     const notInstalled = !detail.installed;
+    // What the AppIDs above actually mount right now: the base game plus every
+    // enabled DLC's depots. Uran keeps this in sync, so it is shown for reference.
+    const depots = (detail.depots_detail || []).filter((d) => d.in_config);
+    const hasWindows = depots.some((d) => d.os_list?.includes("windows"));
+    const hasLinux = depots.some((d) => d.os_list?.includes("linux"));
+    const hasDlc = depots.some((d) => d.is_dlc);
+
+    const filteredDepots = depots.filter((d) => {
+      if (depotFilter === "windows" && !d.os_list?.includes("windows")) return false;
+      if (depotFilter === "linux" && !d.os_list?.includes("linux")) return false;
+      if (depotFilter === "dlc" && !d.is_dlc) return false;
+      return true;
+    });
+
     return (
       <>
+        <style>{URAN_STYLES}</style>
         <PanelSection>
           <PanelSectionRow>
             <ButtonItem
@@ -319,13 +541,46 @@ export const AtomGamesTab: React.FC = () => {
           </PanelSectionRow>
         </PanelSection>
 
-        <PanelSection title={`AppIDs / DLCs (${detail.dlcs_detail?.length || 0})`}>
+        <PanelSection title={`AppIDs (${(detail.dlcs_detail?.length || 0) + 1})`}>
           <PanelSectionRow>
             <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
-              The base game is always included. Toggle a DLC to add or remove the
-              depots and keys it owns — turning one off removes exactly what it added.
+              The base game is always mounted. Toggle a DLC and Uran adds or
+              removes the depots and decryption keys it owns — turning one off
+              removes exactly what it added.
             </div>
           </PanelSectionRow>
+          <PanelSectionRow>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "4px 0",
+              }}
+            >
+              <span
+                title={detail.name}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {detail.name}
+              </span>
+              <span className="uran-badge uran-badge-id">Base</span>
+              <span className="uran-badge uran-badge-config">Mounted</span>
+            </div>
+          </PanelSectionRow>
+          {metaLoading && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "11px", color: "#f0c674", padding: "2px 0 6px" }}>
+                {fetchNote(detail.meta)}
+              </div>
+            </PanelSectionRow>
+          )}
           {detail.dlcs_detail && detail.dlcs_detail.length > 0 ? (
             detail.dlcs_detail.map((dlc) => (
               <PanelSectionRow key={dlc.id}>
@@ -365,13 +620,181 @@ export const AtomGamesTab: React.FC = () => {
           ) : (
             <PanelSectionRow>
               <div style={{ fontSize: "12px", opacity: 0.6, padding: "4px 0" }}>
-                No AdditionalAppIds found for this game.
+                {metaLoading
+                  ? "Loading AppIDs…"
+                  : "No DLC AppIDs found for this game."}
               </div>
             </PanelSectionRow>
           )}
         </PanelSection>
 
-        <PanelSection title="Keys & Depots">
+        <PanelSection title={`Depots & Keys (${depots.length})`}>
+          <PanelSectionRow>
+            <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
+              What the AppIDs above mount right now — the base game plus each
+              enabled DLC. Uran keeps this in sync; it is shown for reference.
+            </div>
+          </PanelSectionRow>
+          {metaLoading && (
+            <PanelSectionRow>
+              <div style={{ fontSize: "11px", color: "#f0c674", padding: "2px 0 6px" }}>
+                {fetchNote(detail.meta)}
+              </div>
+            </PanelSectionRow>
+          )}
+          {depots.length > 0 ? (
+            <PanelSectionRow>
+              <div className="uran-depot-container">
+                {(hasWindows || hasLinux || hasDlc) && (
+                  <div className="uran-depot-filters">
+                    <DialogButton
+                      style={{
+                        padding: "2px 10px",
+                        minWidth: 0,
+                        height: "26px",
+                        minHeight: 0,
+                        fontSize: "11px",
+                        borderRadius: "6px",
+                        background: depotFilter === "all" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
+                        color: depotFilter === "all" ? "#ffffff" : "#c5cdd8",
+                      }}
+                      onClick={() => setDepotFilter("all")}
+                    >
+                      All ({depots.length})
+                    </DialogButton>
+                    {hasWindows && (
+                      <DialogButton
+                        style={{
+                          padding: "2px 10px",
+                          minWidth: 0,
+                          height: "26px",
+                          minHeight: 0,
+                          fontSize: "11px",
+                          borderRadius: "6px",
+                          background: depotFilter === "windows" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
+                          color: depotFilter === "windows" ? "#ffffff" : "#c5cdd8",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                        onClick={() => setDepotFilter("windows")}
+                      >
+                        <WindowsIcon size={12} />
+                        Windows
+                      </DialogButton>
+                    )}
+                    {hasLinux && (
+                      <DialogButton
+                        style={{
+                          padding: "2px 10px",
+                          minWidth: 0,
+                          height: "26px",
+                          minHeight: 0,
+                          fontSize: "11px",
+                          borderRadius: "6px",
+                          background: depotFilter === "linux" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
+                          color: depotFilter === "linux" ? "#ffffff" : "#c5cdd8",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                        onClick={() => setDepotFilter("linux")}
+                      >
+                        <LinuxIcon size={12} />
+                        Linux
+                      </DialogButton>
+                    )}
+                    {hasDlc && (
+                      <DialogButton
+                        style={{
+                          padding: "2px 10px",
+                          minWidth: 0,
+                          height: "26px",
+                          minHeight: 0,
+                          fontSize: "11px",
+                          borderRadius: "6px",
+                          background: depotFilter === "dlc" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
+                          color: depotFilter === "dlc" ? "#ffffff" : "#c5cdd8",
+                        }}
+                        onClick={() => setDepotFilter("dlc")}
+                      >
+                        DLC
+                      </DialogButton>
+                    )}
+                  </div>
+                )}
+
+                {filteredDepots.map((d) => (
+                  <div key={d.id} className="uran-depot-card">
+                    <div className="uran-depot-header">
+                      <div className="uran-depot-tags">
+                        <span className="uran-badge uran-badge-id">{d.id}</span>
+                        {d.is_app_key && (
+                          <span className="uran-badge uran-badge-config">AppKey</span>
+                        )}
+                        {d.os_list && d.os_list.length > 0 && (
+                          <span className="uran-depot-os-group">
+                            {d.os_list.includes("windows") && (
+                              <WindowsIcon size={13} style={{ marginRight: 3 }} />
+                            )}
+                            {d.os_list.includes("linux") && (
+                              <LinuxIcon size={13} style={{ marginRight: 3 }} />
+                            )}
+                            {d.os_list.includes("macos") && (
+                              <AppleIcon size={13} style={{ marginRight: 3 }} />
+                            )}
+                            {d.os_list.includes("android") && (
+                              <AndroidIcon size={13} style={{ marginRight: 3 }} />
+                            )}
+                          </span>
+                        )}
+                        {d.arch && (
+                          <span className="uran-badge uran-badge-arch">{d.arch}</span>
+                        )}
+                        {d.lang && (
+                          <span className="uran-badge uran-badge-lang">{d.lang}</span>
+                        )}
+                        {d.is_dlc && (
+                          <span className="uran-badge uran-badge-dlc">
+                            {d.owner || d.dlc_id
+                              ? `DLC ${d.owner || d.dlc_id}`
+                              : "DLC"}
+                          </span>
+                        )}
+                        {d.is_shared && (
+                          <span className="uran-badge uran-badge-arch">Shared</span>
+                        )}
+                        <span
+                          className={`uran-badge ${
+                            d.has_key ? "uran-badge-key" : "uran-badge-nokey"
+                          }`}
+                        >
+                          {d.has_key ? "Key" : "No Key"}
+                        </span>
+                        {d.in_config && (
+                          <span className="uran-badge uran-badge-config">Mounted</span>
+                        )}
+                      </div>
+                      {d.size_str && (
+                        <div className="uran-depot-size">{d.size_str}</div>
+                      )}
+                    </div>
+                    <div className="uran-depot-name" title={d.name}>
+                      {d.name}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </PanelSectionRow>
+          ) : (
+            <PanelSectionRow>
+              <div style={{ fontSize: "12px", opacity: 0.6, padding: "4px 0" }}>
+                {metaLoading
+                  ? "Loading depot information…"
+                  : "No depots found for this game."}
+              </div>
+            </PanelSectionRow>
+          )}
           <PanelSectionRow>
             <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
               Refresh re-checks Hubcap and rewrites this game&apos;s depots and keys
@@ -512,68 +935,7 @@ export const AtomGamesTab: React.FC = () => {
   // ---- List page ----
   return (
     <>
-      <style>{`
-        .uran-game-row {
-          display: flex !important;
-          align-items: center !important;
-          gap: 6px !important;
-          width: 100% !important;
-          margin-bottom: 8px !important;
-        }
-        .uran-game-pill {
-          min-width: 0 !important;
-          flex: 1 1 0% !important;
-          height: 38px !important;
-          min-height: 38px !important;
-          padding: 0 12px !important;
-          display: flex !important;
-          align-items: center !important;
-          justify-content: flex-start !important;
-          overflow: hidden !important;
-          border-radius: 8px !important;
-        }
-        .uran-game-pill-content {
-          display: flex !important;
-          align-items: center !important;
-          justify-content: space-between !important;
-          width: 100% !important;
-          min-width: 0 !important;
-          gap: 6px !important;
-        }
-        .uran-game-pill-title {
-          flex: 1 1 0% !important;
-          min-width: 0 !important;
-          overflow: hidden !important;
-          text-overflow: ellipsis !important;
-          white-space: nowrap !important;
-          text-align: left !important;
-          font-size: 13px !important;
-        }
-        .uran-game-pill-badge {
-          flex-shrink: 0 !important;
-          font-size: 13px !important;
-          color: #7ee2a8 !important;
-          font-weight: 700 !important;
-        }
-        .uran-uninstall-btn {
-          width: 38px !important;
-          min-width: 38px !important;
-          max-width: 38px !important;
-          height: 38px !important;
-          min-height: 38px !important;
-          padding: 0 !important;
-          flex-shrink: 0 !important;
-          display: flex !important;
-          align-items: center !important;
-          justify-content: center !important;
-          border-radius: 8px !important;
-        }
-        .uran-uninstall-btn:hover,
-        .uran-uninstall-btn:focus,
-        .uran-uninstall-btn:focus-within {
-          color: #ff6b6b !important;
-        }
-      `}</style>
+      <style>{URAN_STYLES}</style>
 
       <PanelSection title={`AT0-M Games (${games.length})`}>
         {games.length > 0 && (

@@ -61,12 +61,19 @@ export type AtomGame = {
 export type AtomDepotInfo = {
   id: string;
   name: string;
+  raw_name?: string;
   in_config: boolean;
   has_key: boolean;
   is_dlc: boolean;
+  dlc_id?: string;
   is_shared: boolean;
   os: string;
+  os_list?: string[];
+  arch?: string;
+  lang?: string;
+  size_str?: string;
   owner?: string;
+  is_app_key?: boolean;
 };
 
 export type AtomDlcInfo = {
@@ -87,6 +94,7 @@ export type AtomDetail = AtomGame & {
   depots_detail?: AtomDepotInfo[];
   dlcs_detail?: AtomDlcInfo[];
   dlcs_injected?: boolean;
+  meta?: { store: string; steamcmd: string; needs_fetch: boolean };
 };
 
 export type AtomUpdate = {
@@ -247,6 +255,10 @@ export const getAtomGame = callable<[app_id: string], AtomDetail & {
   ok: boolean;
   error?: string;
 }>("get_atom_game");
+export const refreshAtomMeta = callable<[app_id: string], AtomDetail & {
+  ok: boolean;
+  error?: string;
+}>("refresh_atom_meta");
 export const previewAtomUninstall = callable<
   [app_id: string],
   { ok: boolean; name?: string; targets: string[]; error?: string }
