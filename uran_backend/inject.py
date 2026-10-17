@@ -644,5 +644,50 @@ class Injector:
             result["enabled"] = bool(enable)
         return result
 
+    def toggle_additional_depot(self, app_id: str, depot_id: str, enable: bool) -> dict:
+        """Add or remove an individual depot from AdditionalDepots."""
+        aid = sanitize_id(app_id)
+        did = sanitize_id(depot_id)
+        if not aid or not did:
+            return {"ok": False, "error": "Invalid ID"}
+        if self.ctx.sls_config() is None:
+            return {"ok": False, "error": "SLSsteam config not found"}
+        with self.sls.edit() as editor:
+            if enable:
+                dname = self.ctx.depot_names.get(did, "")
+                comment = f"[{dname}] ({aid})" if dname else f"({aid})"
+                editor.add_depot(did, comment=comment)
+            else:
+                editor.remove_depot(did)
+        if not editor.committed_successfully:
+            return {"ok": False, "error": "Failed to update SLSsteam config"}
+        signal_api("RELOAD", logger)
+        return {"ok": True, "depot_id": did, "enabled": bool(enable)}
+
+    def toggle_decryption_key(self, app_id: str, target_id: str, enable: bool) -> dict:
+        """Add or remove an individual key from DecryptionKeys."""
+        aid = sanitize_id(app_id)
+        tid = sanitize_id(target_id)
+        if not aid or not tid:
+            return {"ok": False, "error": "Invalid ID"}
+        if self.ctx.sls_config() is None:
+            return {"ok": False, "error": "SLSsteam config not found"}
+        with self.sls.edit() as editor:
+            if enable:
+                rec = self.library.load().get(aid) or {}
+                k = (rec.get("keys") or {}).get(tid)
+                if not k:
+                    k = self.library.local_depot_keys(aid).get(tid)
+                if not k:
+                    return {"ok": False, "error": f"No key found locally for ID {tid}"}
+                comment = f"[AppKey] ({aid})" if tid == aid else f"({aid})"
+                editor.add_key(tid, k, comment=comment)
+            else:
+                editor.remove_key(tid)
+        if not editor.committed_successfully:
+            return {"ok": False, "error": "Failed to update SLSsteam config"}
+        signal_api("RELOAD", logger)
+        return {"ok": True, "target_id": tid, "enabled": bool(enable)}
+
 
 __all__ = ["Injector"]

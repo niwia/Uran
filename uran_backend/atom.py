@@ -149,6 +149,7 @@ class AtomLibrary:
                 "name": re.sub(r"^\[DLC\s*\d+\]\s*", "", raw_name),
                 "in_config": did in live_apps,
                 "depot_count": len(owned),
+                "is_license_only": len(owned) == 0,
             })
 
         cmd_meta = details.get("depot_meta") or {}
@@ -156,8 +157,11 @@ class AtomLibrary:
         for ids in owner_map.values():
             all_depots |= ids
         all_depots = {d for d in all_depots if d not in dlc_ids}
+
+        # Filter out SHARED_REDISTS and root AppID from the active game content depots
+        content_depots = (all_depots - SHARED_REDISTS) - {aid}
         depots_list: list[dict] = []
-        for did in sorted(all_depots, key=lambda x: int(x) if x.isdigit() else 0):
+        for did in sorted(content_depots, key=lambda x: int(x) if x.isdigit() else 0):
             enrich = enrichments.get(did, {})
             cmeta = cmd_meta.get(did, {})
 
@@ -197,10 +201,10 @@ class AtomLibrary:
                 "name": clean_name,
                 "raw_name": raw_name,
                 "in_config": did in live_depots,
-                "has_key": did in live_keys or did in record_keys,
+                "has_key": did in live_keys or did in record_keys or did in local_keys,
                 "is_dlc": is_dlc,
                 "dlc_id": owner_id if (owner_id and owner_id != aid) else "",
-                "is_shared": did in SHARED_REDISTS,
+                "is_shared": False,
                 "os": os_str,
                 "os_list": os_list,
                 "arch": arch_code,
@@ -209,30 +213,51 @@ class AtomLibrary:
                 "owner": owner_id,
             })
 
-        # The root AppKey lives under the AppID in DecryptionKeys (SLSsteam needs
-        # it to decrypt the game), but it is not a depot, so it is surfaced here
-        # as its own row rather than being hidden from the page.
-        if aid in live_keys or aid in record_keys:
-            depots_list.insert(0, {
+        # Build dedicated keys list: Root AppKey + Game Depot Keys
+        keys_list: list[dict] = []
+        root_k = live_keys.get(aid) or record_keys.get(aid) or local_keys.get(aid) or ""
+        if root_k:
+            game_name = record.get("name") or details.get("name") or f"App {aid}"
+            keys_list.append({
                 "id": aid,
-                "name": "AppKey",
-                "raw_name": "AppKey",
+                "name": f"{game_name} (Root AppKey)",
+                "key": root_k,
+                "masked_key": f"{root_k[:8]}...{root_k[-6:]}" if len(root_k) >= 16 else root_k,
+                "is_appkey": True,
                 "in_config": aid in live_keys,
-                "has_key": True,
-                "is_dlc": False,
-                "dlc_id": "",
-                "is_shared": False,
-                "is_app_key": True,
-                "os": "",
-                "os_list": [],
-                "arch": "",
-                "lang": "",
-                "size_str": "",
-                "owner": "",
+                "in_local": bool(aid in local_keys or aid in record_keys),
+            })
+
+        seen_keys: set[str] = set()
+        for did in sorted((all_depots | set(live_keys) | set(record_keys) | set(local_keys)) - {aid} - SHARED_REDISTS, key=lambda x: int(x) if x.isdigit() else 0):
+            if did in seen_keys:
+                continue
+            k = live_keys.get(did) or record_keys.get(did) or local_keys.get(did)
+            if not k:
+                continue
+            seen_keys.add(did)
+            enrich = enrichments.get(did, {})
+            cmeta = cmd_meta.get(did, {})
+            raw_name = (
+                enrich.get("name")
+                or cmeta.get("name")
+                or record_names.get(did)
+                or self.ctx.depot_names.get(did)
+                or f"Depot {did}"
+            )
+            clean_name = clean_depot_name(did, raw_name, cmeta.get("name") or record_names.get(did) or "")
+            keys_list.append({
+                "id": did,
+                "name": clean_name,
+                "key": k,
+                "masked_key": f"{k[:8]}...{k[-6:]}" if len(k) >= 16 else k,
+                "is_appkey": False,
+                "in_config": did in live_keys,
+                "in_local": bool(did in local_keys or did in record_keys),
             })
 
         dlcs_injected = bool(dlcs_list and all(d["in_config"] for d in dlcs_list))
-        return depots_list, dlcs_list, dlcs_injected
+        return depots_list, dlcs_list, dlcs_injected, keys_list
 
     def detail(self, app_id: str, allow_network: bool = True) -> dict:
         """Per-game state for the detail page: toggles, depots, DLCs, install info.
@@ -253,7 +278,7 @@ class AtomLibrary:
         fake = self.integrations.get_fake_appid(aid)
         eos = self.integrations.eos_status(game_dir) if install.get("installed") else "none"
 
-        depots_detail, dlcs_detail, dlcs_injected = self.inspect(aid, record, allow_network)
+        depots_detail, dlcs_detail, dlcs_injected, keys_detail = self.inspect(aid, record, allow_network)
 
         return {
             "ok": True,
@@ -276,6 +301,7 @@ class AtomLibrary:
             "depots_detail": depots_detail,
             "dlcs_detail": dlcs_detail,
             "dlcs_injected": dlcs_injected,
+            "keys_detail": keys_detail,
             "meta": self.steam.meta_state(aid),
         }
 

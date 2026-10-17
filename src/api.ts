@@ -81,6 +81,17 @@ export type AtomDlcInfo = {
   name: string;
   in_config: boolean;
   depot_count?: number;
+  is_license_only?: boolean;
+};
+
+export type AtomKeyInfo = {
+  id: string;
+  name: string;
+  key?: string;
+  masked_key: string;
+  is_appkey: boolean;
+  in_config: boolean;
+  in_local: boolean;
 };
 
 export type AtomDetail = AtomGame & {
@@ -94,6 +105,7 @@ export type AtomDetail = AtomGame & {
   depots_detail?: AtomDepotInfo[];
   dlcs_detail?: AtomDlcInfo[];
   dlcs_injected?: boolean;
+  keys_detail?: AtomKeyInfo[];
   meta?: { store: string; steamcmd: string; needs_fetch: boolean };
 };
 
@@ -311,6 +323,14 @@ export const toggleAdditionalApp = callable<
   [app_id: string, dlc_appid: string, enable: boolean],
   { ok: boolean; error?: string; dlc_id?: string; enabled?: boolean }
 >("toggle_additional_app");
+export const toggleAdditionalDepot = callable<
+  [app_id: string, depot_id: string, enable: boolean],
+  { ok: boolean; error?: string; depot_id?: string; enabled?: boolean }
+>("toggle_additional_depot");
+export const toggleDecryptionKey = callable<
+  [app_id: string, target_id: string, enable: boolean],
+  { ok: boolean; error?: string; target_id?: string; enabled?: boolean }
+>("toggle_decryption_key");
 export const refreshGame = callable<
   [app_id: string],
   { ok: boolean; error?: string; depots_added?: string[]; keys_added?: string[] }

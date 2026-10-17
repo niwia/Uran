@@ -151,6 +151,12 @@ class Plugin:
     async def toggle_additional_app(self, app_id: str, dlc_appid: str, enable: bool) -> dict:
         return await asyncio.to_thread(self.s.injector.toggle_additional_app, app_id, dlc_appid, enable)
 
+    async def toggle_additional_depot(self, app_id: str, depot_id: str, enable: bool) -> dict:
+        return await asyncio.to_thread(self.s.injector.toggle_additional_depot, app_id, depot_id, enable)
+
+    async def toggle_decryption_key(self, app_id: str, target_id: str, enable: bool) -> dict:
+        return await asyncio.to_thread(self.s.injector.toggle_decryption_key, app_id, target_id, enable)
+
     async def refresh_game(self, app_id: str) -> dict:
         """Re-project a game's config from the freshest keys/depots.
 

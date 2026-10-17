@@ -37,6 +37,7 @@ import {
   AndroidIcon,
 } from "../components/icons";
 import { formatBytes } from "../components/format";
+import { DepotManagerModal } from "../components/DepotManagerModal";
 
 const URAN_STYLES = `
   .uran-game-row {
@@ -588,7 +589,9 @@ export const AtomGamesTab: React.FC = () => {
                   label={dlc.name}
                   description={
                     `AppID: ${dlc.id}` +
-                    (dlc.depot_count
+                    (dlc.is_license_only
+                      ? " · License Only"
+                      : dlc.depot_count
                       ? ` · ${dlc.depot_count} depot${
                           dlc.depot_count === 1 ? "" : "s"
                         }`
@@ -628,11 +631,11 @@ export const AtomGamesTab: React.FC = () => {
           )}
         </PanelSection>
 
-        <PanelSection title={`Depots & Keys (${depots.length})`}>
+        <PanelSection title="Depots & Decryption Keys">
           <PanelSectionRow>
-            <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
-              What the AppIDs above mount right now — the base game plus each
-              enabled DLC. Uran keeps this in sync; it is shown for reference.
+            <div style={{ fontSize: "11px", opacity: 0.65, padding: "0 0 6px" }}>
+              Configure game content depots, license-only DLCs, and AES decryption keys
+              in a full-screen gamepad-friendly manager.
             </div>
           </PanelSectionRow>
           {metaLoading && (
@@ -642,165 +645,38 @@ export const AtomGamesTab: React.FC = () => {
               </div>
             </PanelSectionRow>
           )}
-          {depots.length > 0 ? (
-            <PanelSectionRow>
-              <div className="uran-depot-container">
-                {(hasWindows || hasLinux || hasDlc) && (
-                  <div className="uran-depot-filters">
-                    <DialogButton
-                      style={{
-                        padding: "2px 10px",
-                        minWidth: 0,
-                        height: "26px",
-                        minHeight: 0,
-                        fontSize: "11px",
-                        borderRadius: "6px",
-                        background: depotFilter === "all" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
-                        color: depotFilter === "all" ? "#ffffff" : "#c5cdd8",
-                      }}
-                      onClick={() => setDepotFilter("all")}
-                    >
-                      All ({depots.length})
-                    </DialogButton>
-                    {hasWindows && (
-                      <DialogButton
-                        style={{
-                          padding: "2px 10px",
-                          minWidth: 0,
-                          height: "26px",
-                          minHeight: 0,
-                          fontSize: "11px",
-                          borderRadius: "6px",
-                          background: depotFilter === "windows" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
-                          color: depotFilter === "windows" ? "#ffffff" : "#c5cdd8",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "4px",
-                        }}
-                        onClick={() => setDepotFilter("windows")}
-                      >
-                        <WindowsIcon size={12} />
-                        Windows
-                      </DialogButton>
-                    )}
-                    {hasLinux && (
-                      <DialogButton
-                        style={{
-                          padding: "2px 10px",
-                          minWidth: 0,
-                          height: "26px",
-                          minHeight: 0,
-                          fontSize: "11px",
-                          borderRadius: "6px",
-                          background: depotFilter === "linux" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
-                          color: depotFilter === "linux" ? "#ffffff" : "#c5cdd8",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "4px",
-                        }}
-                        onClick={() => setDepotFilter("linux")}
-                      >
-                        <LinuxIcon size={12} />
-                        Linux
-                      </DialogButton>
-                    )}
-                    {hasDlc && (
-                      <DialogButton
-                        style={{
-                          padding: "2px 10px",
-                          minWidth: 0,
-                          height: "26px",
-                          minHeight: 0,
-                          fontSize: "11px",
-                          borderRadius: "6px",
-                          background: depotFilter === "dlc" ? "#3a5c8d" : "rgba(255,255,255,0.08)",
-                          color: depotFilter === "dlc" ? "#ffffff" : "#c5cdd8",
-                        }}
-                        onClick={() => setDepotFilter("dlc")}
-                      >
-                        DLC
-                      </DialogButton>
-                    )}
-                  </div>
-                )}
-
-                {filteredDepots.map((d) => (
-                  <div key={d.id} className="uran-depot-card">
-                    <div className="uran-depot-header">
-                      <div className="uran-depot-tags">
-                        <span className="uran-badge uran-badge-id">{d.id}</span>
-                        {d.is_app_key && (
-                          <span className="uran-badge uran-badge-config">AppKey</span>
-                        )}
-                        {d.os_list && d.os_list.length > 0 && (
-                          <span className="uran-depot-os-group">
-                            {d.os_list.includes("windows") && (
-                              <WindowsIcon size={13} style={{ marginRight: 3 }} />
-                            )}
-                            {d.os_list.includes("linux") && (
-                              <LinuxIcon size={13} style={{ marginRight: 3 }} />
-                            )}
-                            {d.os_list.includes("macos") && (
-                              <AppleIcon size={13} style={{ marginRight: 3 }} />
-                            )}
-                            {d.os_list.includes("android") && (
-                              <AndroidIcon size={13} style={{ marginRight: 3 }} />
-                            )}
-                          </span>
-                        )}
-                        {d.arch && (
-                          <span className="uran-badge uran-badge-arch">{d.arch}</span>
-                        )}
-                        {d.lang && (
-                          <span className="uran-badge uran-badge-lang">{d.lang}</span>
-                        )}
-                        {d.is_dlc && (
-                          <span className="uran-badge uran-badge-dlc">
-                            {d.owner || d.dlc_id
-                              ? `DLC ${d.owner || d.dlc_id}`
-                              : "DLC"}
-                          </span>
-                        )}
-                        {d.is_shared && (
-                          <span className="uran-badge uran-badge-arch">Shared</span>
-                        )}
-                        <span
-                          className={`uran-badge ${
-                            d.has_key ? "uran-badge-key" : "uran-badge-nokey"
-                          }`}
-                        >
-                          {d.has_key ? "Key" : "No Key"}
-                        </span>
-                        {d.in_config && (
-                          <span className="uran-badge uran-badge-config">Mounted</span>
-                        )}
-                      </div>
-                      {d.size_str && (
-                        <div className="uran-depot-size">{d.size_str}</div>
-                      )}
-                    </div>
-                    <div className="uran-depot-name" title={d.name}>
-                      {d.name}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </PanelSectionRow>
-          ) : (
-            <PanelSectionRow>
-              <div style={{ fontSize: "12px", opacity: 0.6, padding: "4px 0" }}>
-                {metaLoading
-                  ? "Loading depot information…"
-                  : "No depots found for this game."}
-              </div>
-            </PanelSectionRow>
-          )}
           <PanelSectionRow>
-            <div style={{ fontSize: "11px", opacity: 0.6, padding: "0 0 4px" }}>
-              Refresh re-checks Hubcap and rewrites this game&apos;s depots and keys
-              in SLSsteam&apos;s config. Use it when a key arrived after the game was
-              added — a plain update writes the key but not the depot it mounts.
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px" }}>
+              <span className="uran-badge uran-badge-config">
+                {detail.depots_detail?.filter((d) => d.in_config).length ?? detail.depots?.length ?? 0} Depots Mounted
+              </span>
+              <span className="uran-badge uran-badge-key">
+                {detail.keys_detail?.filter((k) => k.in_config).length ?? 0} Keys Active
+              </span>
+              {detail.dlcs_detail && (
+                <span className="uran-badge uran-badge-dlc">
+                  {detail.dlcs_detail.filter((d) => d.in_config).length} DLCs Enabled
+                </span>
+              )}
             </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              disabled={busy}
+              onClick={() => {
+                showModal(
+                  <DepotManagerModal
+                    appId={detail.app_id}
+                    appName={detail.name}
+                    initialDetail={detail}
+                    onUpdate={() => openGame(detail.app_id)}
+                  />
+                );
+              }}
+            >
+              ⚙️ Manage Depots &amp; Keys
+            </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem
@@ -817,12 +693,13 @@ export const AtomGamesTab: React.FC = () => {
                         added === 1 ? "" : "s"
                       })`,
                     );
+                    await openGame(detail.app_id);
                   }
                   return r;
                 })
               }
             >
-              Refresh Keys &amp; Depots
+              🔄 Refresh Keys &amp; Depots
             </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
