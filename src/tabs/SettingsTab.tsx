@@ -760,7 +760,7 @@ export const SettingsTab: React.FC = () => {
             }}
           >
             <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.5.5"}
+              Uran v{pluginInfo.version || "0.5.6"}
             </span>
             {updateInfo?.has_update && (
               <Focusable
