@@ -1,6 +1,6 @@
 import React from "react";
 import { Focusable } from "@decky/ui";
-import { definePlugin } from "@decky/api";
+import { definePlugin, routerHook } from "@decky/api";
 import { refreshNotificationChannel, setNotificationMode } from "./notify";
 import { getSetting } from "./api";
 import { initStorePatch } from "./StorePatch";
@@ -9,6 +9,7 @@ import { AssellaLogo } from "./components/icons";
 import { SearchTab } from "./tabs/SearchTab";
 import { AtomGamesTab } from "./tabs/AtomGamesTab";
 import { SettingsTab } from "./tabs/SettingsTab";
+import { AdvancedPage } from "./pages/AdvancedPage";
 
 // -- Plugin Entry -------------------------------------------------------------
 let lastActiveTab = "search";
@@ -16,6 +17,9 @@ let lastActiveTab = "search";
 export default definePlugin(() => {
   const storePatchCleanup = initStorePatch();
   const contextMenuCleanup = initContextMenuPatch();
+
+  // Full-screen Advanced window (opened from the AT0-M tab's Manage button).
+  routerHook.addRoute("/uran/advanced", () => <AdvancedPage />);
 
   getSetting("notification_mode", "auto")
     .then((v) => {

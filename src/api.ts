@@ -335,6 +335,27 @@ export const refreshGame = callable<
   [app_id: string],
   { ok: boolean; error?: string; depots_added?: string[]; keys_added?: string[] }
 >("refresh_game");
+export const refetchGame = callable<
+  [app_id: string],
+  {
+    ok: boolean;
+    error?: string;
+    name?: string;
+    depots_added?: string[];
+    keys_added?: string[];
+    dlcs_added?: string[];
+  }
+>("refetch_game");
+export const applyDepotSelection = callable<
+  [app_id: string, depot_ids?: string[], dlc_ids?: string[], key_ids?: string[]],
+  {
+    ok: boolean;
+    error?: string;
+    depots_added?: string[];
+    keys_added?: string[];
+    dlc_appids?: string[];
+  }
+>("apply_depot_selection");
 export const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>(
   "is_global_slsonline_enabled",
 );

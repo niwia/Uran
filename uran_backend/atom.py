@@ -98,19 +98,22 @@ class AtomLibrary:
         record_names = {str(d): str(n) for d, n in (record.get("depot_names", {}) or {}).items()}
 
         enrichments = self.library.depot_enrichments(aid)
-        for did, key in self.library.local_depot_keys(aid).items():
+        local_keys = {str(d): str(k) for d, k in self.library.local_depot_keys(aid).items()}
+        for did, key in local_keys.items():
             record_keys.setdefault(str(did), str(key))
 
         cfg = self.ctx.sls_config()
         live_apps: set[str] = set()
         live_depots: set[str] = set()
+        live_keys_map: dict[str, str] = {}
         live_keys: set[str] = set()
         if cfg and cfg.exists():
             try:
                 content = cfg.read_text(encoding="utf-8", errors="ignore")
                 live_apps = set(parse_list_section(content, "AdditionalApps").keys())
                 live_depots = set(parse_list_section(content, "AdditionalDepots").keys())
-                live_keys = set(parse_key_section(content, "DecryptionKeys")[0].keys())
+                live_keys_map = parse_key_section(content, "DecryptionKeys")[0]
+                live_keys = set(live_keys_map.keys())
             except Exception as exc:  # noqa: BLE001
                 logger.debug("SLS config parse error: %s", exc)
 
@@ -215,7 +218,7 @@ class AtomLibrary:
 
         # Build dedicated keys list: Root AppKey + Game Depot Keys
         keys_list: list[dict] = []
-        root_k = live_keys.get(aid) or record_keys.get(aid) or local_keys.get(aid) or ""
+        root_k = live_keys_map.get(aid) or record_keys.get(aid) or local_keys.get(aid) or ""
         if root_k:
             game_name = record.get("name") or details.get("name") or f"App {aid}"
             keys_list.append({
@@ -229,10 +232,11 @@ class AtomLibrary:
             })
 
         seen_keys: set[str] = set()
-        for did in sorted((all_depots | set(live_keys) | set(record_keys) | set(local_keys)) - {aid} - SHARED_REDISTS, key=lambda x: int(x) if x.isdigit() else 0):
+        game_key_candidates = (all_depots | set(record_keys) | set(local_keys)) - {aid} - SHARED_REDISTS
+        for did in sorted(game_key_candidates, key=lambda x: int(x) if x.isdigit() else 0):
             if did in seen_keys:
                 continue
-            k = live_keys.get(did) or record_keys.get(did) or local_keys.get(did)
+            k = live_keys_map.get(did) or record_keys.get(did) or local_keys.get(did)
             if not k:
                 continue
             seen_keys.add(did)

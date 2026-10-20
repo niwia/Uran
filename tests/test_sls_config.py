@@ -64,6 +64,10 @@ check("parse_list_section", sc.parse_list_section(BASE, "AdditionalApps"), {"620
 keys, comments = sc.parse_key_section(BASE, "DecryptionKeys")
 check("parse_key_section ids", sorted(keys), ["620", "621"])
 check("parse_key_section keeps comments", comments["620"], "Portal 2 [AppKey] (620)")
+sample_m = "ManifestIds:\n  621: 1780285784220567439 # Portal 2 [win64] (620)\n"
+mgids, mcomments = sc.parse_manifest_section(sample_m)
+check("parse_manifest_section gids", mgids, {"621": "1780285784220567439"})
+check("parse_manifest_section keeps comments", mcomments["621"], "Portal 2 [win64] (620)")
 
 # --- ensure_* helpers ---------------------------------------------------
 check("ensure_plugins_enabled rewrites 'no'", sc.ensure_plugins_enabled(BASE).splitlines()[1], "Plugins: yes")

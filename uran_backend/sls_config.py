@@ -350,6 +350,23 @@ def parse_key_section(content: str, section: str) -> tuple[dict[str, str], dict[
     return keys, comments
 
 
+def parse_manifest_section(content: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Parse a `  123: 456789 # comment` ManifestIds section into ({id: gid}, {id: comment})."""
+    gids: dict[str, str] = {}
+    comments: dict[str, str] = {}
+    bounds = section_bounds(content, "ManifestIds")
+    if not bounds:
+        return gids, comments
+    for match in re.finditer(
+        r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?(\d+)['\"]?(?:[ \t]*#[ \t]*(.*))?$",
+        content[bounds[1]:bounds[2]],
+        re.MULTILINE,
+    ):
+        gids[match.group(1)] = match.group(2)
+        comments[match.group(1)] = (match.group(3) or "").strip()
+    return gids, comments
+
+
 def replace_section_block(content: str, section: str, body_lines: list[str]) -> str:
     """Replace (or append) a whole top-level section, sorting entries numerically."""
     block = "\n".join([f"{section}:"] + body_lines) + "\n"

@@ -165,6 +165,26 @@ class Plugin:
         """
         return await asyncio.to_thread(self.s.injector.refresh, app_id)
 
+    async def refetch_game(self, app_id: str) -> dict:
+        """Force-fetch freshest Hubcap bundle and inject full configuration."""
+        return await asyncio.to_thread(self.s.injector.refetch_game, app_id)
+
+    async def apply_depot_selection(
+        self,
+        app_id: str,
+        depot_ids: list | None = None,
+        dlc_ids: list | None = None,
+        key_ids: list | None = None,
+    ) -> dict:
+        """Mount exactly the ticked depot/DLC/key set (the Advanced selector's Apply)."""
+        return await asyncio.to_thread(
+            self.s.injector.apply_depot_selection,
+            app_id,
+            depot_ids,
+            dlc_ids,
+            key_ids,
+        )
+
     # -- backups -------------------------------------------------------------
     async def list_backups(self) -> list[dict]:
         return self.s.sls.list_backups()

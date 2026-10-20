@@ -24,6 +24,7 @@ import {
   setEosNetsock,
   toggleAdditionalApp,
   refreshGame,
+  refetchGame,
   AtomGame,
   AtomDetail,
   AtomUpdate,
@@ -37,7 +38,7 @@ import {
   AndroidIcon,
 } from "../components/icons";
 import { formatBytes } from "../components/format";
-import { DepotManagerModal } from "../components/DepotManagerModal";
+import { openAdvanced } from "../pages/AdvancedPage";
 
 const URAN_STYLES = `
   .uran-game-row {
@@ -451,7 +452,7 @@ export const AtomGamesTab: React.FC = () => {
                 setMsg("");
               }}
             >
-              ← Back to games
+              Back to games
             </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
@@ -634,8 +635,8 @@ export const AtomGamesTab: React.FC = () => {
         <PanelSection title="Depots & Decryption Keys">
           <PanelSectionRow>
             <div style={{ fontSize: "11px", opacity: 0.65, padding: "0 0 6px" }}>
-              Configure game content depots, license-only DLCs, and AES decryption keys
-              in a full-screen gamepad-friendly manager.
+              Opens the Advanced window — pick this game, then tick exactly which
+              depots SLSsteam should mount.
             </div>
           </PanelSectionRow>
           {metaLoading && (
@@ -664,18 +665,9 @@ export const AtomGamesTab: React.FC = () => {
             <ButtonItem
               layout="below"
               disabled={busy}
-              onClick={() => {
-                showModal(
-                  <DepotManagerModal
-                    appId={detail.app_id}
-                    appName={detail.name}
-                    initialDetail={detail}
-                    onUpdate={() => openGame(detail.app_id)}
-                  />
-                );
-              }}
+              onClick={() => openAdvanced(detail.app_id)}
             >
-              ⚙️ Manage Depots &amp; Keys
+              Manage Depots &amp; Keys
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
@@ -699,7 +691,50 @@ export const AtomGamesTab: React.FC = () => {
                 })
               }
             >
-              🔄 Refresh Keys &amp; Depots
+              Refresh Keys &amp; Depots
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              disabled={busy}
+              onClick={() => {
+                let modal: ReturnType<typeof showModal>;
+                modal = showModal(
+                  <ConfirmModal
+                    strTitle={`Refetch ${detail.name} from Hubcap?`}
+                    strOKButtonText="Refetch &amp; Overwrite"
+                    strCancelButtonText="Cancel"
+                    bDestructiveWarning
+                    bDisableBackgroundDismiss
+                    onCancel={() => modal.Close()}
+                    onOK={() => {
+                      modal.Close();
+                      toggle("Refetch", async () => {
+                        const r = await refetchGame(detail.app_id);
+                        if (r?.ok) {
+                          const added = r.depots_added?.length || 0;
+                          notify(
+                            "Uran",
+                            `Refetched ${r.name || detail.name} (${added} depot${added === 1 ? "" : "s"}, ${r.keys_added?.length || 0} key${r.keys_added?.length === 1 ? "" : "s"})`
+                          );
+                          await openGame(detail.app_id);
+                        } else {
+                          notify("Uran", r?.error || "Refetch failed");
+                        }
+                        return r;
+                      });
+                    }}
+                  >
+                    <div style={{ fontSize: "12px", lineHeight: 1.5 }}>
+                      <p>This will force-download a fresh manifest bundle directly from Hubcap API, overwrite existing keys and tokens, and enable all Hubcap-keyed depots for this game.</p>
+                      <p style={{ color: "#f0c674", marginTop: "8px" }}>Warning: This will overwrite any custom depot selections for this game and consume your daily Hubcap API quota.</p>
+                    </div>
+                  </ConfirmModal>
+                );
+              }}
+            >
+              Refetch from Hubcap
             </ButtonItem>
           </PanelSectionRow>
         </PanelSection>
