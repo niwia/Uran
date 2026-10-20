@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+from . import paths
+
 logger = logging.getLogger(__name__)
 
 _proc_cache = {
@@ -79,18 +81,7 @@ def is_steam_running() -> bool:
 
 def get_sls_plugins_dirs(home: Path) -> list[Path]:
     """Resolve potential SLS plugins directories for Native and Flatpak Steam."""
-    candidates = [
-        home / ".config" / "SLSsteam" / "plugins",
-        home / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam" / "plugins",
-        Path.home() / ".config" / "SLSsteam" / "plugins",
-        Path("/home/deck/.config/SLSsteam/plugins"),
-    ]
-    seen, out = set(), []
-    for d in candidates:
-        if d not in seen:
-            seen.add(d)
-            out.append(d)
-    return out
+    return paths.sls_plugins_dirs(home)
 
 
 def find_lua_plugins(home: Path) -> tuple[Path | None, list[str]]:

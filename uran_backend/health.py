@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .context import Context
 from .http import requests
+from . import paths
 
 logger = logging.getLogger("Uran")
 
@@ -88,19 +89,7 @@ class Health:
 
     # -- plugins -----------------------------------------------------------
     def plugins_dirs(self) -> list[Path]:
-        dirs: list[Path] = []
-        cfg = self.sls.config_path
-        if cfg is not None:
-            primary = cfg.parent / "plugins"
-            dirs.append(primary)
-        home = self.ctx.home
-        for base in (
-            home / ".config" / "SLSsteam" / "plugins",
-            home / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam" / "plugins",
-        ):
-            if base not in dirs:
-                dirs.append(base)
-        return dirs
+        return paths.sls_plugins_dirs(self.ctx.home)
 
     def check_plugins(self) -> dict:
         """List the active SLSsteam Lua plugins found on disk.

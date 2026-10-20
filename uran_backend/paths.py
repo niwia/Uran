@@ -62,6 +62,29 @@ def sls_config(user_home_path: Path) -> Path | None:
     return None
 
 
+def sls_plugins_dirs(user_home_path: Path) -> list[Path]:
+    """Resolve SLSsteam plugin dirs, preferring the detected config's environment."""
+    config = sls_config(user_home_path)
+    dirs: list[Path] = []
+    if config is not None:
+        dirs.append(config.parent / "plugins")
+
+    candidates = [
+        candidate
+        for candidate in (
+            user_home_path / ".config" / "SLSsteam" / "plugins",
+            user_home_path / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam" / "plugins",
+        )
+    ]
+    for candidate in candidates:
+        # Include an alternate environment only when it exists; don't create an
+        # unrelated Native/Flatpak tree merely because it is a possible path.
+        if (candidate.parent / "config.yaml").is_file() or candidate.is_dir():
+            dirs.append(candidate)
+
+    return list(dict.fromkeys(dirs))
+
+
 def steam_root(user_home_path: Path) -> Path | None:
     """Locate the Steam installation root."""
     candidates = [

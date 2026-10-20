@@ -12,6 +12,7 @@ from .integrations import Integrations
 from .keycare import Keycare
 from .library import PluginLibrary
 from .manifests import Manifests
+from .plugin_deploy import PluginDeployer
 from .sls_config import SlsConfig
 from .steam_store import StoreDebugger
 from .steammeta import SteamMeta
@@ -67,6 +68,7 @@ def build(decky_module=None):
     atom = AtomLibrary(ctx, sls, steam, library, manifests, integrations)
     uninstaller = AtomUninstallService(ctx, sls, steam, library, integrations, guards)
     health = Health(ctx, sls)
+    plugin_deployer = PluginDeployer(ctx, sls)
 
     from .plugin_api import Services
 
@@ -85,4 +87,5 @@ def build(decky_module=None):
         atom=atom,
         uninstaller=uninstaller,
         health=health,
+        plugin_deployer=plugin_deployer,
     )

@@ -6,6 +6,8 @@ import {
   DropdownItem,
   ToggleField,
   Focusable,
+  ConfirmModal,
+  showModal,
 } from "@decky/ui";
 import QRCode from "qrcode";
 import {
@@ -39,6 +41,9 @@ import {
   UpdateInfo,
   GatewayMode,
   RouteStatus,
+  SlsPluginDeployStatus,
+  getSlsPluginDeployStatus,
+  deploySlsPlugin,
   once,
   refreshOnce,
 } from "../api";
@@ -59,6 +64,7 @@ export const SettingsTab: React.FC = () => {
     logs: string[];
   } | null>(null);
   const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
+  const [globalSlsConfigPath, setGlobalSlsConfigPath] = React.useState("");
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [gatewayMode, setGatewayMode] = React.useState<GatewayMode>("auto");
   const [routeStatus, setRouteStatus] = React.useState<RouteStatus | null>(null);
@@ -105,6 +111,87 @@ export const SettingsTab: React.FC = () => {
   const [qrError, setQrError] = React.useState<string>("");
   const [checkingConfig, setCheckingConfig] = React.useState(false);
   const [configCheck, setConfigCheck] = React.useState<ConfigCheck | null>(null);
+  const [slsPlugins, setSlsPlugins] = React.useState<SlsPluginDeployStatus | null>(null);
+  const [loadingSlsPlugins, setLoadingSlsPlugins] = React.useState(false);
+  const [deployingSlsPlugin, setDeployingSlsPlugin] = React.useState<string | null>(null);
+
+  const refreshSlsPlugins = React.useCallback(async () => {
+    setLoadingSlsPlugins(true);
+    try {
+      const status = await getSlsPluginDeployStatus();
+      if (status) setSlsPlugins(status);
+    } catch {
+      setSlsPlugins({ ok: false, error: "Could not check SLSsteam plugins." });
+    } finally {
+      setLoadingSlsPlugins(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshSlsPlugins();
+  }, [refreshSlsPlugins]);
+
+  const deployPlugin = async (filename: string, label: string) => {
+    setDeployingSlsPlugin(filename);
+    try {
+      const result = await deploySlsPlugin(filename);
+      if (!result?.ok) {
+        notify("Uran", result?.error || `Could not deploy ${label}.`);
+      } else {
+        notify("Uran", result.message || `${label} deployed.`);
+      }
+      await refreshSlsPlugins();
+    } catch {
+      notify("Uran", `Could not deploy ${label}.`);
+    } finally {
+      setDeployingSlsPlugin(null);
+    }
+  };
+
+  const requestPluginDeploy = (filename: string, label: string) => {
+    if (filename !== "spliced-tickets.lua") {
+      void deployPlugin(filename, label);
+      return;
+    }
+    showModal(
+      <ConfirmModal
+        onOK={() => void deployPlugin(filename, label)}
+        onCancel={() => {}}
+        bOKDisabled={false}
+        strTitle="Spliced Tickets"
+        strDescription="This plugin changes SLSsteam ticket handling and enables SmartTickets. Use it only if you understand and are permitted to use this functionality. Continue?"
+        strOKButtonText="Install"
+        strCancelButtonText="Cancel"
+      />,
+      undefined,
+      { bNeverPopOut: true },
+    );
+  };
+
+  const pluginButtonText = (filename: string, label: string) => {
+    const plugin = slsPlugins?.plugins?.[filename];
+    if (deployingSlsPlugin === filename) return `Deploying ${label}…`;
+    if (plugin?.state === "outdated") return `${label} (Update)`;
+    if (plugin?.state === "missing") return `${label} (Install)`;
+    return label;
+  };
+
+  const pluginIsVerifiedActive = (filename: string) => {
+    const plugin = slsPlugins?.plugins?.[filename];
+    return Boolean(plugin?.active && plugin.state === "up_to_date");
+  };
+
+  const pluginButtonDisabled = loadingSlsPlugins || deployingSlsPlugin !== null || !slsPlugins?.ok;
+
+  const refreshGlobalSlsOnlineStatus = async () => {
+    try {
+      const status = await isGlobalSlsOnlineEnabled();
+      setGlobalSlsOnlineState(!!status?.enabled);
+      setGlobalSlsConfigPath(status?.config_path ?? "");
+    } catch {
+      notify("Uran", "Could not read SLS config status");
+    }
+  };
 
   const runConfigCheck = async () => {
     setCheckingConfig(true);
@@ -164,6 +251,7 @@ export const SettingsTab: React.FC = () => {
         setStorePatchEnabled(storeEnabled !== false);
         setStoreStatus(initialStoreStatus);
         setGlobalSlsOnlineState(!!gSls?.enabled);
+        setGlobalSlsConfigPath(gSls?.config_path ?? "");
         setGatewayMode(
           gw === "direct" || gw === "proxy" ? (gw as GatewayMode) : "auto",
         );
@@ -395,6 +483,18 @@ export const SettingsTab: React.FC = () => {
             }}
           />
         </PanelSectionRow>
+        {globalSlsConfigPath ? (
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.75 }}>
+              Reading SLS config: {globalSlsConfigPath}
+            </div>
+          </PanelSectionRow>
+        ) : null}
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void refreshGlobalSlsOnlineStatus()}>
+            Refresh SLS Config Status
+          </ButtonItem>
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Hubcap Connection">
@@ -547,6 +647,65 @@ export const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
+      <PanelSection title="Plugins">
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.75 }}>
+            Install or switch SLSsteam Lua plugins. Standard and SpaceBunny are
+            alternative download interceptors; Spliced Tickets is a separate companion.
+            {slsPlugins?.directory ? <div>Target: {slsPlugins.directory}</div> : null}
+            {slsPlugins && !slsPlugins.ok ? <div>{slsPlugins.error}</div> : null}
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          {pluginIsVerifiedActive("download.lua") ? (
+            <div>Standard (Active — verified)</div>
+          ) : (
+            <ButtonItem
+              layout="below"
+              disabled={pluginButtonDisabled}
+              onClick={() => requestPluginDeploy("download.lua", "Standard")}
+            >
+              {pluginButtonText("download.lua", "Standard")}
+            </ButtonItem>
+          )}
+        </PanelSectionRow>
+        <PanelSectionRow>
+          {pluginIsVerifiedActive("spacebunny1.5.lua") ? (
+            <div>SpaceBunny 1.5 (Active — verified)</div>
+          ) : (
+            <ButtonItem
+              layout="below"
+              disabled={pluginButtonDisabled}
+              onClick={() => requestPluginDeploy("spacebunny1.5.lua", "SpaceBunny 1.5")}
+            >
+              {pluginButtonText("spacebunny1.5.lua", "SpaceBunny 1.5")}
+            </ButtonItem>
+          )}
+        </PanelSectionRow>
+        <PanelSectionRow>
+          {pluginIsVerifiedActive("spliced-tickets.lua") ? (
+            <div>Spliced Tickets (Active — verified)</div>
+          ) : (
+            <ButtonItem
+              layout="below"
+              disabled={pluginButtonDisabled}
+              onClick={() => requestPluginDeploy("spliced-tickets.lua", "Spliced Tickets")}
+            >
+              {pluginButtonText("spliced-tickets.lua", "Spliced Tickets")}
+            </ButtonItem>
+          )}
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={loadingSlsPlugins || deployingSlsPlugin !== null}
+            onClick={() => void refreshSlsPlugins()}
+          >
+            {loadingSlsPlugins ? "Checking Plugins…" : "Refresh Plugin Status"}
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="SLS Config">
         <PanelSectionRow>
           <ButtonItem
@@ -603,7 +762,7 @@ export const SettingsTab: React.FC = () => {
             }}
           >
             <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.5.2"}
+              Uran v{pluginInfo.version || "0.5.5"}
             </span>
             {updateInfo?.has_update && (
               <Focusable

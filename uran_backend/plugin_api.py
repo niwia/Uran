@@ -35,7 +35,7 @@ class Services:
 
     def __init__(self, ctx, sls, steam, library, manifests, integrations,
                  injector, guards, keycare, store_debugger, atom, uninstaller,
-                 health=None):
+                 health=None, plugin_deployer=None):
         self.ctx = ctx
         self.sls = sls
         self.steam = steam
@@ -49,6 +49,7 @@ class Services:
         self.atom = atom
         self.uninstaller = uninstaller
         self.health = health
+        self.plugin_deployer = plugin_deployer
 
 
 class Plugin:
@@ -123,6 +124,16 @@ class Plugin:
         from .updates import plugin_info
 
         return plugin_info(self.s.ctx)
+
+    async def get_sls_plugin_deploy_status(self) -> dict:
+        if self.s.plugin_deployer is None:
+            return {"ok": False, "error": "Plugin deployment is unavailable."}
+        return await asyncio.to_thread(self.s.plugin_deployer.status)
+
+    async def deploy_sls_plugin(self, filename: str) -> dict:
+        if self.s.plugin_deployer is None:
+            return {"ok": False, "error": "Plugin deployment is unavailable."}
+        return await asyncio.to_thread(self.s.plugin_deployer.deploy, filename)
 
     async def check_for_updates(self) -> dict:
         from .updates import check_for_updates
@@ -311,7 +322,12 @@ class Plugin:
         return {"ok": True, "fake_appid": ""}
 
     async def is_global_slsonline_enabled(self) -> dict:
-        return {"ok": True, "enabled": self.s.integrations.global_slsonline_enabled()}
+        config = self.s.integrations.ctx.sls_config()
+        return {
+            "ok": True,
+            "enabled": self.s.integrations.global_slsonline_enabled(),
+            "config_path": str(config) if config and config.is_file() else "",
+        }
 
     async def set_global_slsonline(self, enabled: bool) -> dict:
         return self.s.integrations.set_global_slsonline(enabled)

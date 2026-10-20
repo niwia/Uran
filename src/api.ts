@@ -356,7 +356,11 @@ export const applyDepotSelection = callable<
     dlc_appids?: string[];
   }
 >("apply_depot_selection");
-export const isGlobalSlsOnlineEnabled = callable<[], { ok: boolean; enabled: boolean }>(
+export const isGlobalSlsOnlineEnabled = callable<[], {
+  ok: boolean;
+  enabled: boolean;
+  config_path?: string;
+}>(
   "is_global_slsonline_enabled",
 );
 export const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; enabled: boolean }>(
@@ -364,6 +368,26 @@ export const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; en
 );
 export const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
 export const getPluginInfo = callable<[], { name: string; version: string }>("get_plugin_info");
+export type SlsPluginDeployStatus = {
+  ok: boolean;
+  error?: string;
+  directory?: string;
+  active_interceptor?: string | null;
+  plugins?: Record<string, {
+    label: string;
+    state: "missing" | "outdated" | "up_to_date" | "unknown";
+    active: boolean;
+    version?: string | null;
+  }>;
+};
+export const getSlsPluginDeployStatus = callable<[], SlsPluginDeployStatus>(
+  "get_sls_plugin_deploy_status",
+);
+export const deploySlsPlugin = callable<[filename: string], {
+  ok: boolean;
+  message?: string;
+  error?: string;
+}>("deploy_sls_plugin");
 
 export const checkAtomGameUpdates = callable<[app_id: string], AtomUpdate>(
   "check_atom_game_updates",

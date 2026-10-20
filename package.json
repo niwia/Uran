@@ -1,6 +1,6 @@
 {
   "name": "uran",
-  "version": "0.5.2",
+  "version": "0.5.5",
   "description": "Decky companion plugin for ASSella: search games, inject SLSsteam config, and manage Hubcap manifests and depot keys",
   "type": "module",
   "scripts": {
