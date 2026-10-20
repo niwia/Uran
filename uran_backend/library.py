@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .context import Context
+from . import paths
 from .paths import SHARED_REDISTS
 from .sls_config import (
     SlsConfig,
@@ -297,15 +298,10 @@ class PluginLibrary:
     # -- local depot key cache -------------------------------------------------
     def _db_candidates(self, db_name: str) -> list[Path]:
         """Prioritized candidate paths for an ACCELA SQLite database."""
-        base = self.ctx.accela_base()
         candidates = [
-            base / "db" / db_name,
-            base / db_name,
-            self.ctx.home / ".local/share/ACCELA/db" / db_name,
-            self.ctx.home / ".local/share/ACCELA" / db_name,
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/data/ACCELA/db" / db_name,
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/.local/share/ACCELA/db" / db_name,
-            Path("/home/deck/.local/share/ACCELA/db") / db_name,
+            candidate
+            for base in paths.accela_data_dirs(self.ctx.home)
+            for candidate in (base / "db" / db_name, base / db_name)
         ]
         seen: set[str] = set()
         deduped: list[Path] = []
@@ -325,22 +321,7 @@ class PluginLibrary:
 
     def _accela_dirs(self) -> list[Path]:
         """Likely ACCELA data roots, most specific first (deduped)."""
-        base = self.ctx.accela_base()
-        candidates = [
-            base,
-            self.ctx.home / ".local/share/ACCELA",
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/data/ACCELA",
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/.local/share/ACCELA",
-            Path("/home/deck/.local/share/ACCELA"),
-        ]
-        seen: set[str] = set()
-        out: list[Path] = []
-        for candidate in candidates:
-            key = str(candidate.resolve()) if candidate.exists() else str(candidate)
-            if key not in seen:
-                seen.add(key)
-                out.append(candidate)
-        return out
+        return paths.accela_data_dirs(self.ctx.home)
 
     def cached_lua_depots(self, app_id: str) -> dict[str, str] | None:
         """Depot -> owning AppID from ASSella's cached_luas/<appid>.lua.

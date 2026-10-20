@@ -134,13 +134,7 @@ class Health:
 
     # -- SLS version -------------------------------------------------------
     def sls_binary(self) -> Path | None:
-        home = self.ctx.home
-        candidates = [
-            home / ".local" / "share" / "SLSsteam" / "SLSsteam.so",
-            home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "SLSsteam" / "SLSsteam.so",
-            Path("/usr/lib32/libSLSsteam.so"),
-        ]
-        for candidate in candidates:
+        for candidate in paths.sls_binary_candidates(self.ctx.home):
             try:
                 if candidate.is_file():
                     return candidate

@@ -2,7 +2,7 @@
 
 Decky instantiates `Plugin()` with no arguments, so `build_context` has to find
 `decky_plugin` itself. If it does not, DECKY_USER_HOME is ignored and the
-resolvers silently fall through to /home/deck or Path.home() — which on a Deck
+resolvers silently fall through to the host user's home — which on a Deck
 with a renamed account means Uran would edit a different user's config.
 """
 
@@ -67,10 +67,8 @@ def test_module_imported_when_not_passed():
             str(ctx.accela_base()).startswith(SANDBOX),
             True,
         )
-        # sls_config() keeps its /home/deck and Path.home() candidates for
-        # SteamOS compatibility — deliberately unchanged from the original.
-        # What matters here is that DECKY_USER_HOME is honoured first, which
-        # the home assertion above covers.
+        # SLS config and plugin paths are resolved within this discovered user
+        # home, so another host user's Steam installation cannot be selected.
     finally:
         del sys.modules["decky_plugin"]
 

@@ -2,13 +2,13 @@
 
 Everything that answers "where does this live?" lives here: SLSsteam's config,
 Steam's library roots, ACCELA's data dir, and the INI file Uran shares with
-ASSella. Resolution is deliberately generous about location because Steam runs
-natively on some systems and as a Flatpak on others, and Decky runs as root
-while SLSsteam runs as the user.
+ASSella. User locations come from Decky/account/process discovery; install
+locations follow the selected Native or Flatpak Steam installation.
 """
 
 import logging
 import os
+import pwd
 import re
 import time
 from pathlib import Path
@@ -31,71 +31,135 @@ SLSSTEAM_API_PIPE = "/tmp/SLSsteam.API"
 
 
 def user_home(decky_user_home: str | None = None) -> Path:
-    """Resolve the active user home, even under Decky's root daemon."""
-    if decky_user_home:
-        return Path(decky_user_home)
+    """Resolve the Steam user's home without assuming a distro-specific path."""
+    explicit_home = decky_user_home or os.environ.get("DECKY_USER_HOME")
+    if explicit_home:
+        return Path(explicit_home)
+
     decky_user = os.environ.get("DECKY_USER")
     if decky_user:
-        candidate = Path(f"/home/{decky_user}")
-        if candidate.is_dir():
-            return candidate
-    if Path("/home/deck").is_dir():
-        return Path("/home/deck")
+        try:
+            return Path(pwd.getpwnam(decky_user).pw_dir)
+        except KeyError:
+            logger.warning("DECKY_USER %r is not present in the system account database", decky_user)
+
+    # Decky commonly runs as root, so its own HOME is not the Steam user's.
+    # Prefer the owner of the live Steam process when Decky did not provide the
+    # user explicitly.
+    proc_root = Path("/proc")
+    try:
+        for process in sorted(proc_root.iterdir(), key=lambda item: item.name):
+            if not process.name.isdigit():
+                continue
+            try:
+                if (process / "comm").read_text(encoding="utf-8").strip() != "steam":
+                    continue
+                account = pwd.getpwuid(process.stat().st_uid)
+                home = Path(account.pw_dir)
+                if home.is_dir():
+                    return home
+            except (OSError, KeyError):
+                continue
+    except OSError:
+        pass
+
+    # If Steam is not running, use an unambiguous account with a Steam install.
+    installed_homes: list[Path] = []
+    try:
+        for account in pwd.getpwall():
+            home = Path(account.pw_dir)
+            if home.is_dir() and _has_steam_install(home) and home not in installed_homes:
+                installed_homes.append(home)
+    except (OSError, AttributeError):
+        pass
+    if len(installed_homes) == 1:
+        return installed_homes[0]
+
     return Path.home()
 
 
+def _has_steam_install(home: Path) -> bool:
+    flatpak_root = home / ".var" / "app" / "com.valvesoftware.Steam"
+    return any(path.is_dir() for path in (
+        home / ".steam" / "steam",
+        home / ".local" / "share" / "Steam",
+        flatpak_root / ".steam" / "steam",
+        flatpak_root / "data" / "Steam",
+    ))
+
+
+def flatpak_steam_root(user_home_path: Path) -> Path:
+    """Return Flatpak Steam's per-user data root used by Headcrab detection."""
+    return user_home_path / ".var" / "app" / "com.valvesoftware.Steam"
+
+
+def is_flatpak_steam(user_home_path: Path) -> bool:
+    """Match Headcrab: prefer Flatpak when its Steam install directory exists."""
+    flatpak_root = flatpak_steam_root(user_home_path)
+    return any(
+        path.is_dir()
+        for path in (
+            flatpak_root / ".steam" / "steam",
+            flatpak_root / "data" / "Steam",
+        )
+    )
+
+
 def sls_config(user_home_path: Path) -> Path | None:
-    """Find the active SLSsteam config.yaml."""
-    candidates = [
-        user_home_path / ".config" / "SLSsteam" / "config.yaml",
-        user_home_path / ".var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml",
-        user_home_path / ".local/share/SLSsteam/config.yaml",
-        Path("/home/deck/.config/SLSsteam/config.yaml"),
-        Path.home() / ".config" / "SLSsteam" / "config.yaml",
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    standard_dir = user_home_path / ".config" / "SLSsteam"
-    if standard_dir.is_dir():
-        return standard_dir / "config.yaml"
+    """Find SLSsteam config.yaml for the user's detected Steam installation."""
+    if is_flatpak_steam(user_home_path):
+        config_dir = flatpak_steam_root(user_home_path) / ".config" / "SLSsteam"
+    else:
+        config_dir = user_home_path / ".config" / "SLSsteam"
+    config = config_dir / "config.yaml"
+    if config.is_file() or config_dir.is_dir():
+        return config
     return None
 
 
 def sls_plugins_dirs(user_home_path: Path) -> list[Path]:
-    """Resolve SLSsteam plugin dirs, preferring the detected config's environment."""
+    """Resolve only the plugin directory belonging to the detected Steam install."""
     config = sls_config(user_home_path)
-    dirs: list[Path] = []
-    if config is not None:
-        dirs.append(config.parent / "plugins")
+    return [config.parent / "plugins"] if config is not None else []
 
-    candidates = [
-        candidate
-        for candidate in (
-            user_home_path / ".config" / "SLSsteam" / "plugins",
-            user_home_path / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam" / "plugins",
-        )
-    ]
-    for candidate in candidates:
-        # Include an alternate environment only when it exists; don't create an
-        # unrelated Native/Flatpak tree merely because it is a possible path.
-        if (candidate.parent / "config.yaml").is_file() or candidate.is_dir():
-            dirs.append(candidate)
 
-    return list(dict.fromkeys(dirs))
+def sls_data_dir(user_home_path: Path) -> Path:
+    """SLSsteam's per-install data directory, matching Headcrab's layout."""
+    if is_flatpak_steam(user_home_path):
+        return flatpak_steam_root(user_home_path) / ".local" / "share" / "SLSsteam"
+    return user_home_path / ".local" / "share" / "SLSsteam"
+
+
+def sls_binary_candidates(user_home_path: Path) -> list[Path]:
+    """Known SLSsteam binary locations for the selected install and system package."""
+    if is_flatpak_steam(user_home_path):
+        flatpak_root = flatpak_steam_root(user_home_path)
+        candidates = [
+            sls_data_dir(user_home_path) / "SLSsteam.so",
+            flatpak_root / "data" / "SLSsteam" / "SLSsteam.so",
+        ]
+    else:
+        candidates = [sls_data_dir(user_home_path) / "SLSsteam.so"]
+    # The system package location is fixed by SLSsteam's Linux packaging, not
+    # by the user's home or Steam installation.
+    candidates.append(Path("/usr/lib32/libSLSsteam.so"))
+    return candidates
 
 
 def steam_root(user_home_path: Path) -> Path | None:
-    """Locate the Steam installation root."""
-    candidates = [
-        user_home_path / ".steam" / "steam",
-        user_home_path / ".local/share/Steam",
-        user_home_path / ".var/app/com.valvesoftware.Steam/data/Steam",
-        Path("/home/deck/.steam/steam"),
-        Path("/home/deck/.local/share/Steam"),
-        Path.home() / ".steam" / "steam",
-        Path.home() / ".local/share/Steam",
-    ]
+    """Locate the active Steam root, preferring Flatpak exactly as Headcrab does."""
+    flatpak_root = flatpak_steam_root(user_home_path)
+    if is_flatpak_steam(user_home_path):
+        candidates = [
+            flatpak_root / ".steam" / "steam",
+            flatpak_root / "data" / "Steam",
+            flatpak_root / ".local" / "share" / "Steam",
+        ]
+    else:
+        candidates = [
+            user_home_path / ".steam" / "steam",
+            user_home_path / ".local" / "share" / "Steam",
+        ]
     for path in candidates:
         if path.is_dir():
             return path
@@ -119,8 +183,36 @@ def accela_base(user_home_path: Path) -> Path:
     """ACCELA's XDG data dir, matching ASSella's utils.helpers.get_base_path()."""
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg and Path(xdg).is_absolute():
-        return Path(xdg) / "ACCELA"
+        xdg_path = Path(xdg)
+        # A root-run Decky process can inherit root's XDG path while operating
+        # on another user's files. Do not let that redirect ACCELA into /root.
+        try:
+            xdg_path.relative_to(Path.home())
+            belongs_to_runtime_home = True
+        except ValueError:
+            belongs_to_runtime_home = False
+        if not (Path.home() != user_home_path and belongs_to_runtime_home):
+            return xdg_path / "ACCELA"
     return user_home_path / ".local" / "share" / "ACCELA"
+
+
+def accela_data_dirs(user_home_path: Path) -> list[Path]:
+    """Known ACCELA data roots for this user, with the active XDG root first."""
+    flatpak_root = flatpak_steam_root(user_home_path)
+    candidates = [
+        accela_base(user_home_path),
+        user_home_path / ".local" / "share" / "ACCELA",
+        flatpak_root / "data" / "ACCELA",
+        flatpak_root / ".local" / "share" / "ACCELA",
+    ]
+    seen: set[str] = set()
+    result: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key not in seen:
+            seen.add(key)
+            result.append(candidate)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -135,15 +227,14 @@ def accela_base(user_home_path: Path) -> Path:
 def accela_conf_candidates(user_home_path: Path) -> list[Path]:
     """Config files ACCELA may store morrenus_api_key in, newest layout first."""
     candidates: list[Path] = []
-    for home in (user_home_path, Path.home(), Path("/home/deck")):
-        candidates.extend([
-            home / ".config" / "Tachibana Labs" / "ACCELA.conf",
-            home / ".var" / "app" / "com.valvesoftware.Steam" / "config" / "Tachibana Labs" / "ACCELA.conf",
-            home / ".var" / "app" / "com.tachibanalabs.accela" / "config" / "Tachibana Labs" / "ACCELA.conf",
-            home / ".config" / "ACCELA" / "Settings.conf",
-            home / ".config" / "ACCELA" / "ACCELA.conf",
-            home / ".config" / "ACCELA" / "ASSella.conf",
-        ])
+    candidates.extend([
+        user_home_path / ".config" / "Tachibana Labs" / "ACCELA.conf",
+        flatpak_steam_root(user_home_path) / "config" / "Tachibana Labs" / "ACCELA.conf",
+        user_home_path / ".var" / "app" / "com.tachibanalabs.accela" / "config" / "Tachibana Labs" / "ACCELA.conf",
+        user_home_path / ".config" / "ACCELA" / "Settings.conf",
+        user_home_path / ".config" / "ACCELA" / "ACCELA.conf",
+        user_home_path / ".config" / "ACCELA" / "ASSella.conf",
+    ])
     seen: set[str] = set()
     unique: list[Path] = []
     for path in candidates:

@@ -341,7 +341,7 @@ class SteamMeta:
 
     # -- library introspection ------------------------------------------------
     def libraries(self) -> list[Path]:
-        """Steam library folders from libraryfolders.vdf, plus native fallbacks."""
+        """Steam library folders from the selected installation's libraryfolders.vdf."""
         libs: list[Path] = []
         root = self.ctx.steam_root()
         if root:
@@ -356,13 +356,8 @@ class SteamMeta:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("libraryfolders.vdf parse failed: %s", exc)
 
-        for fallback in (
-            self.ctx.home / ".local/share/Steam",
-            self.ctx.home / ".steam/steam",
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/data/Steam",
-        ):
-            if fallback.is_dir() and fallback not in libs:
-                libs.append(fallback)
+        if root and root.is_dir() and root not in libs:
+            libs.append(root)
         return libs
 
     def _parse_acf(self, path: Path) -> dict:

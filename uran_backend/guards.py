@@ -33,7 +33,7 @@ def _update_proc_cache_if_needed():
         return
 
     # 1. Quick check: /tmp/SLSsteam.API pipe
-    if os.path.exists("/tmp/SLSsteam.API"):
+    if Path(paths.SLSSTEAM_API_PIPE).exists():
         _proc_cache["sls_active"] = True
 
     try:
@@ -80,7 +80,7 @@ def is_steam_running() -> bool:
 
 
 def get_sls_plugins_dirs(home: Path) -> list[Path]:
-    """Resolve potential SLS plugins directories for Native and Flatpak Steam."""
+    """Resolve the plugin directory for this user's selected Steam install."""
     return paths.sls_plugins_dirs(home)
 
 
@@ -133,13 +133,7 @@ class GuardService:
         # Check SLS binary or active process
         sls_active = is_sls_active()
         binary_found = False
-        for b_cand in [
-            home / ".local" / "share" / "SLSsteam" / "SLSsteam.so",
-            home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "SLSsteam" / "SLSsteam.so",
-            home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "SLSsteam" / "SLSsteam.so",
-            Path.home() / ".local" / "share" / "SLSsteam" / "SLSsteam.so",
-            Path("/home/deck/.local/share/SLSsteam/SLSsteam.so"),
-        ]:
+        for b_cand in paths.sls_binary_candidates(home):
             if b_cand.is_file():
                 binary_found = True
                 break

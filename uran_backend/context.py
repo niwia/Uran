@@ -79,6 +79,8 @@ def build_context(decky_module=None) -> Context:
     settings_dir = _first_existing(
         getattr(decky_module, "DECKY_PLUGIN_SETTINGS_DIR", None),
         getattr(decky_module, "DECKY_SETTINGS_DIR", None),
+        os.environ.get("DECKY_PLUGIN_SETTINGS_DIR"),
+        os.environ.get("DECKY_SETTINGS_DIR"),
         Path.home() / ".config" / "assella-decky",
     )
     if settings_dir is None:
@@ -93,6 +95,7 @@ def build_context(decky_module=None) -> Context:
 
     runtime_dir = _first_existing(
         getattr(decky_module, "DECKY_PLUGIN_RUNTIME_DIR", None),
+        os.environ.get("DECKY_PLUGIN_RUNTIME_DIR"),
         settings_dir,
     ) or settings_dir
     runtime_dir.mkdir(parents=True, exist_ok=True)

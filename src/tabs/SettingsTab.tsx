@@ -650,9 +650,7 @@ export const SettingsTab: React.FC = () => {
       <PanelSection title="Plugins">
         <PanelSectionRow>
           <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.75 }}>
-            Install or switch SLSsteam Lua plugins. Standard and SpaceBunny are
-            alternative download interceptors; Spliced Tickets is a separate companion.
-            {slsPlugins?.directory ? <div>Target: {slsPlugins.directory}</div> : null}
+            {slsPlugins?.directory ? <div>SLSsteam plugin folder: {slsPlugins.directory}</div> : null}
             {slsPlugins && !slsPlugins.ok ? <div>{slsPlugins.error}</div> : null}
           </div>
         </PanelSectionRow>

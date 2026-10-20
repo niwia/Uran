@@ -164,9 +164,7 @@ class Integrations:
     def _find_existing_netsock_so(self) -> Path | None:
         candidates = [
             self._netsock_tools_dir() / "netsock.so",
-            self.ctx.home / ".config/SLSsteam/tools/netsock/netsock.so",
-            self.ctx.home / ".local/share/SLSsteam/tools/netsock/netsock.so",
-            self.ctx.home / ".var/app/com.valvesoftware.Steam/.config/SLSsteam/tools/netsock/netsock.so",
+            paths.sls_data_dir(self.ctx.home) / "tools" / "netsock" / "netsock.so",
         ]
         for candidate in candidates:
             try:
@@ -178,10 +176,7 @@ class Integrations:
 
     def _netsock_launch_path(self) -> str:
         """Path as it must appear in launch options (Steam runtime view)."""
-        xdg = os.environ.get("XDG_CONFIG_HOME", "")
-        if xdg and Path(xdg).is_absolute():
-            return str(Path(xdg) / "SLSsteam" / "tools" / "netsock" / "netsock.so")
-        return str(self.ctx.home / ".config" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+        return str(self._netsock_tools_dir() / "netsock.so")
 
     def ensure_netsock_binary(self) -> bool:
         """Ensure netsock.so exists, downloading fix.so if missing."""
