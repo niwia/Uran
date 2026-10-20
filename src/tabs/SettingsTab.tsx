@@ -48,6 +48,8 @@ import { formatExpiry } from "../components/format";
 
 export const SettingsTab: React.FC = () => {
   const [steamStoreEnabled, setSteamStoreEnabled] = React.useState(true);
+  const [addDelistedDlcs, setAddDelistedDlcs] = React.useState(true);
+  const [fetchDlcsOnInject, setFetchDlcsOnInject] = React.useState(true);
   const [storeStatus, setStoreStatus] = React.useState<{
     available: boolean;
     port?: number | null;
@@ -137,16 +139,26 @@ export const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
-          await Promise.all([
-            getSetting("notification_mode", "auto"),
-            getSetting("steam_store_enabled", true),
-            // CEF port scan + route state: session-once, not per tab visit.
-            once("store-debug", () => getStoreDebugStatus(false)),
-            isGlobalSlsOnlineEnabled(),
-            getSetting("hubcap_gateway", "auto"),
-            once("hubcap-routes", getHubcapRoutes),
-          ]);
+        const [
+          nm,
+          storeEnabled,
+          initialStoreStatus,
+          gSls,
+          gw,
+          routes,
+          delistedDlcs,
+          dlcsOnInject,
+        ] = await Promise.all([
+          getSetting("notification_mode", "auto"),
+          getSetting("steam_store_enabled", true),
+          // CEF port scan + route state: session-once, not per tab visit.
+          once("store-debug", () => getStoreDebugStatus(false)),
+          isGlobalSlsOnlineEnabled(),
+          getSetting("hubcap_gateway", "auto"),
+          once("hubcap-routes", getHubcapRoutes),
+          getSetting("add_delisted_dlcs", true),
+          getSetting("fetch_dlcs_on_inject", true),
+        ]);
         if (!alive) return;
         setSteamStoreEnabled(storeEnabled !== false);
         setStorePatchEnabled(storeEnabled !== false);
@@ -156,6 +168,8 @@ export const SettingsTab: React.FC = () => {
           gw === "direct" || gw === "proxy" ? (gw as GatewayMode) : "auto",
         );
         setRouteStatus(routes ?? null);
+        setAddDelistedDlcs(delistedDlcs !== false);
+        setFetchDlcsOnInject(dlcsOnInject !== false);
         if (nm) setNotificationModeState(nm);
       } catch {}
       loadStatsOnce();
@@ -478,6 +492,33 @@ export const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
+      <PanelSection title="DLC Configuration">
+        <PanelSectionRow>
+          <ToggleField
+            label="Add Delisted DLCs"
+            description="Include delisted and historical DLCs in future game adds and DLC fetches. Turning this off does not remove DLCs already configured."
+            checked={addDelistedDlcs}
+            onChange={async (v) => {
+              setAddDelistedDlcs(v);
+              await setSetting("add_delisted_dlcs", v);
+              notify("Uran", v ? "Add Delisted DLCs enabled" : "Add Delisted DLCs disabled");
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Fetch DLCs on Add"
+            description="Automatically fetch and mount DLCs into SLS config when adding a game to Uran."
+            checked={fetchDlcsOnInject}
+            onChange={async (v) => {
+              setFetchDlcsOnInject(v);
+              await setSetting("fetch_dlcs_on_inject", v);
+              notify("Uran", v ? "Auto-fetch DLCs enabled" : "Auto-fetch DLCs disabled");
+            }}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Steam Store">
         <PanelSectionRow>
           <ToggleField
@@ -562,7 +603,7 @@ export const SettingsTab: React.FC = () => {
             }}
           >
             <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.4.9"}
+              Uran v{pluginInfo.version || "0.5.1"}
             </span>
             {updateInfo?.has_update && (
               <Focusable
@@ -595,4 +636,3 @@ export const SettingsTab: React.FC = () => {
     </>
   );
 };
-

@@ -17,7 +17,8 @@ logger = logging.getLogger("Uran")
 APP_CONFIG_DIR = "assella-decky"
 
 DEFAULTS: dict = {
-    "fetch_dlcs_on_inject": False,
+    "fetch_dlcs_on_inject": True,
+    "add_delisted_dlcs": True,
     "steam_store_enabled": True,
     "manifest_api_key": "",
     "notification_mode": "auto",

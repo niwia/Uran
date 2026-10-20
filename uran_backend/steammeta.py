@@ -257,6 +257,41 @@ class SteamMeta:
                     "size_bytes": size_num,
                 }
 
+        # SteamCMD listofdlc (historical / complete catalog)
+        cmd_dlc_raw = (
+            cmd.get("extended", {}).get("listofdlc")
+            or cmd.get("common", {}).get("listofdlc")
+            or ""
+        )
+        cmd_dlcs = [
+            str(part).strip()
+            for part in str(cmd_dlc_raw).split(",")
+            if str(part).strip().isdigit()
+        ]
+        store_dlcs = [
+            str(d).strip()
+            for d in (store.get("dlc") or [])
+            if str(d).strip().isdigit()
+        ]
+
+        if cmd_dlcs:
+            all_dlcs = list(dict.fromkeys(cmd_dlcs + store_dlcs))
+        else:
+            all_dlcs = list(dict.fromkeys(store_dlcs))
+
+        cmd_set = set(cmd_dlcs)
+        store_set = set(store_dlcs)
+
+        # Catalog intersection safeguard:
+        # If cmd_dlcs and store_dlcs intersect, store_dlcs defines the currently active DLCs.
+        # If they don't intersect (e.g. Rocksmith 2014 where store lists song packs while
+        # SteamCMD lists individual songs, or games where store returns no DLCs),
+        # filtering would drop the entire catalog, so treat all known DLCs as active.
+        if cmd_dlcs and store_set and (cmd_set & store_set):
+            active_dlcs = [d for d in all_dlcs if d in store_set]
+        else:
+            active_dlcs = list(all_dlcs)
+
         return {
             "app_id": app_id,
             "name": store.get("name") or cmd.get("common", {}).get("name") or f"App {app_id}",
@@ -264,7 +299,8 @@ class SteamMeta:
             "depots": list(set(depots)),
             "depot_dlc": depot_dlc,
             "depot_meta": depot_meta,
-            "dlc": [str(d) for d in store.get("dlc", [])],
+            "dlc": active_dlcs,
+            "dlc_all": all_dlcs,
         }
 
     def search(self, query: str, limit: int = 20, appid: bool = False) -> dict:

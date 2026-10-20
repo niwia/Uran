@@ -11,6 +11,7 @@ import re
 import threading
 
 from .context import Context
+from .depot_tags import qualify_dlc_name
 from .guards import GuardService
 from .library import PluginLibrary
 from .manifests import Manifests
@@ -272,9 +273,11 @@ class Injector:
                 content, _ = remove_in_memory(content, "AdditionalApps", eid, is_list=True)
         content, _ = upsert_in_memory(content, "AdditionalApps", aid, comment=game_name)
         for dlc in sort_ids(enabled):
+            raw_dlc_name = self.ctx.depot_names.get(dlc, "")
+            label = qualify_dlc_name(raw_dlc_name, dlc, game_name) if raw_dlc_name else f"DLC {dlc}"
             content, _ = upsert_in_memory(
                 content, "AdditionalApps", dlc,
-                comment=f"{game_name} [DLC {dlc}] ({aid})",
+                comment=f"{game_name} [{label}] ({aid})",
             )
 
         # 3. AdditionalDepots — rebuild ours, keep other owners' comments.
@@ -628,6 +631,7 @@ class Injector:
 
         known = set(owner_map) - {"base"}
         known |= {d for d in (sanitize_id(x) for x in (details.get("dlc") or [])) if d}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("dlc_all") or [])) if d}
         known |= {d for d in (sanitize_id(x) for x in (details.get("depot_dlc") or {}).values()) if d}
         known |= {str(d) for d in (record.get("dlc_appids") or []) if str(d).isdigit()}
         known |= {str(d) for d in (record.get("enabled_dlc_appids") or []) if str(d).isdigit()}
@@ -801,7 +805,8 @@ class Injector:
 
         # 4. Enable all DLCs found in Hubcap or Steam that have keyed depots
         dlcs = {d for d in (sanitize_id(x) for x in (res.get("dlc_appids") or [])) if d and d != aid}
-        for d in (sanitize_id(x) for x in (details.get("dlc") or [])):
+        steam_dlcs = (details.get("dlc_all") or []) if self.ctx.read_setting("add_delisted_dlcs", True) else (details.get("dlc") or [])
+        for d in (sanitize_id(x) for x in steam_dlcs):
             if d and d != aid and (d in owner_map or d in depot_keys):
                 dlcs.add(d)
 
@@ -846,12 +851,20 @@ class Injector:
         aid = sanitize_id(app_id)
         if not aid:
             return {"ok": False, "error": "Invalid AppID"}
+
+        include_delisted = bool(self.ctx.read_setting("add_delisted_dlcs", True))
+
         details = self.steam.app_details(aid)
-        dlcs = {d for d in (sanitize_id(x) for x in ((details or {}).get("dlc") or [])) if d}
-        if not dlcs:
+        if include_delisted:
+            candidate_list = (details or {}).get("dlc_all") or (details or {}).get("dlc") or []
+        else:
+            candidate_list = (details or {}).get("dlc") or []
+
+        dlcs = {d for d in (sanitize_id(x) for x in candidate_list) if d and d != aid}
+        if include_delisted or not dlcs:
             res = self.manifests.fetch(aid, persist_config=False)
             if res.get("ok"):
-                dlcs = {d for d in (sanitize_id(x) for x in (res.get("dlc_appids") or [])) if d}
+                dlcs |= {d for d in (sanitize_id(x) for x in (res.get("dlc_appids") or [])) if d and d != aid}
         if not dlcs:
             return {"ok": True, "count": 0, "message": "No DLCs found"}
         result = self.set_game_apps(aid, sort_ids(dlcs), use_hubcap=True)
@@ -870,11 +883,13 @@ class Injector:
             result.setdefault("count", 0)
             return result
 
+        include_delisted = bool(self.ctx.read_setting("add_delisted_dlcs", True))
         record = self.library.load().get(aid) or {}
         details = self.steam.app_details(aid)
         if not isinstance(details, dict):
             details = {}
-        dlcs = {d for d in (sanitize_id(x) for x in (details.get("dlc") or [])) if d}
+        source_dlcs = (details.get("dlc_all") or []) if include_delisted else (details.get("dlc") or [])
+        dlcs = {d for d in (sanitize_id(x) for x in source_dlcs) if d}
         details_dlc = details.get("dlc_appids")
         if details_dlc:
             dlcs |= {d for d in (sanitize_id(x) for x in details_dlc) if d}

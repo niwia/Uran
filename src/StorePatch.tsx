@@ -16,12 +16,13 @@
  */
 import { callable } from "@decky/api";
 import { injectFinishedText, notify } from "./notify";
+import { refetchGame } from "./api";
 
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
-const BUTTON_COLOR_BG = "#a1cd44";
-const BUTTON_COLOR_TEXT = "#beee11";
-const ASSELLA_TAG = "ASSELLA:";
+const ASSELLA_ADD_TAG = "ASSELLA_ADD:";
+const ASSELLA_REFETCH_TAG = "ASSELLA_REFETCH:";
+const ASSELLA_TAG = "ASSELLA:"; // legacy fallback
 
 
 // -- State --------------------------------------------------------------------
@@ -36,6 +37,7 @@ let lastInjectedAppId = "";
 let lastConsoleTs = 0;
 export const addedAppIds = new Set<string>();
 export const pendingAppIds = new Set<string>();
+export const refetchingAppIds = new Set<string>();
 
 // -- Backend callables --------------------------------------------------------
 type InjectResult = {
@@ -134,69 +136,113 @@ function buildInjectScript(): string {
     try {
       function log(msg){ try { console.log('ASSELLA-STORE:' + msg); } catch(e){} }
 
-      var BG = ${JSON.stringify(BUTTON_COLOR_BG)};
-      var FG = ${JSON.stringify(BUTTON_COLOR_TEXT)};
-      var ASSELLA_TAG = ${JSON.stringify(ASSELLA_TAG)};
+      var ASSELLA_ADD_TAG = ${JSON.stringify(ASSELLA_ADD_TAG)};
+      var ASSELLA_REFETCH_TAG = ${JSON.stringify(ASSELLA_REFETCH_TAG)};
+
+      var BASE_BLUE_BG = 'rgba(103, 193, 245, 0.2)';
+      var BASE_BLUE_HOVER_BG = 'linear-gradient(to bottom, #417a9b 5%, #67c1f5 95%)';
+      var SPAN_BG = 'linear-gradient(to bottom, #214b6b 5%, #183348 95%)';
+      var SPAN_HOVER_BG = 'linear-gradient(to bottom, #417a9b 5%, #67c1f5 95%)';
+      var TEXT_COLOR = '#67c1f5';
+      var TEXT_HOVER_COLOR = '#ffffff';
 
       function getState() {
         if (!window.__assellaStoreState) {
-          window.__assellaStoreState = { appId: '', label: 'ADD TO URAN', locked: false };
+          window.__assellaStoreState = {
+            appId: '',
+            label: 'Add to Uran',
+            actionTag: ASSELLA_ADD_TAG,
+            clickLabel: 'Adding...',
+            locked: false
+          };
         }
         return window.__assellaStoreState;
       }
 
-      function makeButton(text, tag, clickLabel, disabled, isWishlistStyle, customBg, customFg) {
+      function makeButton(text, tag, clickLabel, disabled, isWishlistStyle) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = text;
-        b.setAttribute('data-assella-action', tag);
+        b.className = 'btnv6_blue_hoverfade btn_medium';
+        b.setAttribute('data-assella-action', tag || ASSELLA_ADD_TAG);
         b.tabIndex = 0;
-        var bg = customBg || BG;
-        var fg = customFg || FG;
-        b.style.cssText =
-          (isWishlistStyle ? 'width:100%;' : '') +
-          'height:36px;' +
-          'background:' + bg + ';' +
-          'color:' + fg + ';' +
-          'text-shadow:0 1px 2px rgba(0,0,0,0.45);' +
-          'border:none;' +
-          'border-radius:2px;' +
-          'padding:0 16px;' +
-          'font-family:\"Motiva Sans\", Arial, sans-serif;' +
-          'font-size:13px;' +
-          'font-weight:700;' +
-          'letter-spacing:0.3px;' +
-          'box-sizing:border-box;' +
-          'cursor:' + (disabled ? 'default' : 'pointer') + ';' +
-          'display:' + (isWishlistStyle ? 'flex' : 'inline-flex') + ';' +
+
+        var span = document.createElement('span');
+        span.textContent = text;
+        span.style.cssText =
+          'display:flex;' +
           'align-items:center;' +
           'justify-content:center;' +
+          'width:100%;' +
+          'height:100%;' +
+          'box-sizing:border-box;' +
+          'padding:' + (isWishlistStyle ? '0 16px;' : '0 15px;') +
+          'background:' + SPAN_BG + ';' +
+          'color:' + TEXT_COLOR + ';' +
+          'border-radius:2px;' +
+          'font-family:\"Motiva Sans\", Arial, sans-serif;' +
+          'font-size:' + (isWishlistStyle ? '14px;' : '13px;') +
+          'font-weight:500;' +
+          'letter-spacing:0.2px;' +
           'white-space:nowrap;' +
-          'opacity:' + (disabled ? '0.7' : '1') + ';' +
-          'transition:filter 0.15s ease, opacity 0.15s ease, color 0.15s ease;';
+          'transition:all 0.2s ease;';
+
+        b.style.cssText =
+          (isWishlistStyle ? 'width:100%; height:36px;' : 'height:30px;') +
+          'display:' + (isWishlistStyle ? 'flex;' : 'inline-flex;') +
+          'align-items:center;' +
+          'justify-content:center;' +
+          'background:' + BASE_BLUE_BG + ';' +
+          'border:none;' +
+          'border-radius:2px;' +
+          'padding:1px;' +
+          'box-sizing:border-box;' +
+          'cursor:' + (disabled ? 'default;' : 'pointer;') +
+          'opacity:' + (disabled ? '0.7;' : '1;') +
+          'text-decoration:none;' +
+          'transition:all 0.2s ease;';
+
+        b.appendChild(span);
+
         if (disabled) {
           b.disabled = true;
         } else {
           b.onclick = function(e) {
             e.stopPropagation();
             e.preventDefault();
-            if (clickLabel) {
-              b.textContent = clickLabel;
-              b.style.opacity = '0.7';
-              b.disabled = true;
-            }
-            console.log(tag + getState().appId);
+            if (b.disabled) return;
+            var S = getState();
+            var targetLabel = S.clickLabel || (S.actionTag === ASSELLA_REFETCH_TAG ? 'Refetching...' : 'Adding...');
+            span.textContent = targetLabel;
+            b.style.opacity = '0.7';
+            b.disabled = true;
+            console.log(S.actionTag + S.appId);
           };
           b.onmouseenter = function() {
             if (!b.disabled) {
-              b.style.filter = 'brightness(1.08)';
-              b.style.color = '#ffffff';
+              b.style.background = BASE_BLUE_HOVER_BG;
+              span.style.background = SPAN_HOVER_BG;
+              span.style.color = TEXT_HOVER_COLOR;
             }
           };
           b.onmouseleave = function() {
-            b.style.filter = 'none';
             if (!b.disabled) {
-              b.style.color = fg;
+              b.style.background = BASE_BLUE_BG;
+              span.style.background = SPAN_BG;
+              span.style.color = TEXT_COLOR;
+            }
+          };
+          b.onfocus = function() {
+            if (!b.disabled) {
+              b.style.background = BASE_BLUE_HOVER_BG;
+              span.style.background = SPAN_HOVER_BG;
+              span.style.color = TEXT_HOVER_COLOR;
+            }
+          };
+          b.onblur = function() {
+            if (!b.disabled) {
+              b.style.background = BASE_BLUE_BG;
+              span.style.background = SPAN_BG;
+              span.style.color = TEXT_COLOR;
             }
           };
         }
@@ -219,12 +265,25 @@ function buildInjectScript(): string {
         var slotApp = existing.getAttribute('data-assella-appid');
         if (slotApp !== S.appId) return false;
 
-        var mainBtn = existing.querySelector('button[data-assella-action="' + ASSELLA_TAG + '"]');
+        var mainBtn = existing.querySelector('button[data-assella-action]');
         if (mainBtn) {
-          mainBtn.textContent = S.label;
+          mainBtn.setAttribute('data-assella-action', S.actionTag);
+          var span = mainBtn.querySelector('span');
+          if (span) {
+            span.textContent = S.label;
+          } else {
+            mainBtn.textContent = S.label;
+          }
           mainBtn.style.opacity = S.locked ? '0.7' : '1';
           mainBtn.style.cursor = S.locked ? 'default' : 'pointer';
           mainBtn.disabled = !!S.locked;
+          if (!S.locked) {
+            mainBtn.style.background = BASE_BLUE_BG;
+            if (span) {
+              span.style.background = SPAN_BG;
+              span.style.color = TEXT_COLOR;
+            }
+          }
         }
 
         return true;
@@ -240,9 +299,10 @@ function buildInjectScript(): string {
           w.className = 'Panel Focusable';
           w.style.cssText = 'width:100%; display:flex; flex-direction:column; gap:4px;';
         } else {
-          w.style.cssText = 'display:inline-flex; align-items:center; gap:6px; margin-right:6px;';
+          w.className = 'queue_control_button';
+          w.style.cssText = 'flex-grow:0; display:inline-flex; align-items:center; gap:6px; margin:0 4px;';
         }
-        w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, isWishlistStyle));
+        w.appendChild(makeButton(S.label, S.actionTag, S.clickLabel, S.locked, isWishlistStyle));
         return w;
       }
 
@@ -287,16 +347,11 @@ function buildInjectScript(): string {
         } else {
           var w = document.createElement('div');
           w.id = 'Uran-btns';
+          w.className = 'queue_control_button';
           w.setAttribute('data-assella-appid', S.appId);
           w.setAttribute('data-assella-inner', '1');
-          w.style.cssText = 'display:inline-block; vertical-align:top; margin:0 4px;';
-          var btn = makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false);
-          btn.style.height = '30px';
-          btn.style.lineHeight = '30px';
-          btn.style.padding = '0 14px';
-          btn.style.display = 'inline-flex';
-          btn.style.alignItems = 'center';
-          btn.style.fontSize = '12px';
+          w.style.cssText = 'flex-grow:0; display:inline-block; vertical-align:top; margin:0 4px;';
+          var btn = makeButton(S.label, S.actionTag, S.clickLabel, S.locked, false);
           w.appendChild(btn);
           if (colItem.nextSibling) {
             colContainer.insertBefore(w, colItem.nextSibling);
@@ -393,7 +448,7 @@ function buildInjectScript(): string {
         w.id = 'Uran-btns';
         w.setAttribute('data-assella-appid', S.appId);
         w.style.cssText = 'padding:14px; margin:12px 0; background:rgba(0,0,0,0.35); border-radius:6px; display:flex; gap:8px; align-items:center;';
-        w.appendChild(makeButton(S.label, ASSELLA_TAG, 'ADDING...', S.locked, false));
+        w.appendChild(makeButton(S.label, S.actionTag, S.clickLabel, S.locked, false));
         host.prepend(w);
         log('fallback banner injected for ' + S.appId);
         return true;
@@ -468,10 +523,20 @@ async function inject(
 
   const isAdded = addedAppIds.has(appId);
   const isPending = !isAdded && pendingAppIds.has(appId);
+  const isRefetching = isAdded && refetchingAppIds.has(appId);
+
   const label =
     labelOverride ??
-    (isAdded ? "ADDED" : isPending ? "ADDING..." : "ADD TO URAN");
-  const locked = lockedOverride ?? (isAdded || isPending);
+    (isRefetching
+      ? "Refetching..."
+      : isAdded
+      ? "Refetch from Hubcap"
+      : isPending
+      ? "Adding..."
+      : "Add to Uran");
+  const locked = lockedOverride ?? (isPending || isRefetching);
+  const actionTag = isAdded ? ASSELLA_REFETCH_TAG : ASSELLA_ADD_TAG;
+  const clickLabel = isAdded ? "Refetching..." : "Adding...";
 
   const stateScript =
     "(function(){try{" +
@@ -480,6 +545,10 @@ async function inject(
     JSON.stringify(appId) +
     ";S.label=" +
     JSON.stringify(label) +
+    ";S.actionTag=" +
+    JSON.stringify(actionTag) +
+    ";S.clickLabel=" +
+    JSON.stringify(clickLabel) +
     ";S.locked=" +
     JSON.stringify(locked) +
     ";}catch(e){}})();";
@@ -508,6 +577,81 @@ function remove(): void {
         "}catch(e){}})();",
     },
   });
+}
+
+function handleStoreAdd(appId: string): void {
+  slog("webview add click: " + appId);
+  if (addedAppIds.has(appId)) {
+    handleStoreRefetch(appId);
+    return;
+  }
+  pendingAppIds.add(appId);
+  inject(appId, true, "Adding...", true);
+  injectGame(appId)
+    .then((r: any) => {
+      if (r && r.already_added) {
+        pendingAppIds.delete(appId);
+        addedAppIds.add(appId);
+        notify("Uran", r.error || "This game is already registered in your library.");
+        inject(appId, true, "Refetch from Hubcap", false);
+        return;
+      }
+      if (r && !r.error) {
+        const name = r.name || appId;
+        const extra = "";
+        const depotInfo = r.depots
+          ? ` — ${r.depots.length} depot(s)`
+          : "";
+        notify("Uran", `Added ${name}${extra}${depotInfo}`);
+        if (r.fetching) {
+          notify("Uran", `Fetching Hubcap manifests & keys for ${name}...`);
+        }
+        pollInjectJob(appId, name, () => {
+          pendingAppIds.delete(appId);
+          addedAppIds.add(appId);
+          inject(appId, true, "Refetch from Hubcap", false);
+        });
+      } else {
+        pendingAppIds.delete(appId);
+        notify(
+          "Uran",
+          r?.error || `Failed to add game ${appId}`,
+        );
+        inject(appId, true);
+      }
+    })
+    .catch((e: any) => {
+      pendingAppIds.delete(appId);
+      notify("Uran", `Failed to add game ${appId}: ${e}`);
+      inject(appId, true);
+    });
+}
+
+function handleStoreRefetch(appId: string): void {
+  slog("webview refetch click: " + appId);
+  refetchingAppIds.add(appId);
+  inject(appId, true, "Refetching...", true);
+  notify("Uran", `Refetching Hubcap manifests & keys for app ${appId}...`);
+  refetchGame(appId)
+    .then((r: any) => {
+      refetchingAppIds.delete(appId);
+      if (r?.ok) {
+        const added = r.depots_added?.length || 0;
+        const keys = r.keys_added?.length || 0;
+        notify(
+          "Uran",
+          `Refetched ${r.name || appId} (${added} depot${added === 1 ? "" : "s"}, ${keys} key${keys === 1 ? "" : "s"})`,
+        );
+      } else {
+        notify("Uran", r?.error || `Refetch failed for ${appId}`);
+      }
+      inject(appId, true, "Refetch from Hubcap", false);
+    })
+    .catch((e: any) => {
+      refetchingAppIds.delete(appId);
+      notify("Uran", `Refetch failed for ${appId}: ${e}`);
+      inject(appId, true, "Refetch from Hubcap", false);
+    });
 }
 
 async function connect(tab: StoreTab): Promise<void> {
@@ -564,54 +708,19 @@ async function connect(tab: StoreTab): Promise<void> {
           if (arg.type === "string" && arg.value) {
             if (arg.value.startsWith("ASSELLA-STORE:")) {
               slog("webview: " + arg.value);
+            } else if (arg.value.startsWith(ASSELLA_REFETCH_TAG)) {
+              const appId = arg.value.slice(ASSELLA_REFETCH_TAG.length);
+              handleStoreRefetch(appId);
+            } else if (arg.value.startsWith(ASSELLA_ADD_TAG)) {
+              const appId = arg.value.slice(ASSELLA_ADD_TAG.length);
+              handleStoreAdd(appId);
             } else if (arg.value.startsWith(ASSELLA_TAG)) {
               const appId = arg.value.slice(ASSELLA_TAG.length);
-              slog("webview click: " + appId);
               if (addedAppIds.has(appId)) {
-                notify("Uran", `This game is already registered in your library.`);
-                inject(appId, true, "ADDED", true);
-                return;
+                handleStoreRefetch(appId);
+              } else {
+                handleStoreAdd(appId);
               }
-              pendingAppIds.add(appId);
-              inject(appId, true, "ADDING...", true);
-              injectGame(appId)
-                .then((r: any) => {
-                  if (r && r.already_added) {
-                    pendingAppIds.delete(appId);
-                    addedAppIds.add(appId);
-                    notify("Uran", r.error || "This game is already registered in your library.");
-                    inject(appId, true, "ADDED", true);
-                    return;
-                  }
-                  if (r && !r.error) {
-                    const name = r.name || appId;
-                    const extra = "";
-                    const depotInfo = r.depots
-                      ? ` — ${r.depots.length} depot(s)`
-                      : "";
-                    notify("Uran", `Added ${name}${extra}${depotInfo}`);
-                    if (r.fetching) {
-                      notify("Uran", `Fetching Hubcap manifests & keys for ${name}...`);
-                    }
-                    pollInjectJob(appId, name, () => {
-                      pendingAppIds.delete(appId);
-                      addedAppIds.add(appId);
-                      inject(appId, true, "ADDED", true);
-                    });
-                  } else {
-                    pendingAppIds.delete(appId);
-                    notify(
-                      "Uran",
-                      r?.error || `Failed to add game ${appId}`,
-                    );
-                    inject(appId, true);
-                  }
-                })
-                .catch((e: any) => {
-                  pendingAppIds.delete(appId);
-                  notify("Uran", `Failed to add game ${appId}: ${e}`);
-                  inject(appId, true);
-                });
             }
           }
         }

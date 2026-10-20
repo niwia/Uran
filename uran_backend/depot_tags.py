@@ -189,3 +189,34 @@ def clean_depot_name(depot_id: str, raw_name: str, fallback_name: str = "") -> s
         return cleaned or f"Depot {depot_id}"
 
     return cleaned
+
+
+_PLACEHOLDER_DLC_NAMES = {"", "unknown", "-", "n/a", "none", "dlc"}
+
+
+def is_placeholder_dlc_name(name: str, dlc_id: str) -> bool:
+    """True when `name` is empty or a stand-in for a DLC we have no title for."""
+    n = (name or "").strip()
+    if n.lower() in _PLACEHOLDER_DLC_NAMES:
+        return True
+    if n.lower() == f"dlc {dlc_id}".lower():
+        return True
+    if n == str(dlc_id):
+        return True
+    return False
+
+
+def qualify_dlc_name(name: str, dlc_id: str, game_name: str) -> str:
+    """Prefix a placeholder DLC name with the parent game's name.
+
+    When a DLC's name is 'Unknown', 'DLC <id>' or the id itself, gets formatted as
+    '<game> - <placeholder>', making it obvious which game it belongs to.
+    """
+    name = (name or "").strip()
+    if not is_placeholder_dlc_name(name, dlc_id):
+        return name
+    placeholder = name or f"DLC {dlc_id}"
+    game_name = (game_name or "").strip()
+    if not game_name:
+        return placeholder
+    return f"{game_name} - {placeholder}"
