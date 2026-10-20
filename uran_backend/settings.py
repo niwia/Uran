@@ -18,7 +18,6 @@ APP_CONFIG_DIR = "assella-decky"
 
 DEFAULTS: dict = {
     "fetch_dlcs_on_inject": False,
-    "manifestid_pinning": False,
     "steam_store_enabled": True,
     "manifest_api_key": "",
     "notification_mode": "auto",

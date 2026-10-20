@@ -132,10 +132,8 @@ class Manifests:
         written_count = 0
         depot_keys: dict[str, str] = {}
         manifest_ids: dict[str, str] = {}
-        pinned_manifests: dict[str, str] = {}
         dlc_appids: list[str] = []
         game_name = ""
-        should_pin = bool(self.ctx.read_setting("manifestid_pinning"))
 
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -158,8 +156,6 @@ class Manifests:
                             except OSError as exc:
                                 logger.warning("Failed writing manifest %s: %s", base, exc)
                         manifest_ids[did] = mid
-                        if should_pin:
-                            pinned_manifests[did] = mid
                     elif base.endswith(".lua"):
                         try:
                             lua_content = archive.read(name).decode("utf-8", errors="replace")
@@ -169,9 +165,6 @@ class Manifests:
                             parsed = manifest_lua.parse(lua_content, sanitize_key)
                             depot_keys.update(parsed["keys"])
                             manifest_ids.update(parsed["manifests"])
-                            for did, mid in parsed["manifests"].items():
-                                if should_pin:
-                                    pinned_manifests.setdefault(did, mid)
                             for did in parsed["dlcs"]:
                                 if did not in dlc_appids:
                                     dlc_appids.append(did)
@@ -191,10 +184,10 @@ class Manifests:
                 "error": "Hubcap bundle contains no depot decryption keys",
             }
 
-        # Keys/manifest pins are written by the caller in a single batched pass,
+        # Keys are written by the caller in a single batched pass,
         # so one inject never rewrites the config once per depot.
         if persist_config:
-            self._persist_keys(app_id, depot_keys, pinned_manifests)
+            self._persist_keys(app_id, depot_keys)
 
         logger.info(
             "Hubcap: AppID %s processed. Manifests: %s, Keys harvested: %s",
@@ -207,15 +200,14 @@ class Manifests:
             "written": written_count,
             "depot_keys": depot_keys,
             "manifest_ids": manifest_ids,
-            "pinned_manifests": pinned_manifests,
             "dlc_appids": dlc_appids,
             "game_name": game_name,
             # Back-compat: callers still read `keys_added` as a list of depot ids.
             "keys_added": sort_ids(depot_keys.keys()),
         }
 
-    def _persist_keys(self, app_id: str, depot_keys: dict, manifest_ids: dict) -> dict:
-        """Write harvested depot keys + manifest pins in one batched pass."""
+    def _persist_keys(self, app_id: str, depot_keys: dict, manifest_ids: dict | None = None) -> dict:
+        """Write harvested depot keys in one batched pass."""
         app_id = str(app_id).strip()
         try:
             name = sanitize_comment(self.steam.app_details(app_id).get("name") or f"App {app_id}")
@@ -234,8 +226,6 @@ class Manifests:
                 if clean:
                     editor.add_key(did, clean, comment=self.ctx.depot_names.get(did, ""))
                     written[did] = clean
-            for did, mid in (manifest_ids or {}).items():
-                editor.add_manifest_id(did, mid)
         return {"ok": editor.committed_successfully, "keys": list(written.keys())}
 
     def refetch(self, app_id: str) -> dict:

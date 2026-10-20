@@ -56,7 +56,6 @@ export const SettingsTab: React.FC = () => {
     message: string;
     logs: string[];
   } | null>(null);
-  const [manifestIdPinning, setManifestIdPinning] = React.useState(false);
   const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [gatewayMode, setGatewayMode] = React.useState<GatewayMode>("auto");
@@ -138,9 +137,8 @@ export const SettingsTab: React.FC = () => {
     let alive = true;
     (async () => {
       try {
-        const [mip, nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
+        const [nm, storeEnabled, initialStoreStatus, gSls, gw, routes] =
           await Promise.all([
-            getSetting("manifestid_pinning", false),
             getSetting("notification_mode", "auto"),
             getSetting("steam_store_enabled", true),
             // CEF port scan + route state: session-once, not per tab visit.
@@ -150,7 +148,6 @@ export const SettingsTab: React.FC = () => {
             once("hubcap-routes", getHubcapRoutes),
           ]);
         if (!alive) return;
-        setManifestIdPinning(!!mip);
         setSteamStoreEnabled(storeEnabled !== false);
         setStorePatchEnabled(storeEnabled !== false);
         setStoreStatus(initialStoreStatus);
@@ -509,20 +506,6 @@ export const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Injection">
-        <PanelSectionRow>
-          <ToggleField
-            label="Pin ManifestIds"
-            description="Write ManifestIds pins for fetched depots."
-            checked={manifestIdPinning}
-            onChange={(v) => {
-              setManifestIdPinning(v);
-              setSetting("manifestid_pinning", v);
-            }}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
       <PanelSection title="SLS Config">
         <PanelSectionRow>
           <ButtonItem
@@ -579,7 +562,7 @@ export const SettingsTab: React.FC = () => {
             }}
           >
             <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.4.6"}
+              Uran v{pluginInfo.version || "0.4.9"}
             </span>
             {updateInfo?.has_update && (
               <Focusable

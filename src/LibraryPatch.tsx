@@ -294,11 +294,6 @@ export function initContextMenuPatch(): () => void {
                   if (r?.ok) {
                     const written = r.written ?? 0;
                     const manifests = r.manifests || [];
-                    const pins = r.manifest_ids
-                      ? Object.keys(r.manifest_ids).length
-                      : 0;
-                    const pinMsg =
-                      pins > 0 ? `, pinned ${pins} depot manifest(s)` : "";
                     const clearedPins = r.removed_pins?.length ?? 0;
                     const clearedMsg =
                       clearedPins > 0
@@ -307,7 +302,7 @@ export function initContextMenuPatch(): () => void {
                     notify(
                       "Uran",
                       manifests.length > 0
-                        ? `Extracted ${written} manifest(s) to depotcache${pinMsg}${clearedMsg}`
+                        ? `Extracted ${written} manifest(s) to depotcache${clearedMsg}`
                         : "Manifest bundle downloaded and parsed",
                     );
                   } else {
