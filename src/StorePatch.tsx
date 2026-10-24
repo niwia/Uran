@@ -140,9 +140,7 @@ function buildInjectScript(): string {
       var ASSELLA_REFETCH_TAG = ${JSON.stringify(ASSELLA_REFETCH_TAG)};
 
       var BASE_BLUE_BG = 'rgba(103, 193, 245, 0.2)';
-      var BASE_BLUE_HOVER_BG = 'linear-gradient(to bottom, #417a9b 5%, #67c1f5 95%)';
-      var SPAN_BG = 'linear-gradient(to bottom, #214b6b 5%, #183348 95%)';
-      var SPAN_HOVER_BG = 'linear-gradient(to bottom, #417a9b 5%, #67c1f5 95%)';
+      var BASE_BLUE_HOVER_BG = 'linear-gradient(-60deg, #417a9b 5%, #67c1f5 95%)';
       var TEXT_COLOR = '#67c1f5';
       var TEXT_HOVER_COLOR = '#ffffff';
 
@@ -162,44 +160,76 @@ function buildInjectScript(): string {
       function makeButton(text, tag, clickLabel, disabled, isWishlistStyle) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.className = 'btnv6_blue_hoverfade btn_medium';
+        b.className = 'btnv6_blue_hoverfade btn_medium queue_btn_inactive';
         b.setAttribute('data-assella-action', tag || ASSELLA_ADD_TAG);
+        b.setAttribute('data-panel', '{"focusable":true,"clickOnActivate":true}');
+        b.setAttribute('role', 'button');
         b.tabIndex = 0;
 
         var span = document.createElement('span');
         span.textContent = text;
-        span.style.cssText =
-          'display:flex;' +
-          'align-items:center;' +
-          'justify-content:center;' +
-          'width:100%;' +
-          'height:100%;' +
-          'box-sizing:border-box;' +
-          'padding:' + (isWishlistStyle ? '0 16px;' : '0 15px;') +
-          'background:' + SPAN_BG + ';' +
-          'color:' + TEXT_COLOR + ';' +
-          'border-radius:2px;' +
-          'font-family:\"Motiva Sans\", Arial, sans-serif;' +
-          'font-size:' + (isWishlistStyle ? '14px;' : '13px;') +
-          'font-weight:500;' +
-          'letter-spacing:0.2px;' +
-          'white-space:nowrap;' +
-          'transition:all 0.2s ease;';
 
-        b.style.cssText =
-          (isWishlistStyle ? 'width:100%; height:36px;' : 'height:30px;') +
-          'display:' + (isWishlistStyle ? 'flex;' : 'inline-flex;') +
-          'align-items:center;' +
-          'justify-content:center;' +
-          'background:' + BASE_BLUE_BG + ';' +
-          'border:none;' +
-          'border-radius:2px;' +
-          'padding:1px;' +
-          'box-sizing:border-box;' +
-          'cursor:' + (disabled ? 'default;' : 'pointer;') +
-          'opacity:' + (disabled ? '0.7;' : '1;') +
-          'text-decoration:none;' +
-          'transition:all 0.2s ease;';
+        if (isWishlistStyle) {
+          span.style.cssText =
+            'display:flex;' +
+            'align-items:center;' +
+            'justify-content:center;' +
+            'width:100%;' +
+            'height:100%;' +
+            'box-sizing:border-box;' +
+            'padding:0 16px;' +
+            'background:transparent;' +
+            'color:' + TEXT_COLOR + ';' +
+            'border-radius:2px;' +
+            'font-family:"Motiva Sans", Arial, sans-serif;' +
+            'font-size:14px;' +
+            'font-weight:500;' +
+            'letter-spacing:0.2px;' +
+            'white-space:nowrap;' +
+            'transition:all 0.2s ease;';
+
+          b.style.cssText =
+            'width:100%;' +
+            'height:36px;' +
+            'display:flex;' +
+            'align-items:center;' +
+            'justify-content:center;' +
+            'background:' + BASE_BLUE_BG + ';' +
+            'border:none;' +
+            'border-radius:2px;' +
+            'padding:1px;' +
+            'box-sizing:border-box;' +
+            'cursor:' + (disabled ? 'default;' : 'pointer;') +
+            'opacity:' + (disabled ? '0.7;' : '1;') +
+            'text-decoration:none;' +
+            'transition:all 0.2s ease;';
+        } else {
+          span.style.cssText =
+            'display:block;' +
+            'background:transparent;' +
+            'color:' + TEXT_COLOR + ';' +
+            'border-radius:2px;' +
+            'font-family:"Motiva Sans", Arial, sans-serif;' +
+            'font-size:15px;' +
+            'line-height:30px;' +
+            'padding:0 15px;' +
+            'box-sizing:border-box;' +
+            'white-space:nowrap;' +
+            'text-align:center;' +
+            'transition:all 0.2s ease;';
+
+          b.style.cssText =
+            'display:inline-block;' +
+            'background:' + BASE_BLUE_BG + ';' +
+            'border:none;' +
+            'border-radius:2px;' +
+            'padding:1px;' +
+            'box-sizing:border-box;' +
+            'cursor:' + (disabled ? 'default;' : 'pointer;') +
+            'opacity:' + (disabled ? '0.7;' : '1;') +
+            'text-decoration:none;' +
+            'transition:all 0.2s ease;';
+        }
 
         b.appendChild(span);
 
@@ -220,28 +250,24 @@ function buildInjectScript(): string {
           b.onmouseenter = function() {
             if (!b.disabled) {
               b.style.background = BASE_BLUE_HOVER_BG;
-              span.style.background = SPAN_HOVER_BG;
               span.style.color = TEXT_HOVER_COLOR;
             }
           };
           b.onmouseleave = function() {
             if (!b.disabled) {
               b.style.background = BASE_BLUE_BG;
-              span.style.background = SPAN_BG;
               span.style.color = TEXT_COLOR;
             }
           };
           b.onfocus = function() {
             if (!b.disabled) {
               b.style.background = BASE_BLUE_HOVER_BG;
-              span.style.background = SPAN_HOVER_BG;
               span.style.color = TEXT_HOVER_COLOR;
             }
           };
           b.onblur = function() {
             if (!b.disabled) {
               b.style.background = BASE_BLUE_BG;
-              span.style.background = SPAN_BG;
               span.style.color = TEXT_COLOR;
             }
           };
@@ -280,7 +306,7 @@ function buildInjectScript(): string {
           if (!S.locked) {
             mainBtn.style.background = BASE_BLUE_BG;
             if (span) {
-              span.style.background = SPAN_BG;
+              span.style.background = 'transparent';
               span.style.color = TEXT_COLOR;
             }
           }
@@ -299,8 +325,8 @@ function buildInjectScript(): string {
           w.className = 'Panel Focusable';
           w.style.cssText = 'width:100%; display:flex; flex-direction:column; gap:4px;';
         } else {
-          w.className = 'queue_control_button';
-          w.style.cssText = 'flex-grow:0; display:inline-flex; align-items:center; gap:6px; margin:0 4px;';
+          w.className = 'queue_control_button queue_btn_uran';
+          w.style.cssText = 'flex-grow:0;';
         }
         w.appendChild(makeButton(S.label, S.actionTag, S.clickLabel, S.locked, isWishlistStyle));
         return w;
@@ -347,10 +373,10 @@ function buildInjectScript(): string {
         } else {
           var w = document.createElement('div');
           w.id = 'Uran-btns';
-          w.className = 'queue_control_button';
+          w.className = 'queue_control_button queue_btn_uran';
           w.setAttribute('data-assella-appid', S.appId);
           w.setAttribute('data-assella-inner', '1');
-          w.style.cssText = 'flex-grow:0; display:inline-block; vertical-align:top; margin:0 4px;';
+          w.style.cssText = 'flex-grow:0;';
           var btn = makeButton(S.label, S.actionTag, S.clickLabel, S.locked, false);
           w.appendChild(btn);
           if (colItem.nextSibling) {
