@@ -149,6 +149,7 @@ function buildInjectScript(): string {
           window.__assellaStoreState = {
             appId: '',
             label: 'Add to Uran',
+            tooltip: 'Add game to at0-m plugin and download from your library!',
             actionTag: ASSELLA_ADD_TAG,
             clickLabel: 'Adding...',
             locked: false
@@ -157,14 +158,75 @@ function buildInjectScript(): string {
         return window.__assellaStoreState;
       }
 
+      function registerFocusNode(element, referenceElement) {
+        try {
+          if (!element || !referenceElement) return;
+          if (window.__assellaUranFocusNode) {
+            try { window.__assellaUranFocusNode.OnUnmount(); } catch(e){}
+            window.__assellaUranFocusNode = null;
+          }
+          var fiberKey = Object.keys(referenceElement).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+          var cur = fiberKey ? referenceElement[fiberKey] : null;
+          var refNode = null;
+          while (cur) {
+            if (cur.memoizedProps && cur.memoizedProps.node) {
+              refNode = cur.memoizedProps.node;
+              break;
+            }
+            cur = cur.return;
+          }
+          if (!refNode) return;
+          var parent = refNode.m_Parent;
+          var navParent = parent;
+          if (parent && parent.m_Parent && parent.m_rgChildren && parent.m_rgChildren.length <= 1) {
+            navParent = parent.m_Parent;
+          }
+          if (!navParent) navParent = parent || refNode;
+
+          if (navParent.m_rgChildren) {
+            for (var ci = navParent.m_rgChildren.length - 1; ci >= 0; ci--) {
+              var ch = navParent.m_rgChildren[ci];
+              if (ch && ch.m_element && (ch.m_element.id === 'Uran-btns' || (ch.m_element.textContent && ch.m_element.textContent.indexOf('Uran') !== -1))) {
+                try { ch.OnUnmount(); } catch(e){}
+              }
+            }
+          }
+
+          var NodeClass = refNode.constructor;
+          var uranNode = new NodeClass(refNode.m_Tree, navParent, refNode.m_FocusRing);
+          uranNode.SetProperties({
+            layout: 0,
+            focusable: true,
+            focusClassName: 'Focusable',
+            focusWithinClassName: 'Focusable'
+          });
+          uranNode.OnMount(element);
+          if (navParent.EnsureChildrenSorted) {
+            navParent.EnsureChildrenSorted(true);
+          }
+          window.__assellaUranFocusNode = uranNode;
+          log('registered Uran focus node in Valve FocusNavTree');
+        } catch(e) {
+          log('FocusNavTree registration error: ' + e);
+        }
+      }
+
       function makeButton(text, tag, clickLabel, disabled, isWishlistStyle) {
+        var S = getState();
         var b = document.createElement('button');
         b.type = 'button';
-        b.className = 'btnv6_blue_hoverfade btn_medium queue_btn_inactive';
+        b.className = isWishlistStyle
+          ? 'btnv6_blue_hoverfade btn_medium queue_btn_inactive Focusable'
+          : 'btnv6_blue_hoverfade btn_medium queue_btn_inactive';
         b.setAttribute('data-assella-action', tag || ASSELLA_ADD_TAG);
         b.setAttribute('data-panel', '{"focusable":true,"clickOnActivate":true}');
         b.setAttribute('role', 'button');
         b.tabIndex = 0;
+
+        var tip = S.tooltip || 'Add game to at0-m plugin and download from your library!';
+        b.setAttribute('data-tooltip-text', tip);
+        b.title = tip;
+        b.setAttribute('aria-label', tip);
 
         var span = document.createElement('span');
         span.textContent = text;
@@ -233,6 +295,25 @@ function buildInjectScript(): string {
 
         b.appendChild(span);
 
+        b.addEventListener('vgp_onok', function(e) {
+          b.click();
+        });
+        b.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            b.click();
+          }
+        });
+
+        if (window.$J && window.$J.fn && window.$J.fn.v_tooltip) {
+          try {
+            window.$J(b).v_tooltip({
+              tooltipClass: 'store_tooltip',
+              defaultType: 'text',
+              dataName: 'tooltipText'
+            });
+          } catch(e) {}
+        }
+
         if (disabled) {
           b.disabled = true;
         } else {
@@ -300,6 +381,11 @@ function buildInjectScript(): string {
           } else {
             mainBtn.textContent = S.label;
           }
+          if (S.tooltip) {
+            mainBtn.setAttribute('data-tooltip-text', S.tooltip);
+            mainBtn.title = S.tooltip;
+            mainBtn.setAttribute('aria-label', S.tooltip);
+          }
           mainBtn.style.opacity = S.locked ? '0.7' : '1';
           mainBtn.style.cursor = S.locked ? 'default' : 'pointer';
           mainBtn.disabled = !!S.locked;
@@ -363,11 +449,13 @@ function buildInjectScript(): string {
 
         if (isGameModeWishlist) {
           var w = createButtonWrapper(true);
+          var btn = w.querySelector('button');
           if (colItem.nextSibling) {
             colContainer.insertBefore(w, colItem.nextSibling);
           } else {
             colContainer.appendChild(w);
           }
+          registerFocusNode(btn || w, wishBtn);
           log('injected Game Mode wishlist-style button for ' + S.appId);
           return true;
         } else {
@@ -409,6 +497,7 @@ function buildInjectScript(): string {
         var row = target.parentElement;
         var w = createButtonWrapper(false);
         row.insertBefore(w, target);
+        registerFocusNode(w.querySelector('button') || w, target);
         log('injected inline button before price/cart for ' + S.appId);
         return true;
       }
@@ -437,6 +526,7 @@ function buildInjectScript(): string {
 
         var w = createButtonWrapper(false);
         row.insertBefore(w, insertBeforeTarget);
+        registerFocusNode(w.querySelector('button') || w, insertBeforeTarget);
         log('injected inline button near cart/price for ' + S.appId);
         return true;
       }
@@ -563,6 +653,14 @@ async function inject(
   const locked = lockedOverride ?? (isPending || isRefetching);
   const actionTag = isAdded ? ASSELLA_REFETCH_TAG : ASSELLA_ADD_TAG;
   const clickLabel = isAdded ? "Refetching..." : "Adding...";
+  const tooltip =
+    isRefetching || label === "Refetching..."
+      ? "Refetching manifests and depot keys..."
+      : isAdded || label === "Refetch from Hubcap"
+      ? "Refetch manifests and depot keys from Hubcap"
+      : isPending || label === "Adding..."
+      ? "Adding game to library..."
+      : "Add game to at0-m plugin and download from your library!";
 
   const stateScript =
     "(function(){try{" +
@@ -571,6 +669,8 @@ async function inject(
     JSON.stringify(appId) +
     ";S.label=" +
     JSON.stringify(label) +
+    ";S.tooltip=" +
+    JSON.stringify(tooltip) +
     ";S.actionTag=" +
     JSON.stringify(actionTag) +
     ";S.clickLabel=" +
@@ -598,6 +698,7 @@ function remove(): void {
     params: {
       expression:
         "(function(){try{" +
+        "if(window.__assellaUranFocusNode){try{window.__assellaUranFocusNode.OnUnmount();}catch(e){}window.__assellaUranFocusNode=null;}" +
         "var s=document.querySelectorAll('#assella-purchase-slot, #Uran-btns');" +
         "for(var i=0;i<s.length;i++){s[i].remove();}" +
         "}catch(e){}})();",
