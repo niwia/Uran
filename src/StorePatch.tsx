@@ -17,6 +17,7 @@
 import { callable } from "@decky/api";
 import { injectFinishedText, notify } from "./notify";
 import { refetchGame } from "./api";
+import { showQrKeyModal } from "./components/QrKeyModal";
 
 // -- Config -------------------------------------------------------------------
 const POLL_MS = 2000;
@@ -740,10 +741,14 @@ function handleStoreAdd(appId: string): void {
         });
       } else {
         pendingAppIds.delete(appId);
-        notify(
-          "Uran",
-          r?.error || `Failed to add game ${appId}`,
-        );
+        if (r?.blocked === "no_api_key" || r?.error?.includes("No Hubcap API key")) {
+          showQrKeyModal(() => handleStoreAdd(appId));
+        } else {
+          notify(
+            "Uran",
+            r?.error || `Failed to add game ${appId}`,
+          );
+        }
         inject(appId, true);
       }
     })

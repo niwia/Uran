@@ -8,6 +8,8 @@ export type InjectResult = {
   name?: string;
   depots?: string[];
   fetching?: boolean;
+  blocked?: string;
+  already_added?: boolean;
 };
 export type RecentInject = {
   app_id: string;

@@ -202,25 +202,80 @@ export const SettingsTab: React.FC = () => {
     setCheckingConfig(false);
   };
 
+  const stopQr = React.useCallback(async () => {
+    try {
+      await stopKeyServer();
+    } catch {}
+    setKeyServer({ running: false, urls: [], status: "idle" });
+    setQrSvg(null);
+  }, []);
+
+  const startQr = React.useCallback(async () => {
+    setQrError("");
+    setQrSvg(null);
+    try {
+      const r = await startKeyServer();
+      if (!r?.ok) {
+        setQrError(r?.error || "Could not start the local server");
+        return;
+      }
+      const url = r.urls?.[0];
+      if (!url) {
+        setQrError(
+          "No network address found. Connect the Deck to Wi-Fi, then try again.",
+        );
+        return;
+      }
+      const svg = await QRCode.toString(url, {
+        type: "svg",
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 220,
+        color: { dark: "#000000", light: "#ffffff" },
+      });
+      setQrSvg(svg);
+      setKeyServer({
+        running: true,
+        urls: r.urls,
+        status: r.status,
+        expires_in: r.expires_in,
+      });
+    } catch (e: any) {
+      setQrError(e?.message || "Failed to start");
+    }
+  }, []);
+
   const loadStats = React.useCallback(async () => {
     try {
       // Manual refresh points (e.g. after a key is accepted) bypass the
       // session memo and update it, so later tab visits see fresh stats.
       const s = await refreshOnce("hubcap-stats", getHubcapUserStats);
-      if (s) setStats(s);
+      if (s) {
+        setStats(s);
+        if (!s.ok || s.error) {
+          void startQr();
+        }
+      }
     } catch {
       setStats({ ok: false });
+      void startQr();
     }
-  }, []);
+  }, [startQr]);
 
   const loadStatsOnce = React.useCallback(async () => {
     try {
       const s = await once("hubcap-stats", getHubcapUserStats);
-      if (s) setStats(s);
+      if (s) {
+        setStats(s);
+        if (!s.ok || s.error) {
+          void startQr();
+        }
+      }
     } catch {
       setStats({ ok: false });
+      void startQr();
     }
-  }, []);
+  }, [startQr]);
 
   React.useEffect(() => {
     let alive = true;
@@ -271,49 +326,6 @@ export const SettingsTab: React.FC = () => {
     setSteamStoreEnabled(enabled);
     setStorePatchEnabled(enabled);
     await setSetting("steam_store_enabled", enabled);
-  };
-
-  const stopQr = async () => {
-    try {
-      await stopKeyServer();
-    } catch {}
-    setKeyServer({ running: false, urls: [], status: "idle" });
-    setQrSvg(null);
-  };
-
-  const startQr = async () => {
-    setQrError("");
-    setQrSvg(null);
-    try {
-      const r = await startKeyServer();
-      if (!r?.ok) {
-        setQrError(r?.error || "Could not start the local server");
-        return;
-      }
-      const url = r.urls?.[0];
-      if (!url) {
-        setQrError(
-          "No network address found. Connect the Deck to Wi-Fi, then try again.",
-        );
-        return;
-      }
-      const svg = await QRCode.toString(url, {
-        type: "svg",
-        errorCorrectionLevel: "M",
-        margin: 1,
-        width: 220,
-        color: { dark: "#000000", light: "#ffffff" },
-      });
-      setQrSvg(svg);
-      setKeyServer({
-        running: true,
-        urls: r.urls,
-        status: r.status,
-        expires_in: r.expires_in,
-      });
-    } catch (e: any) {
-      setQrError(e?.message || "Failed to start");
-    }
   };
 
   React.useEffect(() => {
@@ -448,7 +460,7 @@ export const SettingsTab: React.FC = () => {
                 }}
               >
                 {keyServer.status === "accepted"
-                  ? "Key received ✓ — you can close this"
+                  ? "Key received — you can close this"
                   : `Scan with your phone${
                       keyServer.expires_in
                         ? ` · closes in ${Math.max(0, keyServer.expires_in)}s`
@@ -760,7 +772,7 @@ export const SettingsTab: React.FC = () => {
             }}
           >
             <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.5.7"}
+              Uran v{pluginInfo.version || "0.5.9"}
             </span>
             {updateInfo?.has_update && (
               <Focusable

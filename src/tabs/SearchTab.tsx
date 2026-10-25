@@ -18,6 +18,7 @@ import {
   RecentInject,
 } from "../api";
 import { addedAppIds, pendingAppIds } from "../StorePatch";
+import { showQrKeyModal } from "../components/QrKeyModal";
 
 export const SearchTab: React.FC = () => {
   const [query, setQuery] = React.useState("");
@@ -163,8 +164,12 @@ export const SearchTab: React.FC = () => {
         pendingAppIds.delete(appId);
         bumpVersion();
         const err = r?.error || "Unknown error";
-        notify("Uran", err);
-        setMsg(err);
+        if (r?.blocked === "no_api_key") {
+          showQrKeyModal(() => void doInject(appId, title, force));
+        } else {
+          notify("Uran", err);
+          setMsg(err);
+        }
       }
     } catch (e: any) {
       pendingAppIds.delete(appId);

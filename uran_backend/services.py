@@ -24,13 +24,14 @@ logger = logging.getLogger("Uran")
 class _ServiceBag:
     """The services GuardService needs, without a circular import."""
 
-    def __init__(self, ctx, sls, steam, library, manifests, integrations):
+    def __init__(self, ctx, sls, steam, library, manifests, integrations, plugin_deployer=None):
         self.ctx = ctx
         self.sls = sls
         self.steam = steam
         self.library = library
         self.manifests = manifests
         self.integrations = integrations
+        self.plugin_deployer = plugin_deployer
 
 
 def _load_decky():
@@ -58,17 +59,17 @@ def build(decky_module=None):
     steam = SteamMeta(ctx, library)
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
+    plugin_deployer = PluginDeployer(ctx, sls)
 
     # Guards reach across services, so they are constructed after them.
-    guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations))
+    guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations, plugin_deployer))
 
     injector = Injector(ctx, sls, steam, library, manifests, guards)
-    keycare = Keycare(ctx)
+    keycare = Keycare(ctx, plugin_deployer)
     store_debugger = StoreDebugger(requests, logger)
     atom = AtomLibrary(ctx, sls, steam, library, manifests, integrations)
     uninstaller = AtomUninstallService(ctx, sls, steam, library, integrations, guards)
     health = Health(ctx, sls)
-    plugin_deployer = PluginDeployer(ctx, sls)
 
     from .plugin_api import Services
 

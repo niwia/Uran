@@ -44,8 +44,9 @@ _lock = threading.Lock()
 class Keycare:
     """Owns the key-capture server and Hubcap key resolution."""
 
-    def __init__(self, ctx: Context):
+    def __init__(self, ctx: Context, plugin_deployer=None):
         self.ctx = ctx
+        self.plugin_deployer = plugin_deployer
 
     # -- server lifecycle ----------------------------------------------------
     def stop(self) -> dict:
@@ -160,7 +161,13 @@ class Keycare:
         ok, message, _ = hubcap.validate_key(key)
         if not ok:
             return False, message
-        return self.ctx.hubcap_key.save(key)
+        wrote, where = self.ctx.hubcap_key.save(key)
+        if wrote and self.plugin_deployer:
+            try:
+                self.plugin_deployer.sync_spacebunny_conf()
+            except Exception as exc:
+                logger.warning("Could not sync spacebunny.conf.lua: %s", exc)
+        return wrote, where
 
     def user_stats(self) -> dict:
         key = self.ctx.hubcap_key.current()

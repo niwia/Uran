@@ -127,7 +127,7 @@ class GuardService:
             return {
                 "ok": False,
                 "reason": "no_sls_config",
-                "error": "SLSsteam config.yaml not found. Please ensure SLSsteam is installed.",
+                "error": "SLSsteam config.yaml not found. SLSsteam must be running to generate it.",
             }
 
         # Check SLS binary or active process
@@ -145,24 +145,32 @@ class GuardService:
                 "error": "SLSsteam.so was not found on your system. Please install SLSsteam.",
             }
 
-        # Check Plugins: yes toggle — attempt silent auto-enable
-        plugins_on = is_plugins_toggle_enabled(cfg)
-        if not plugins_on:
-            try:
-                content = cfg.read_text(encoding="utf-8", errors="replace")
-                updated = ensure_plugins_enabled(content)
-                if updated != content:
-                    core.sls.write(updated)
-                plugins_on = is_plugins_toggle_enabled(cfg)
-            except Exception as e:
-                logger.warning("Could not auto-enable Plugins toggle: %s", e)
+        # Ensure required section headers (Plugins: yes, AdditionalDepots, DecryptionKeys)
+        from .sls_config import ensure_required_sections
 
+        try:
+            content = cfg.read_text(encoding="utf-8", errors="replace")
+            updated = ensure_required_sections(content)
+            if updated != content:
+                core.sls.write(updated)
+        except Exception as e:
+            logger.warning("Could not auto-ensure required sections in config.yaml: %s", e)
+
+        plugins_on = is_plugins_toggle_enabled(cfg)
         if not plugins_on:
             return {
                 "ok": False,
                 "reason": "plugins_disabled",
                 "error": "SLSsteam 'Plugins: yes' toggle is disabled in config.yaml. Enable it to run operations.",
             }
+
+        # Auto-deploy SpaceBunny from R2 if no interceptor plugin exists
+        deployer = getattr(core, "plugin_deployer", None)
+        if deployer is not None:
+            try:
+                deployer.ensure_default_interceptor()
+            except Exception as e:
+                logger.warning("Auto-deploy interceptor check failed: %s", e)
 
         # Check presence of Lua plugin in plugins directory
         plugin_dir, lua_files = find_lua_plugins(home)

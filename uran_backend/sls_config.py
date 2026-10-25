@@ -172,25 +172,22 @@ class SlsConfig:
     def write(self, content: str, notify: bool = True) -> bool:
         """Atomically write config.yaml in place, preserving the inode."""
         cfg = self.config_path
-        if cfg is None:
+        if cfg is None or not cfg.exists():
+            self.log.error(
+                "Refusing to write %s: file does not exist. SLSsteam must generate config.yaml first.",
+                cfg,
+            )
             return False
         if not validate_yaml(content, self.log):
             return False
         with self.ctx.sls_lock:
             try:
-                cfg.parent.mkdir(parents=True, exist_ok=True)
-                if cfg.exists():
-                    with open(cfg, "r+", encoding="utf-8") as handle:
-                        handle.seek(0)
-                        handle.write(content)
-                        handle.truncate()
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                else:
-                    with open(cfg, "w", encoding="utf-8") as handle:
-                        handle.write(content)
-                        handle.flush()
-                        os.fsync(handle.fileno())
+                with open(cfg, "r+", encoding="utf-8") as handle:
+                    handle.seek(0)
+                    handle.write(content)
+                    handle.truncate()
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 try:
                     os.chmod(cfg, 0o600)
                 except OSError:
@@ -206,7 +203,7 @@ class SlsConfig:
     def read(self) -> str:
         cfg = self.config_path
         if not cfg or not cfg.exists():
-            return "Plugins: yes\nAdditionalApps:\n"
+            return ""
         return cfg.read_text(encoding="utf-8", errors="replace")
 
     def edit(self, config_path: Path | None = None):
@@ -412,6 +409,24 @@ def ensure_smart_tickets(content: str) -> str:
     )
 
 
+def ensure_section_header(content: str, section: str) -> str:
+    """Ensure a top-level section header exists in YAML content without modifying existing entries."""
+    if section_bounds(content, section) is not None:
+        return content
+    stripped = content.rstrip()
+    if not stripped:
+        return f"{section}:\n"
+    return f"{stripped}\n\n{section}:\n"
+
+
+def ensure_required_sections(content: str) -> str:
+    """Ensure Plugins: yes, AdditionalDepots:, and DecryptionKeys: headers are present."""
+    updated = ensure_plugins_enabled(content)
+    updated = ensure_section_header(updated, "AdditionalDepots")
+    updated = ensure_section_header(updated, "DecryptionKeys")
+    return updated
+
+
 def remove_dlc_block(content: str, app_id: str) -> str | None:
     """Remove a game's whole nested DlcData block (and its child lines).
 
@@ -449,11 +464,13 @@ class _SlsConfigEditor:
         self.committed_successfully = True
 
     def __enter__(self) -> "_SlsConfigEditor":
-        cfg = self.config_path
-        if cfg is not None:
-            self.content = cfg.read_text(encoding="utf-8", errors="replace") if cfg.exists() else "Plugins: yes\nAdditionalApps:\n"
-        else:
-            self.content = self.sls.read()
+        cfg = self.config_path or self.sls.config_path
+        if cfg is None or not cfg.exists():
+            self.content = ""
+            self.has_changes = False
+            self.committed_successfully = False
+            return self
+        self.content = cfg.read_text(encoding="utf-8", errors="replace")
         self.has_changes = False
         self.committed_successfully = True
         return self

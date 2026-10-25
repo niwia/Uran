@@ -77,6 +77,14 @@ class Plugin:
             if seeded:
                 logger.info("Restored %s cached manifest(s) to depotcache", seeded)
 
+        # Check and auto-deploy default interceptor (SpaceBunny) if none is present
+        if self.s.plugin_deployer:
+            try:
+                await asyncio.to_thread(self.s.plugin_deployer.ensure_default_interceptor)
+                await asyncio.to_thread(self.s.plugin_deployer.sync_spacebunny_conf)
+            except Exception as exc:
+                logger.warning("Plugin deployer initialization check failed: %s", exc)
+
     async def _unload(self) -> None:
         try:
             self.s.keycare.stop()
