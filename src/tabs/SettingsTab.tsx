@@ -246,7 +246,7 @@ export const SettingsTab: React.FC = () => {
           )}
           <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px", lineHeight: 1.3 }}>
             {description}
-            {isDisabled ? " Automatic deployment is disabled." : " Automatic deployment is enabled."}
+            {isDisabled ? " Auto-deployment disabled." : " Auto-deployment enabled."}
           </div>
         </div>
       </PanelSectionRow>

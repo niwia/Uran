@@ -68,6 +68,11 @@ sample_m = "ManifestIds:\n  621: 1780285784220567439 # Portal 2 [win64] (620)\n"
 mgids, mcomments = sc.parse_manifest_section(sample_m)
 check("parse_manifest_section gids", mgids, {"621": "1780285784220567439"})
 check("parse_manifest_section keeps comments", mcomments["621"], "Portal 2 [win64] (620)")
+sample_t = "AppTokens:\n  620: ABC123XYZ # Portal 2 (620)\n  4000: DEF456 # DLC (620)\n"
+tokens, tcomments = sc.parse_app_token_section(sample_t)
+check("parse_app_token_section tokens", tokens, {"620": "ABC123XYZ", "4000": "DEF456"})
+check("parse_app_token_section comments", tcomments["620"], "Portal 2 (620)")
+check("parse_app_token_section dlc comments", tcomments["4000"], "DLC (620)")
 
 # --- ensure_* helpers ---------------------------------------------------
 check("ensure_plugins_enabled rewrites 'no'", sc.ensure_plugins_enabled(BASE).splitlines()[1], "Plugins: yes")

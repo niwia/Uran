@@ -20,6 +20,7 @@ from .sls_config import (
     SlsConfig,
     ensure_plugins_enabled,
     ensure_smart_tickets,
+    parse_app_token_section,
     parse_key_section,
     parse_list_section,
     parse_manifest_section,
@@ -374,18 +375,30 @@ class Injector:
 
         # 6. AppTokens — write license tokens from Hubcap Lua.
         if app_tokens:
-            existing_tokens = parse_app_token_section(content)
+            existing_tokens, token_comments = parse_app_token_section(content)
             # Keep existing tokens that don't belong to this game.
-            cleaned: dict[str, str] = {}
+            cleaned_tokens: dict[str, str] = {}
+            cleaned_comments: dict[str, str] = {}
             for tid, tval in existing_tokens.items():
-                if not self._owned("", aid) and tid not in (app_tokens or {}):
-                    cleaned[tid] = tval
+                comm = token_comments.get(tid, "")
+                if not (self._owned(comm, aid) or tid == aid or tid in app_tokens):
+                    cleaned_tokens[tid] = tval
+                    cleaned_comments[tid] = comm
             for tid, tval in app_tokens.items():
-                cleaned[tid] = tval
-            if cleaned:
-                content = replace_section_block(content, "AppTokens", [
-                    f"  {tid}: {tval}" for tid, tval in sort_ids(cleaned)
-                ])
+                cleaned_tokens[tid] = tval
+                token_tag = f"{name} ({aid})" if tid == aid else f"({aid})"
+                cleaned_comments[tid] = token_tag
+
+            if cleaned_tokens:
+                lines = [
+                    f"  {tid}: {cleaned_tokens[tid]} # {cleaned_comments[tid]}" if cleaned_comments.get(tid) else f"  {tid}: {cleaned_tokens[tid]}"
+                    for tid in sort_ids(cleaned_tokens)
+                ]
+                content = replace_section_block(content, "AppTokens", lines)
+            else:
+                bounds = section_bounds(content, "AppTokens")
+                if bounds:
+                    content = replace_section_block(content, "AppTokens", [])
 
         if not self.sls.write(content):
             return {"ok": False, "error": "Failed to write SLSsteam config"}
@@ -461,6 +474,8 @@ class Injector:
             manifest_res = self.manifests.fetch(app_id, persist_config=False)
             resolved_name = name
 
+            manifest_ids = None
+            app_tokens = None
             if manifest_res.get("ok"):
                 hubcap_keys = dict(manifest_res.get("depot_keys", {}))
                 depot_keys.update(hubcap_keys)
@@ -468,6 +483,8 @@ class Injector:
                     self.library.save_local_depot_keys(app_id, hubcap_keys)
                 status["depot_keys"] = sort_ids(depot_keys.keys())
                 status["manifests"] = manifest_res.get("manifests", [])
+                manifest_ids = manifest_res.get("manifest_ids")
+                app_tokens = manifest_res.get("app_tokens")
                 # The Lua carries the authoritative game name and DLC list.
                 if manifest_res.get("game_name"):
                     resolved_name = manifest_res["game_name"]
@@ -498,6 +515,8 @@ class Injector:
             result = self._project_config(
                 app_id, resolved_name, depot_keys, owner_map, set(),
                 candidate_depots=candidate_depots,
+                manifest_ids=manifest_ids,
+                app_tokens=app_tokens,
             )
             if not result.get("ok"):
                 status["error"] = result.get("error")
@@ -835,6 +854,8 @@ class Injector:
             owner_map,
             enabled_dlc_ids=dlcs,
             candidate_depots={str(d) for d in (record.get("depots") or [])},
+            manifest_ids=res.get("manifest_ids"),
+            app_tokens=res.get("app_tokens"),
             selected_depots=None,
             selected_dlcs=dlcs,
             selected_keys=None,

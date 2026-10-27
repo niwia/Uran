@@ -285,6 +285,39 @@ check("another game's AppID is untouched", "6207" in apps, True)
 check("another game's depot is untouched", "6208" in depots, True)
 check("another game's key is untouched", keys.get("6208"), K622)
 
+# ---------------------------------------------------------------------------
+# 9. AppTokens: license tokens written, tagged, and isolated across games
+# ---------------------------------------------------------------------------
+r = inj._project_config(
+    "620", "Portal 2", {"620": KEY, "621": K621}, {"base": ["621"]}, set(),
+    candidate_depots={"621"}, app_tokens={"620": "TOK_620", "4000": "TOK_4000"},
+)
+check("project with tokens succeeds", r.get("ok"), True)
+c = cfg.read_text(encoding="utf-8")
+check("AppTokens section created", "AppTokens:" in c, True)
+check("main game token has game name and appid comment", "620: TOK_620 # Portal 2 (620)" in c, True)
+check("dlc token has appid comment", "4000: TOK_4000 # (620)" in c, True)
+
+# Project another game with tokens
+r2 = inj._project_config(
+    "700", "HL2", {"700": KEY}, {"base": ["700"]}, set(),
+    candidate_depots={"700"}, app_tokens={"700": "TOK_700"},
+)
+c2 = cfg.read_text(encoding="utf-8")
+check("new game token added", "700: TOK_700 # HL2 (700)" in c2, True)
+check("previous game token preserved", "620: TOK_620 # Portal 2 (620)" in c2, True)
+check("previous dlc token preserved", "4000: TOK_4000 # (620)" in c2, True)
+
+# Reproject 620 with updated tokens: 4000 dropped, 620 updated
+r3 = inj._project_config(
+    "620", "Portal 2", {"620": KEY, "621": K621}, {"base": ["621"]}, set(),
+    candidate_depots={"621"}, app_tokens={"620": "NEW_TOK_620"},
+)
+c3 = cfg.read_text(encoding="utf-8")
+check("updated token written", "620: NEW_TOK_620 # Portal 2 (620)" in c3, True)
+check("old dlc token removed on reprojection", "TOK_4000" in c3, False)
+check("unrelated game token still preserved", "700: TOK_700 # HL2 (700)" in c3, True)
+
 print()
 if fails:
     print("\n".join(fails))

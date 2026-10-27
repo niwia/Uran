@@ -364,12 +364,13 @@ def parse_manifest_section(content: str) -> tuple[dict[str, str], dict[str, str]
     return gids, comments
 
 
-def parse_app_token_section(content: str) -> dict[str, str]:
-    """Parse a `  123: token_value # comment` AppTokens section into {id: token}."""
+def parse_app_token_section(content: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Parse a `  123: token_value # comment` AppTokens section into ({id: token}, {id: comment})."""
     tokens: dict[str, str] = {}
+    comments: dict[str, str] = {}
     bounds = section_bounds(content, "AppTokens")
     if not bounds:
-        return tokens
+        return tokens, comments
     for match in re.finditer(
         r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:[ \t]*#[ \t]*(.*))?$",
         content[bounds[1]:bounds[2]],
@@ -379,7 +380,8 @@ def parse_app_token_section(content: str) -> dict[str, str]:
         token_val = match.group(2).strip().strip("\"'")
         if app_id and token_val:
             tokens[app_id] = token_val
-    return tokens
+            comments[app_id] = (match.group(3) or "").strip()
+    return tokens, comments
 
 
 def replace_section_block(content: str, section: str, body_lines: list[str]) -> str:

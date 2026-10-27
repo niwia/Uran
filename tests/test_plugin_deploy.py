@@ -146,6 +146,26 @@ def run():
         (plugins / "hubcap.lua").unlink()
         (plugins / "lobster.lua").unlink()
 
+        # Auto-migration tests for legacy spacebunny1.5.lua
+        # 1. Switch to spacebunny1.5.lua
+        deployer.deploy("spacebunny1.5.lua")
+        check("spacebunny1.5.lua is active interceptor", deployer._active_interceptor([plugins]) == "spacebunny1.5.lua")
+
+        # 2. If user disabled spacebunny.lua, auto-migration must NOT run
+        deployer.disable_plugin("spacebunny.lua")
+        r_mig = deployer.ensure_default_interceptor()
+        check("migration skipped when target is user_disabled", r_mig["ok"] and r_mig.get("active") == "spacebunny1.5.lua")
+        check("spacebunny1.5.lua stays active", (plugins / "spacebunny1.5.lua").is_file())
+        deployer.enable_plugin("spacebunny.lua")
+
+        # 3. If spacebunny.lua deploy fails (missing from manifest), legacy plugin remains active
+        old_sb = manifest["plugins"].pop("spacebunny.lua", None)
+        r_mig_fail = deployer.ensure_default_interceptor()
+        check("migration failure falls back safely", r_mig_fail["ok"] and r_mig_fail.get("active") == "spacebunny1.5.lua")
+        check("spacebunny1.5.lua still active on failure", (plugins / "spacebunny1.5.lua").is_file())
+        if old_sb:
+            manifest["plugins"]["spacebunny.lua"] = old_sb
+
 
 if __name__ == "__main__":
     run()

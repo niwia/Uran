@@ -406,11 +406,16 @@ class PluginDeployer:
         active = self._active_interceptor(directories)
         if active is not None:
             if active == "spacebunny1.5.lua":
-                logger.info("Auto-migrating legacy spacebunny1.5.lua to standardized spacebunny.lua...")
-                try:
-                    return self.deploy("spacebunny.lua")
-                except Exception as exc:
-                    logger.warning("Auto-migration of spacebunny1.5.lua failed: %s", exc)
+                disabled = self.ctx.read_setting("disabled_plugins", [])
+                if not (isinstance(disabled, list) and "spacebunny.lua" in disabled):
+                    logger.info("Auto-migrating legacy spacebunny1.5.lua to standardized spacebunny.lua...")
+                    try:
+                        res = self.deploy("spacebunny.lua")
+                        if res.get("ok"):
+                            return res
+                        logger.warning("Auto-migration of spacebunny1.5.lua failed: %s; keeping legacy plugin active", res.get("error"))
+                    except Exception as exc:
+                        logger.warning("Auto-migration of spacebunny1.5.lua failed: %s", exc)
             # User already has an active interceptor (SpaceBunny, download.lua, or custom)
             has_hubcap = any((directory / "hubcap.lua").is_file() for directory in directories)
             if "spacebunny" in active.lower() or has_hubcap:
@@ -419,7 +424,7 @@ class PluginDeployer:
 
         # Check if default interceptor is disabled by user
         disabled = self.ctx.read_setting("disabled_plugins", [])
-        if isinstance(disabled, list) and "spacebunny.lua" in disabled:
+        if isinstance(disabled, list) and ("spacebunny.lua" in disabled or "spacebunny1.5.lua" in disabled):
             logger.info("SpaceBunny is disabled by user, skipping auto-deploy")
             return {"ok": True, "deployed": False, "reason": "user_disabled"}
 
