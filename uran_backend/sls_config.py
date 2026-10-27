@@ -364,6 +364,24 @@ def parse_manifest_section(content: str) -> tuple[dict[str, str], dict[str, str]
     return gids, comments
 
 
+def parse_app_token_section(content: str) -> dict[str, str]:
+    """Parse a `  123: token_value # comment` AppTokens section into {id: token}."""
+    tokens: dict[str, str] = {}
+    bounds = section_bounds(content, "AppTokens")
+    if not bounds:
+        return tokens
+    for match in re.finditer(
+        r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:[ \t]*#[ \t]*(.*))?$",
+        content[bounds[1]:bounds[2]],
+        re.MULTILINE,
+    ):
+        app_id = match.group(1)
+        token_val = match.group(2).strip().strip("\"'")
+        if app_id and token_val:
+            tokens[app_id] = token_val
+    return tokens
+
+
 def replace_section_block(content: str, section: str, body_lines: list[str]) -> str:
     """Replace (or append) a whole top-level section, sorting entries numerically."""
     block = "\n".join([f"{section}:"] + body_lines) + "\n"
@@ -524,6 +542,15 @@ class _SlsConfigEditor:
 
     def remove_fake_app_id(self, app_id: str) -> bool:
         return self.apply(*remove_in_memory(self.content, "FakeAppIds", app_id, is_list=False))
+
+    def add_app_token(self, app_id: str, token: str, comment: str = "") -> bool:
+        clean = sanitize_id(app_id)
+        if not clean or not token:
+            return False
+        return self.apply(*upsert_in_memory(self.content, "AppTokens", clean, value=token.strip(), comment=comment))
+
+    def remove_app_token(self, app_id: str) -> bool:
+        return self.apply(*remove_in_memory(self.content, "AppTokens", app_id, is_list=False))
 
     def remove_launch_option(self, app_id: str) -> bool:
         return self.apply(*remove_in_memory(self.content, "LaunchOptions", app_id, is_list=False))

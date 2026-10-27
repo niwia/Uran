@@ -377,9 +377,12 @@ export type SlsPluginDeployStatus = {
   active_interceptor?: string | null;
   plugins?: Record<string, {
     label: string;
+    kind?: "interceptor" | "companion";
     state: "missing" | "outdated" | "up_to_date" | "unknown";
     active: boolean;
     version?: string | null;
+    available_remote?: boolean;
+    user_disabled?: boolean;
   }>;
 };
 export const getSlsPluginDeployStatus = callable<[], SlsPluginDeployStatus>(
@@ -390,6 +393,14 @@ export const deploySlsPlugin = callable<[filename: string], {
   message?: string;
   error?: string;
 }>("deploy_sls_plugin");
+export const enableSlsPlugin = callable<[filename: string], {
+  ok: boolean;
+  error?: string;
+}>("enable_sls_plugin");
+export const disableSlsPlugin = callable<[filename: string], {
+  ok: boolean;
+  error?: string;
+}>("disable_sls_plugin");
 
 export const checkAtomGameUpdates = callable<[app_id: string], AtomUpdate>(
   "check_atom_game_updates",

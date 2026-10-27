@@ -110,6 +110,28 @@ check("harvest finds live names", cache.get("621"), "Portal 2 win64")
 check("harvest skips commented", "9999" in cache, False)
 check("harvest counts", found, 2)
 
+# --- addtoken parsing --------------------------------------------------
+TOKENS = f"""
+addappid(620, 1, "{KEY_A}") -- Portal 2
+addtoken(620, "ABC123") -- Main game token
+addtoken(4000, "DEF456") -- DLC token
+-- addtoken(9999, "GHI789") -- Commented out
+"""
+r = ml.parse(TOKENS, lambda k: k)
+check("token parsed for main game", r["tokens"].get("620"), "ABC123")
+check("token parsed for dlc", r["tokens"].get("4000"), "DEF456")
+check("commented token ignored", "9999" in r["tokens"], False)
+
+# --- token with special characters -------------------------------------
+SPECIAL_TOKENS = f"""
+addappid(620, 1, "{KEY_A}") -- Test Game
+addtoken(620, "aB3!@#$%^&*()")
+addtoken(621, "") -- Empty token should be skipped
+"""
+r = ml.parse(SPECIAL_TOKENS, lambda k: k)
+check("token with special chars", r["tokens"].get("620"), "aB3!@#$%^&*()")
+check("empty token skipped", "621" in r["tokens"], False)
+
 print()
 if fails:
     print("\n".join(fails))

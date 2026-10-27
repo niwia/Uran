@@ -46,6 +46,9 @@ def run():
             home=home,
             sls_config=lambda: home / ".config" / "SLSsteam" / "config.yaml",
             sls_lock=SimpleNamespace(__enter__=lambda self: None, __exit__=lambda *a: None),
+            _settings={},
+            read_setting=lambda key, default=None: ctx._settings.get(key, default),
+            write_setting=lambda key, value: ctx._settings.update({key: value}),
         )
         sls = SlsConfig(ctx)
         check("read returns empty on missing config", sls.read() == "")
@@ -94,6 +97,9 @@ def run():
             sls_config=lambda: cfg_path,
             hubcap_key=SimpleNamespace(current=lambda: hubcap_key_val[0]),
             sls_lock=SimpleNamespace(__enter__=lambda self: None, __exit__=lambda *a: None),
+            _settings={},
+            read_setting=lambda key, default=None: ctx._settings.get(key, default),
+            write_setting=lambda key, value: ctx._settings.update({key: value}),
         )
         sls = SlsConfig(ctx)
 
@@ -127,6 +133,25 @@ def run():
         check("spacebunny1.5.lua deployed", (plugins_dir / "spacebunny1.5.lua").is_file())
         check("spacebunny.conf.lua created with key", (cfg_path.parent / "spacebunny.conf.lua").is_file())
         check("spacebunny.conf.lua contains key", "test-key-abc" in (cfg_path.parent / "spacebunny.conf.lua").read_text())
+
+        # Existing SpaceBunny settings must survive key synchronization.
+        conf = cfg_path.parent / "spacebunny.conf.lua"
+        conf.write_text(
+            'return { standalone = true, hubcap = { enabled = false, '
+            'api_key = "old", api_key_timestamp = 1, '
+            'base_url = "https://example.test", timeout_sec = 17, '
+            'write_config = false, notify = false, preflight = "all", '
+            'depot_index = true, write_depot_comments = true } }\n',
+            encoding="utf-8",
+        )
+        hubcap_key_val[0] = "new-key-xyz"
+        deployer.sync_spacebunny_conf()
+        synced = conf.read_text(encoding="utf-8")
+        check("standalone setting preserved", "standalone = true" in synced)
+        check("Hubcap boolean settings preserved", "enabled = false" in synced and "write_config = false" in synced and "notify = false" in synced)
+        check("Hubcap string settings preserved", 'base_url = "https://example.test"' in synced and 'preflight = "all"' in synced)
+        check("Hubcap depot settings preserved", "depot_index = true" in synced and "write_depot_comments = true" in synced)
+        check("Hubcap timeout preserved", "timeout_sec = 17" in synced)
 
         # If user clears hubcap key, sync_spacebunny_conf removes spacebunny.conf.lua
         hubcap_key_val[0] = ""

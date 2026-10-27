@@ -167,6 +167,7 @@ class Injector:
         enabled_dlc_ids,
         candidate_depots: set | None = None,
         manifest_ids: dict | None = None,
+        app_tokens: dict | None = None,
         selected_depots: set | None = None,
         selected_dlcs: set | None = None,
         selected_keys: set | None = None,
@@ -370,6 +371,21 @@ class Injector:
                 bounds = section_bounds(content, "ManifestIds")
                 if bounds:
                     content = replace_section_block(content, "ManifestIds", [])
+
+        # 6. AppTokens — write license tokens from Hubcap Lua.
+        if app_tokens:
+            existing_tokens = parse_app_token_section(content)
+            # Keep existing tokens that don't belong to this game.
+            cleaned: dict[str, str] = {}
+            for tid, tval in existing_tokens.items():
+                if not self._owned("", aid) and tid not in (app_tokens or {}):
+                    cleaned[tid] = tval
+            for tid, tval in app_tokens.items():
+                cleaned[tid] = tval
+            if cleaned:
+                content = replace_section_block(content, "AppTokens", [
+                    f"  {tid}: {tval}" for tid, tval in sort_ids(cleaned)
+                ])
 
         if not self.sls.write(content):
             return {"ok": False, "error": "Failed to write SLSsteam config"}

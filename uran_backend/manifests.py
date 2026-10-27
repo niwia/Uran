@@ -132,6 +132,7 @@ class Manifests:
         written_count = 0
         depot_keys: dict[str, str] = {}
         manifest_ids: dict[str, str] = {}
+        app_tokens: dict[str, str] = {}
         dlc_appids: list[str] = []
         game_name = ""
 
@@ -165,6 +166,7 @@ class Manifests:
                             parsed = manifest_lua.parse(lua_content, sanitize_key)
                             depot_keys.update(parsed["keys"])
                             manifest_ids.update(parsed["manifests"])
+                            app_tokens.update(parsed.get("tokens") or {})
                             for did in parsed["dlcs"]:
                                 if did not in dlc_appids:
                                     dlc_appids.append(did)
@@ -200,6 +202,7 @@ class Manifests:
             "written": written_count,
             "depot_keys": depot_keys,
             "manifest_ids": manifest_ids,
+            "app_tokens": app_tokens,
             "dlc_appids": dlc_appids,
             "game_name": game_name,
             # Back-compat: callers still read `keys_added` as a list of depot ids.

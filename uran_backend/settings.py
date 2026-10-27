@@ -24,6 +24,8 @@ DEFAULTS: dict = {
     "notification_mode": "auto",
     # Route to the Hubcap API: auto | direct | proxy. See hubcap.py.
     "hubcap_gateway": "auto",
+    # User-disabled plugins (list of filenames)
+    "disabled_plugins": [],
 }
 
 

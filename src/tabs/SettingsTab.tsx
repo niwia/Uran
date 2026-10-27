@@ -8,6 +8,7 @@ import {
   Focusable,
   ConfirmModal,
   showModal,
+
 } from "@decky/ui";
 import QRCode from "qrcode";
 import {
@@ -44,6 +45,8 @@ import {
   SlsPluginDeployStatus,
   getSlsPluginDeployStatus,
   deploySlsPlugin,
+  enableSlsPlugin,
+  disableSlsPlugin,
   once,
   refreshOnce,
 } from "../api";
@@ -170,18 +173,85 @@ export const SettingsTab: React.FC = () => {
 
   const pluginButtonText = (filename: string, label: string) => {
     const plugin = slsPlugins?.plugins?.[filename];
+    if (plugin?.user_disabled) return `${label} (Disabled)`;
     if (deployingSlsPlugin === filename) return `Deploying ${label}…`;
     if (plugin?.state === "outdated") return `${label} (Update)`;
-    if (plugin?.state === "missing") return `${label} (Install)`;
+    if (plugin?.state === "missing") {
+      if (plugin.available_remote === false) return `${label} (Not in cloud)`;
+      return `${label} (Install)`;
+    }
     return label;
   };
 
-  const pluginIsVerifiedActive = (filename: string) => {
+  const pluginIsActive = (filename: string) => {
     const plugin = slsPlugins?.plugins?.[filename];
-    return Boolean(plugin?.active && plugin.state === "up_to_date");
+    return Boolean(plugin?.active);
+  };
+
+  const pluginActiveLabel = (filename: string, label: string) => {
+    const plugin = slsPlugins?.plugins?.[filename];
+    const versionTag = plugin?.version ? ` v${plugin.version}` : '';
+    if (plugin?.state === "up_to_date") {
+      return `${label}${versionTag} (Active — verified)`;
+    }
+    return `${label}${versionTag} (Active — local)`;
   };
 
   const pluginButtonDisabled = loadingSlsPlugins || deployingSlsPlugin !== null || !slsPlugins?.ok;
+
+  const togglePlugin = async (filename: string, enabled: boolean) => {
+    const apiCall = enabled ? enableSlsPlugin : disableSlsPlugin;
+    await apiCall(filename);
+    void refreshSlsPlugins();
+  };
+
+  const renderPluginRow = (
+    filename: string,
+    label: string,
+    description: string,
+  ) => {
+    const plugin = slsPlugins?.plugins?.[filename];
+    const isActive = Boolean(plugin?.active);
+    const canDeploy = plugin?.available_remote !== false && plugin?.state !== "unknown";
+    const isDisabled = Boolean(plugin?.user_disabled);
+    const versionTag = plugin?.version ? ` v${plugin.version}` : '';
+
+    return (
+      <PanelSectionRow>
+        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "2px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            {isActive ? (
+              <div style={{ color: "#7ee2a8", fontWeight: 600, fontSize: "13px" }}>
+                {pluginActiveLabel(filename, label)}
+              </div>
+            ) : (
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>
+                {label}{versionTag}
+              </span>
+            )}
+            <ToggleField
+              checked={!isDisabled}
+              onChange={(checked) => void togglePlugin(filename, checked)}
+              disabled={loadingSlsPlugins || deployingSlsPlugin !== null}
+            />
+          </div>
+          {isActive ? null : (
+            <ButtonItem
+              layout="below"
+              disabled={pluginButtonDisabled || !canDeploy || isDisabled}
+              onClick={() => requestPluginDeploy(filename, label)}
+            >
+              {pluginButtonText(filename, label)}
+            </ButtonItem>
+          )}
+          <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px", lineHeight: 1.3 }}>
+            {description}
+            {isDisabled ? " Automatic deployment is disabled." : " Automatic deployment is enabled."}
+          </div>
+        </div>
+      </PanelSectionRow>
+    );
+  };
 
   const refreshGlobalSlsOnlineStatus = async () => {
     try {
@@ -667,44 +737,24 @@ export const SettingsTab: React.FC = () => {
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          {pluginIsVerifiedActive("download.lua") ? (
-            <div>Standard (Active — verified)</div>
-          ) : (
-            <ButtonItem
-              layout="below"
-              disabled={pluginButtonDisabled}
-              onClick={() => requestPluginDeploy("download.lua", "Standard")}
-            >
-              {pluginButtonText("download.lua", "Standard")}
-            </ButtonItem>
-          )}
+          <div style={{ fontSize: "11px", fontWeight: 700, opacity: 0.85, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: "4px" }}>
+            Download Interceptors (1 Active)
+          </div>
         </PanelSectionRow>
+
+        {renderPluginRow("download.lua", "Standard", "Standard SLSsteam download interceptor.")}
+        {renderPluginRow("spacebunny.lua", "SpaceBunny", "Standardized SLSsteam download interceptor with multi-provider MRC authority & circuit breakers.")}
+        {renderPluginRow("spacebunny1.5.lua", "SpaceBunny 1.5", "Legacy SpaceBunny interceptor (1.5).")}
+
         <PanelSectionRow>
-          {pluginIsVerifiedActive("spacebunny1.5.lua") ? (
-            <div>SpaceBunny 1.5 (Active — verified)</div>
-          ) : (
-            <ButtonItem
-              layout="below"
-              disabled={pluginButtonDisabled}
-              onClick={() => requestPluginDeploy("spacebunny1.5.lua", "SpaceBunny 1.5")}
-            >
-              {pluginButtonText("spacebunny1.5.lua", "SpaceBunny 1.5")}
-            </ButtonItem>
-          )}
+          <div style={{ fontSize: "11px", fontWeight: 700, opacity: 0.85, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: "10px" }}>
+            Companion Plugins (Coexist)
+          </div>
         </PanelSectionRow>
-        <PanelSectionRow>
-          {pluginIsVerifiedActive("spliced-tickets.lua") ? (
-            <div>Spliced Tickets (Active — verified)</div>
-          ) : (
-            <ButtonItem
-              layout="below"
-              disabled={pluginButtonDisabled}
-              onClick={() => requestPluginDeploy("spliced-tickets.lua", "Spliced Tickets")}
-            >
-              {pluginButtonText("spliced-tickets.lua", "Spliced Tickets")}
-            </ButtonItem>
-          )}
-        </PanelSectionRow>
+
+        {renderPluginRow("hubcap.lua", "Hubcap Auto-Fetch", "Standalone key resolver. Automatically fetches missing AES decryption keys from Hubcap API.")}
+        {renderPluginRow("lobster.lua", "Lobster Config Recovery", "Disaster recovery companion. Automatically restores AdditionalDepots & DecryptionKeys if wiped by Headcrab.")}
+        {renderPluginRow("spliced-tickets.lua", "Spliced Tickets", "Smart ticket companion. Alters SLSsteam ticket handling and enables SmartTickets.")}
         <PanelSectionRow>
           <ButtonItem
             layout="below"

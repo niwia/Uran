@@ -20,8 +20,17 @@ R2_BASE_URL = "https://pub-19657b4f385d424b91a909253efdb29c.r2.dev"
 MANIFEST_URL = f"{R2_BASE_URL}/plugins_manifest.json"
 PLUGIN_INFO = {
     "download.lua": {"label": "Standard", "kind": "interceptor"},
+    "spacebunny.lua": {"label": "SpaceBunny", "kind": "interceptor"},
     "spacebunny1.5.lua": {"label": "SpaceBunny 1.5", "kind": "interceptor"},
     "spliced-tickets.lua": {"label": "Spliced Tickets", "kind": "companion"},
+    "hubcap.lua": {"label": "Hubcap Auto-Fetch", "kind": "companion"},
+    "lobster.lua": {"label": "Lobster Config Recovery", "kind": "companion"},
+}
+COMPANION_PLUGINS = {
+    "spliced-tickets.lua",
+    "hubcap.lua",
+    "lobster.lua",
+    *(name for name, info in PLUGIN_INFO.items() if info.get("kind") == "companion"),
 }
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _MAX_MANIFEST_BYTES = 1024 * 1024
@@ -42,18 +51,110 @@ class PluginDeployer:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @staticmethod
+    def extract_plugin_version(content_or_path) -> str | None:
+        """Extract semantic version from Lua file content or path.
+
+        Matches multiple formats:
+          - VERSION = "1.8.2" (code constant)
+          - -- spacebunny.lua (1.8.2) (header comment with filename)
+          - -- Version: 1.8.2 (alternate header)
+          - -- spacebunny.lua v1.8.2 (version in comment)
+        """
+        try:
+            if isinstance(content_or_path, Path):
+                if not content_or_path.is_file():
+                    return None
+                content = content_or_path.read_text(encoding="utf-8", errors="ignore")
+            elif isinstance(content_or_path, bytes):
+                content = content_or_path.decode("utf-8", errors="ignore")
+            else:
+                content = str(content_or_path)
+
+            # 1. VERSION = "1.8.2" or table.VERSION = "1.8.2"
+            m = re.search(r'\bVERSION\s*=\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
+            if m:
+                sem = re.search(r'(\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9_.\-]+)?)', m.group(1))
+                if sem:
+                    return sem.group(1)
+
+            # 2. Header comment: -- spacebunny.lua (1.8.2)
+            m2 = re.search(r'^--\s*[\w.\-]+\.lua\s*\((v?\d+(?:\.\d+)*(?:[a-zA-Z0-9_.\-]+)?)\)', content, re.MULTILINE | re.IGNORECASE)
+            if m2:
+                return m2.group(1).lstrip("v")
+
+            # 3. Header comment: -- Version: 1.8.2
+            m3 = re.search(r'^--\s*(?:version|ver|v)\s*[:=]?\s*v?(\d+\.\d+(?:\.\d+)*(?:[a-zA-Z0-9_.\-]+)?)', content, re.MULTILINE | re.IGNORECASE)
+            if m3:
+                return m3.group(1)
+
+            # 4. Header comment: -- spacebunny.lua v1.8.2
+            m4 = re.search(r'^--\s*[\w.\-]+\.lua\s+v?(\d+\.\d+(?:\.\d+)*(?:[a-zA-Z0-9_.\-]+)?)', content, re.MULTILINE | re.IGNORECASE)
+            if m4:
+                return m4.group(1)
+        except Exception as exc:
+            logger.debug("Error extracting plugin version: %s", exc)
+        return None
+
     def _fetch(self, url: str, limit: int) -> bytes:
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Uran-PluginManager/1.0", "Accept": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if response.status != 200:
-                raise RuntimeError(f"HTTP {response.status} fetching plugin data")
-            data = response.read(limit + 1)
-        if len(data) > limit:
-            raise RuntimeError("Plugin response exceeds the allowed size")
-        return data
+        import ssl
+        import subprocess
+
+        # 1. Standard urllib
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Uran-PluginManager/1.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status} fetching plugin data")
+                data = response.read(limit + 1)
+            if len(data) > limit:
+                raise RuntimeError("Plugin response exceeds the allowed size")
+            return data
+        except Exception as e1:
+            logger.debug("Standard urllib fetch failed for %s: %s", url, e1)
+
+        # 2. Unverified SSL (bypasses hostname mismatch / captive portal)
+        if url.startswith("https"):
+            try:
+                unverified_ctx = ssl._create_unverified_context()
+                request = urllib.request.Request(url, headers={"User-Agent": "Uran-PluginManager/1.0"})
+                with urllib.request.urlopen(request, context=unverified_ctx, timeout=10) as response:
+                    logger.info("Fetched %s via unverified SSL fallback", url)
+                    data = response.read(limit + 1)
+                    if len(data) <= limit:
+                        return data
+            except Exception as e2:
+                logger.debug("Unverified SSL fetch failed for %s: %s", url, e2)
+
+        # 3. curl_cffi with Chrome 120 impersonation (if installed)
+        try:
+            from curl_cffi import requests as cffi_requests
+            cffi_resp = cffi_requests.get(url, headers={"User-Agent": "Uran-PluginManager/1.0"}, impersonate="chrome120", timeout=10, verify=False)
+            if cffi_resp.status_code == 200 and len(cffi_resp.content) <= limit:
+                logger.info("Fetched %s via curl_cffi impersonation", url)
+                return cffi_resp.content
+        except Exception as e3:
+            logger.debug("curl_cffi fetch failed for %s: %s", url, e3)
+
+        # 4. System curl subprocess. -f makes HTTP 4xx/5xx fail instead of
+        # accidentally treating an error page as a valid manifest/plugin.
+        try:
+            cmd = [
+                "curl", "-fsS", "-k", "--max-time", "10",
+                "--max-filesize", str(limit),
+                "-A", "Uran-PluginManager/1.0", url,
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+            if res.returncode == 0 and res.stdout and len(res.stdout) <= limit:
+                logger.info("Fetched %s via system curl fallback", url)
+                return res.stdout
+        except Exception as e4:
+            logger.debug("System curl fetch failed for %s: %s", url, e4)
+
+        raise RuntimeError(f"All network fetch attempts failed for {url}")
 
     def _manifest(self) -> dict:
         cache_path = self.cache_dir / "plugins_manifest.json"
@@ -103,18 +204,37 @@ class PluginDeployer:
 
     def _active_interceptor(self, directories: list[Path]) -> str | None:
         # Match ASSella: the active interceptor is any non-hidden Lua plugin
-        # except the independent Spliced Tickets companion.
+        # except independent companion plugins (Spliced Tickets, Hubcap, Lobster).
         for directory in directories:
             try:
                 for candidate in sorted(directory.glob("*.lua")):
                     if (
                         candidate.is_file()
                         and not candidate.name.startswith(".")
-                        and candidate.name != "spliced-tickets.lua"
+                        and candidate.name not in COMPANION_PLUGINS
+                        and PLUGIN_INFO.get(candidate.name, {}).get("kind") != "companion"
                     ):
                         return candidate.name
             except OSError:
                 continue
+        return None
+
+    def _is_plugin_disabled(self, filename: str) -> bool:
+        """Check if user has disabled this plugin."""
+        disabled = self.ctx.read_setting("disabled_plugins", [])
+        if not isinstance(disabled, list):
+            return False
+        return filename in disabled
+
+    def _get_file_version(self, filename: str) -> str | None:
+        """Extract version from deployed plugin file."""
+        directories = self._targets()
+        for directory in directories:
+            plugin_path = directory / filename
+            if plugin_path.is_file():
+                version = self.extract_plugin_version(plugin_path)
+                if version:
+                    return version
         return None
 
     def status(self) -> dict:
@@ -141,13 +261,20 @@ class PluginDeployer:
             else:
                 state = "up_to_date"
             manifest_info = manifest["plugins"].get(filename)
+            # Prefer file-extracted version over manifest version
+            file_version = self._get_file_version(filename)
+            manifest_version = manifest_info.get("version") if isinstance(manifest_info, dict) else None
+            version = file_version or manifest_version
             plugins[filename] = {
                 "label": definition["label"],
+                "kind": definition["kind"],
                 "state": state,
                 "active": definition["kind"] == "companion"
                 and installed is not None
                 or definition["kind"] == "interceptor" and active == filename,
-                "version": manifest_info.get("version") if isinstance(manifest_info, dict) else None,
+                "version": version,
+                "available_remote": expected is not None,
+                "user_disabled": self._is_plugin_disabled(filename),
             }
         return {
             "ok": True,
@@ -155,6 +282,34 @@ class PluginDeployer:
             "active_interceptor": active,
             "plugins": plugins,
         }
+
+    def enable_plugin(self, filename: str) -> dict:
+        """Enable a previously disabled plugin."""
+        if filename not in PLUGIN_INFO:
+            return {"ok": False, "error": "Unknown SLSsteam plugin."}
+        disabled = self.ctx.read_setting("disabled_plugins", [])
+        if not isinstance(disabled, list):
+            disabled = []
+        if filename in disabled:
+            disabled = [p for p in disabled if p != filename]
+            self.ctx.write_setting("disabled_plugins", disabled)
+            logger.info("Enabled plugin: %s", filename)
+            return {"ok": True}
+        return {"ok": True}  # Already enabled
+
+    def disable_plugin(self, filename: str) -> dict:
+        """Disable a plugin so it won't be auto-deployed."""
+        if filename not in PLUGIN_INFO:
+            return {"ok": False, "error": "Unknown SLSsteam plugin."}
+        disabled = self.ctx.read_setting("disabled_plugins", [])
+        if not isinstance(disabled, list):
+            disabled = []
+        if filename not in disabled:
+            disabled.append(filename)
+            self.ctx.write_setting("disabled_plugins", disabled)
+            logger.info("Disabled plugin: %s", filename)
+            return {"ok": True}
+        return {"ok": True}  # Already disabled
 
     def deploy(self, filename: str) -> dict:
         if filename not in PLUGIN_INFO:
@@ -196,7 +351,9 @@ class PluginDeployer:
                             if (
                                 existing.is_file()
                                 and not existing.name.startswith(".")
-                                and existing.name not in (filename, "spliced-tickets.lua")
+                                and existing.name != filename
+                                and existing.name not in COMPANION_PLUGINS
+                                and PLUGIN_INFO.get(existing.name, {}).get("kind") != "companion"
                             ):
                                 backup = directory / f"{existing.name}.bak"
                                 if backup.is_file():
@@ -222,7 +379,10 @@ class PluginDeployer:
                 if updated != current and not self.sls.write(updated):
                     return {"ok": False, "error": "Plugin deployed, but SLSsteam config could not be updated."}
 
-                if "spacebunny" in filename.lower():
+                # Mark as enabled when deployed
+                self.enable_plugin(filename)
+
+                if "spacebunny" in filename.lower() or filename == "hubcap.lua":
                     self.sync_spacebunny_conf()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Plugin deployment failed for %s", filename)
@@ -231,9 +391,9 @@ class PluginDeployer:
         return {"ok": True, "message": f"{PLUGIN_INFO[filename]['label']} deployed successfully."}
 
     def ensure_default_interceptor(self) -> dict:
-        """If no interceptor plugin is deployed (ignoring spliced-tickets.lua),
+        """If no interceptor plugin is deployed (ignoring companion plugins like spliced-tickets.lua, hubcap.lua, lobster.lua),
         auto-deploy SpaceBunny (spacebunny1.5.lua) from R2.
-        If the user has any other lua except spliced-tickets.lua, ignore.
+        If the user has any other interceptor lua, ignore.
         """
         config = self.ctx.sls_config()
         if config is None or not config.is_file():
@@ -245,33 +405,57 @@ class PluginDeployer:
 
         active = self._active_interceptor(directories)
         if active is not None:
+            if active == "spacebunny1.5.lua":
+                logger.info("Auto-migrating legacy spacebunny1.5.lua to standardized spacebunny.lua...")
+                try:
+                    return self.deploy("spacebunny.lua")
+                except Exception as exc:
+                    logger.warning("Auto-migration of spacebunny1.5.lua failed: %s", exc)
             # User already has an active interceptor (SpaceBunny, download.lua, or custom)
-            if "spacebunny" in active.lower():
+            has_hubcap = any((directory / "hubcap.lua").is_file() for directory in directories)
+            if "spacebunny" in active.lower() or has_hubcap:
                 self.sync_spacebunny_conf()
             return {"ok": True, "deployed": False, "active": active}
 
+        # Check if default interceptor is disabled by user
+        disabled = self.ctx.read_setting("disabled_plugins", [])
+        if isinstance(disabled, list) and "spacebunny.lua" in disabled:
+            logger.info("SpaceBunny is disabled by user, skipping auto-deploy")
+            return {"ok": True, "deployed": False, "reason": "user_disabled"}
+
         logger.info("No interceptor Lua plugin detected. Auto-deploying SpaceBunny from R2...")
         try:
-            return self.deploy("spacebunny1.5.lua")
+            manifest = self._manifest()
+            manifest_plugins = manifest.get("plugins", {}) if manifest else {}
+            target_sb = "spacebunny.lua" if ("spacebunny.lua" in manifest_plugins or not manifest_plugins) else "spacebunny1.5.lua"
+            return self.deploy(target_sb)
         except Exception as exc:
             logger.warning("Could not auto-deploy SpaceBunny: %s", exc)
             return {"ok": False, "error": str(exc)}
 
     def sync_spacebunny_conf(self) -> bool:
-        """Sync Hubcap key into spacebunny.conf.lua if SpaceBunny is the active interceptor."""
+        """One-way sync: copy Hubcap API key to spacebunny.conf.lua if key exists.
+
+        Preserves existing config structure. Only updates the api_key field.
+        """
+        import time
+
         config = self.ctx.sls_config()
         if config is None or not config.is_file():
             return False
 
         directories = self._targets()
         active = self._active_interceptor(directories)
-        if not active or "spacebunny" not in active.lower():
+        has_hubcap = any((directory / "hubcap.lua").is_file() for directory in directories)
+        if not (has_hubcap or (active and "spacebunny" in active.lower())):
             return False
 
         key_resolver = getattr(self.ctx, "hubcap_key", None)
         api_key = key_resolver.current() if key_resolver else ""
         conf_path = config.parent / "spacebunny.conf.lua"
+
         if not api_key:
+            # If no key, remove the conf file to avoid stale data
             if conf_path.exists():
                 try:
                     conf_path.unlink()
@@ -279,14 +463,97 @@ class PluginDeployer:
                     pass
             return False
 
+        # Read existing config to preserve other settings
+        existing_config = {
+            "standalone": False,
+            "hubcap": {
+                "enabled": True,
+                "api_key": api_key,
+                "api_key_timestamp": int(time.time()),
+                "base_url": "https://hubcapmanifest.com/api/v1",
+                "timeout_sec": 5,
+                "write_config": True,
+                "notify": True,
+                "preflight": "contents",
+                "depot_index": False,
+                "write_depot_comments": False,
+            }
+        }
+
+        # Try to read existing config to preserve settings
+        if conf_path.is_file():
+            try:
+                content = conf_path.read_text(encoding="utf-8", errors="ignore")
+                # Extract standalone value
+                m_st = re.search(r'\bstandalone\s*=\s*([^,\n\r]+)', content)
+                if m_st:
+                    val = m_st.group(1).strip().lower()
+                    existing_config["standalone"] = val in ("true", "1", "yes")
+
+                # Extract existing hubcap settings to preserve them
+                m_hub = re.search(r'\bhubcap\s*=\s*\{([^}]+)\}', content, re.DOTALL)
+                if m_hub:
+                    hub_content = m_hub.group(1)
+                    def read_bool(name: str) -> bool | None:
+                        match = re.search(rf'\b{re.escape(name)}\s*=\s*([^,\n\r]+)', hub_content)
+                        if not match:
+                            return None
+                        return match.group(1).strip().lower() in ("true", "1", "yes")
+
+                    def read_string(name: str) -> str | None:
+                        match = re.search(rf'\b{re.escape(name)}\s*=\s*["\']([^"\']*)["\']', hub_content)
+                        return match.group(1) if match else None
+
+                    # Preserve all supported user-configurable settings.
+                    for name in ("enabled", "write_config", "notify", "depot_index", "write_depot_comments"):
+                        value = read_bool(name)
+                        if value is not None:
+                            existing_config["hubcap"][name] = value
+
+                    for name in ("base_url", "preflight"):
+                        value = read_string(name)
+                        if value is not None:
+                            existing_config["hubcap"][name] = value
+
+                    m_timeout = re.search(r'\btimeout_sec\s*=\s*(\d+)', hub_content)
+                    if m_timeout:
+                        existing_config["hubcap"]["timeout_sec"] = int(m_timeout.group(1))
+            except Exception as exc:
+                logger.debug("Failed to read existing spacebunny.conf: %s", exc)
+
+        # Generate timestamp for tracking
+        now = time.localtime()
+        timestamp = int(f"{now.tm_year:04d}{now.tm_mon:02d}{now.tm_mday:02d}{now.tm_hour:02d}{now.tm_min:02d}{now.tm_sec:02d}")
+        existing_config["hubcap"]["api_key_timestamp"] = timestamp
+
+        # Extract values for simpler f-strings
+        standalone_str = "true" if existing_config["standalone"] else "false"
+        hub = existing_config["hubcap"]
+        enabled_str = "true" if hub["enabled"] else "false"
+        timeout_str = str(hub["timeout_sec"])
+        write_config_str = "true" if hub["write_config"] else "false"
+        notify_str = "true" if hub["notify"] else "false"
+        preflight_str = hub["preflight"]
+        depot_index_str = "true" if hub["depot_index"] else "false"
+        write_depot_comments_str = "true" if hub["write_depot_comments"] else "false"
+        base_url_str = hub["base_url"]
+
         content = (
             "-- Generated by Uran for SpaceBunny\n"
             "return {\n"
+            f"    standalone = {standalone_str},\n"
             "    hubcap = {\n"
-            "        enabled = true,\n"
+            f"        enabled = {enabled_str},\n"
             f'        api_key = "{api_key}",\n'
+            f"        api_key_timestamp = {timestamp},\n"
+            f'        base_url = "{base_url_str}",\n'
+            f"        timeout_sec = {timeout_str},\n"
+            f"        write_config = {write_config_str},\n"
+            f"        notify = {notify_str},\n"
+            f'        preflight = "{preflight_str}",\n'
+            f"        depot_index = {depot_index_str},\n"
+            f"        write_depot_comments = {write_depot_comments_str},\n"
             "    },\n"
-            "    standalone = false,\n"
             "}\n"
         )
         try:
@@ -297,6 +564,7 @@ class PluginDeployer:
             except OSError:
                 pass
             os.replace(tmp, conf_path)
+            logger.info("Synced Hubcap API key to spacebunny.conf.lua")
             return True
         except Exception as exc:
             logger.warning("Failed writing %s: %s", conf_path, exc)

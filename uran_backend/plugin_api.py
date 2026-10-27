@@ -143,6 +143,18 @@ class Plugin:
             return {"ok": False, "error": "Plugin deployment is unavailable."}
         return await asyncio.to_thread(self.s.plugin_deployer.deploy, filename)
 
+    async def enable_sls_plugin(self, filename: str) -> dict:
+        """Enable a previously disabled plugin."""
+        if self.s.plugin_deployer is None:
+            return {"ok": False, "error": "Plugin deployment is unavailable."}
+        return await asyncio.to_thread(self.s.plugin_deployer.enable_plugin, filename)
+
+    async def disable_sls_plugin(self, filename: str) -> dict:
+        """Disable a plugin so it won't be auto-deployed on startup."""
+        if self.s.plugin_deployer is None:
+            return {"ok": False, "error": "Plugin deployment is unavailable."}
+        return await asyncio.to_thread(self.s.plugin_deployer.disable_plugin, filename)
+
     async def check_for_updates(self) -> dict:
         from .updates import check_for_updates
 

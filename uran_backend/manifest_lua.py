@@ -27,6 +27,11 @@ _LIVE_APPID_RE = re.compile(
 _LIVE_SETMANIFEST_RE = re.compile(
     r'setManifestid\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']', re.IGNORECASE
 )
+# Match AddToken(app_id, "token") -- optional comment after the closing paren.
+# Token values are opaque (hex or otherwise); we store them verbatim.
+_LIVE_ADDTOKEN_RE = re.compile(
+    r'addtoken\(\s*(\d+)\s*,\s*["\']([^"\']*)["\']\s*\)(.*)', re.IGNORECASE,
+)
 
 
 def lua_comment_spans(content: str) -> list[tuple[int, int]]:
@@ -116,6 +121,7 @@ def parse(lua_text: str, sanitize_key=None) -> dict:
         "dlcs": [],
         "manifests": {},
         "depots": [],
+        "tokens": {},
     }
     if not lua_text:
         return result
@@ -159,6 +165,13 @@ def parse(lua_text: str, sanitize_key=None) -> dict:
         gid = coerce_manifest_gid(match.group(2))
         if did and gid:
             result["manifests"][did] = gid
+
+    for match in iter_live_matches(lua_text, _LIVE_ADDTOKEN_RE):
+        app_id = coerce_depot_id(match.group(1))
+        token = (match.group(2) or "").strip()
+        if not app_id or not token:
+            continue
+        result["tokens"][app_id] = token
 
     return result
 

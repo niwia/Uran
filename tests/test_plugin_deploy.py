@@ -58,6 +58,9 @@ def run():
             home=home,
             runtime_dir=home / "runtime",
             sls_config=lambda: config,
+            _settings={},
+            read_setting=lambda key, default=None: ctx._settings.get(key, default),
+            write_setting=lambda key, value: ctx._settings.update({key: value}),
         )
         sls = FakeSls(config)
         content = {
@@ -87,6 +90,11 @@ def run():
             item["state"] == "missing" for item in status["plugins"].values()
         ))
 
+        check("disable plugin succeeds", deployer.disable_plugin("hubcap.lua")["ok"])
+        check("disabled state is reported", deployer.status()["plugins"]["hubcap.lua"]["user_disabled"])
+        check("enable plugin succeeds", deployer.enable_plugin("hubcap.lua")["ok"])
+        check("enabled state is reported", not deployer.status()["plugins"]["hubcap.lua"]["user_disabled"])
+
         result = deployer.deploy("download.lua")
         check("standard deploy succeeds", result["ok"])
         check("plugins toggle enabled", "Plugins: yes" in sls.read())
@@ -115,6 +123,28 @@ def run():
         check("Spliced coexists with interceptor", (plugins / "spacebunny1.5.lua").is_file() and (plugins / "spliced-tickets.lua").is_file())
 
         check("unknown filenames rejected", not deployer.deploy("../other.lua")["ok"])
+
+        # Companion preservation tests (Hubcap, Lobster, Spliced)
+        (plugins / "hubcap.lua").write_text("-- hubcap companion\n")
+        (plugins / "lobster.lua").write_text("-- lobster companion\n")
+
+        check("companion files are not treated as active interceptors",
+              deployer._active_interceptor([plugins]) == "spacebunny1.5.lua")
+
+        # Deploy download.lua interceptor: companion plugins must NOT be archived
+        result = deployer.deploy("download.lua")
+        check("switch back to Standard succeeds", result["ok"])
+        check("download.lua is active interceptor", (plugins / "download.lua").is_file())
+        check("hubcap.lua was NOT archived", (plugins / "hubcap.lua").is_file() and not (plugins / "hubcap.lua.bak").exists())
+        check("lobster.lua was NOT archived", (plugins / "lobster.lua").is_file() and not (plugins / "lobster.lua.bak").exists())
+        check("spliced-tickets.lua was NOT archived", (plugins / "spliced-tickets.lua").is_file() and not (plugins / "spliced-tickets.lua.bak").exists())
+
+        st = deployer.status()["plugins"]
+        check("hubcap is active companion", st["hubcap.lua"]["active"] and st["hubcap.lua"]["kind"] == "companion")
+        check("lobster is active companion", st["lobster.lua"]["active"] and st["lobster.lua"]["kind"] == "companion")
+
+        (plugins / "hubcap.lua").unlink()
+        (plugins / "lobster.lua").unlink()
 
 
 if __name__ == "__main__":
