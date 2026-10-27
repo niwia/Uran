@@ -222,6 +222,7 @@ export const getHubcapKeyStatus = callable<[], {
   masked: string;
   is_override: boolean;
   base_url: string;
+  timestamp?: number;
 }>("get_hubcap_key_status");
 export const startKeyServer = callable<[], {
   ok: boolean;
@@ -480,3 +481,40 @@ export const checkConfigStatus = callable<
   [online: boolean],
   ConfigCheck
 >("check_config_status");
+
+// -- SpaceBunny Configuration Bridge -----------------------------------------
+export type SpaceBunnyHubcapConfig = {
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  api_key_timestamp: number;
+  timeout_sec: number;
+  write_config: boolean;
+  notify: boolean;
+  preflight: string;
+  depot_index: boolean;
+  write_depot_comments: boolean;
+};
+
+export type SpaceBunnyConfig = {
+  standalone: boolean;
+  hubcap: SpaceBunnyHubcapConfig;
+  exists?: boolean;
+  path?: string;
+};
+
+export type SpaceBunnyResponse = {
+  ok: boolean;
+  config?: SpaceBunnyConfig;
+  error?: string;
+};
+
+export const getSpaceBunnyConfig = callable<[], SpaceBunnyResponse>(
+  "get_spacebunny_config",
+);
+
+export const saveSpaceBunnyConfig = callable<
+  [config: { standalone: boolean; hubcap: Partial<SpaceBunnyHubcapConfig> }],
+  SpaceBunnyResponse
+>("save_spacebunny_config");
+

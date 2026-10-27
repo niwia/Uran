@@ -24,6 +24,7 @@ import {
   keyServerStatus,
   stopKeyServer,
   getHubcapUserStats,
+  getHubcapKeyStatus,
   checkConfigStatus,
   ConfigCheck,
   getStoreDebugStatus,
@@ -53,6 +54,7 @@ import {
 import { setStorePatchEnabled } from "../StorePatch";
 import { HealthStatusRow } from "../components/HealthStatus";
 import { formatExpiry } from "../components/format";
+import { showSpaceBunnyModal } from "../components/SpaceBunnyModal";
 
 export const SettingsTab: React.FC = () => {
   const [steamStoreEnabled, setSteamStoreEnabled] = React.useState(true);
@@ -91,17 +93,36 @@ export const SettingsTab: React.FC = () => {
     error?: string;
   }>({ ok: false });
 
+  const [keyStatus, setKeyStatus] = React.useState<{
+    ok: boolean;
+    source: string;
+    configured_path: string;
+    masked: string;
+    is_override: boolean;
+    timestamp?: number;
+  } | null>(null);
+
+  const loadKeyStatus = React.useCallback(async () => {
+    try {
+      const res = await getHubcapKeyStatus();
+      if (res) setKeyStatus(res);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // Version comes from the backend, which reads plugin.json — the single
   // source of truth. Never hardcode it here. The update check hits GitHub,
   // so it runs session-once, not on every tab visit.
   React.useEffect(() => {
+    void loadKeyStatus();
     void getPluginInfo()
       .then((info) => info && setPluginInfo(info))
       .catch(() => {});
     void once("plugin-updates", checkForUpdates)
       .then((res) => res?.ok && setUpdateInfo(res))
       .catch(() => {});
-  }, []);
+  }, [loadKeyStatus]);
 
   // -- QR key capture --
   const [keyServer, setKeyServer] = React.useState<{
@@ -317,6 +338,7 @@ export const SettingsTab: React.FC = () => {
 
   const loadStats = React.useCallback(async () => {
     try {
+      void loadKeyStatus();
       // Manual refresh points (e.g. after a key is accepted) bypass the
       // session memo and update it, so later tab visits see fresh stats.
       const s = await refreshOnce("hubcap-stats", getHubcapUserStats);
@@ -330,10 +352,11 @@ export const SettingsTab: React.FC = () => {
       setStats({ ok: false });
       void startQr();
     }
-  }, [startQr]);
+  }, [loadKeyStatus, startQr]);
 
   const loadStatsOnce = React.useCallback(async () => {
     try {
+      void loadKeyStatus();
       const s = await once("hubcap-stats", getHubcapUserStats);
       if (s) {
         setStats(s);
@@ -345,7 +368,7 @@ export const SettingsTab: React.FC = () => {
       setStats({ ok: false });
       void startQr();
     }
-  }, [startQr]);
+  }, [loadKeyStatus, startQr]);
 
   React.useEffect(() => {
     let alive = true;
@@ -474,6 +497,22 @@ export const SettingsTab: React.FC = () => {
                   {formatExpiry(stats.expires_at)}
                 </span>
               </div>
+              {keyStatus?.source ? (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+                  <span style={{ opacity: 0.65, flexShrink: 0 }}>source :</span>
+                  <span style={{ fontWeight: 500, opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginLeft: "12px", textAlign: "right", fontSize: "11px" }}>
+                    {keyStatus.source}
+                  </span>
+                </div>
+              ) : null}
+              {keyStatus?.timestamp ? (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
+                  <span style={{ opacity: 0.65, flexShrink: 0 }}>key ts :</span>
+                  <span style={{ fontWeight: 600, fontFamily: "monospace", marginLeft: "12px", textAlign: "right", fontSize: "11px" }}>
+                    {keyStatus.timestamp}
+                  </span>
+                </div>
+              ) : null}
             </div>
           </PanelSectionRow>
         ) : (
@@ -483,6 +522,20 @@ export const SettingsTab: React.FC = () => {
             </div>
           </PanelSectionRow>
         )}
+
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => {
+              showSpaceBunnyModal(() => {
+                void loadStats();
+                void loadKeyStatus();
+              });
+            }}
+          >
+            Configure SpaceBunny (Bridge)
+          </ButtonItem>
+        </PanelSectionRow>
 
         <PanelSectionRow>
           <ToggleField

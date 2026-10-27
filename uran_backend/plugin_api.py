@@ -383,3 +383,40 @@ class Plugin:
         else:
             channel = mode
         return {"ok": True, "channel": channel}
+
+    # -- SpaceBunny configuration bridge -------------------------------------
+    async def get_spacebunny_config(self) -> dict:
+        """Read spacebunny.conf.lua settings and bridge status."""
+        return await asyncio.to_thread(self._get_spacebunny_config_sync)
+
+    def _get_spacebunny_config_sync(self) -> dict:
+        from . import sls_lua_config
+        sb_path = self.s.ctx.spacebunny_conf()
+        cfg = sls_lua_config.read_spacebunny_conf(sb_path)
+        cfg["exists"] = sb_path.is_file() if sb_path else False
+        cfg["path"] = str(sb_path) if sb_path else ""
+        return {"ok": True, "config": cfg}
+
+    async def save_spacebunny_config(self, config: dict) -> dict:
+        """Write user updates to spacebunny.conf.lua and synchronize key."""
+        return await asyncio.to_thread(self._save_spacebunny_config_sync, config)
+
+    def _save_spacebunny_config_sync(self, config: dict) -> dict:
+        from . import sls_lua_config
+        sb_path = self.s.ctx.spacebunny_conf()
+        if not sb_path:
+            return {"ok": False, "error": "SLSsteam directory not found"}
+
+        hub = config.get("hubcap", {})
+        if "api_key" in hub:
+            raw_key = str(hub.get("api_key", "")).strip()
+            current_local = str(self.s.ctx.settings.stored_hubcap_key() or "").strip()
+            if raw_key != current_local or not hub.get("api_key_timestamp"):
+                hub["api_key_timestamp"] = sls_lua_config.generate_hubcap_timestamp()
+                self.s.ctx.hubcap_key.save(raw_key, timestamp=hub["api_key_timestamp"])
+
+        ok = sls_lua_config.write_spacebunny_conf(config, sb_path)
+        if ok:
+            return {"ok": True, "config": sls_lua_config.read_spacebunny_conf(sb_path)}
+        return {"ok": False, "error": "Failed to write spacebunny.conf.lua"}
+

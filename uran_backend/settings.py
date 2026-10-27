@@ -21,6 +21,7 @@ DEFAULTS: dict = {
     "add_delisted_dlcs": True,
     "steam_store_enabled": True,
     "manifest_api_key": "",
+    "manifest_api_key_timestamp": 0,
     "notification_mode": "auto",
     # Route to the Hubcap API: auto | direct | proxy. See hubcap.py.
     "hubcap_gateway": "auto",
@@ -103,15 +104,27 @@ class Settings:
 
 
 class HubcapKey:
-    """Resolves the Hubcap API key, preferring Uran's own override."""
+    """Resolves and synchronizes the Hubcap API key with spacebunny.conf.lua and ASSella."""
 
     def __init__(self, settings: Settings, user_home_path: Path):
         self._settings = settings
         self._home = user_home_path
         self._last_source: str | None = None
 
+    def spacebunny_conf_path(self) -> Path | None:
+        """Resolve path to spacebunny.conf.lua."""
+        return paths.spacebunny_conf(self._home)
+
     def current(self) -> str:
-        """The key to authenticate with, or "" when none is configured."""
+        """The key to authenticate with, synchronized with the spacebunny bridge."""
+        from . import sls_lua_config
+
+        active_key, was_synced, reason = sls_lua_config.sync_hubcap_key_bidirectional(
+            self._settings, self.spacebunny_conf_path(), self._home
+        )
+        if active_key:
+            return active_key
+
         override = self._settings.stored_hubcap_key()
         if override:
             return override
@@ -138,9 +151,51 @@ class HubcapKey:
                     return key, str(path)
         return "", ""
 
-    def save(self, key: str) -> tuple[bool, str]:
-        """Persist a key into ASSella's config, falling back to a local override."""
-        wrote, where = paths.write_accela_api_key(key, self._home)
-        # An empty override means "use ASSella's", which is the shared happy path.
-        self._settings.set("manifest_api_key", "" if wrote else key)
-        return wrote, where
+    def detected_in_spacebunny(self) -> tuple[str, str]:
+        """Return (key, path) for the key found in spacebunny.conf.lua."""
+        sb_path = self.spacebunny_conf_path()
+        if sb_path and sb_path.is_file():
+            from . import sls_lua_config
+            cfg = sls_lua_config.read_spacebunny_conf(sb_path)
+            key = str(cfg.get("hubcap", {}).get("api_key", "")).strip()
+            if key:
+                return key, str(sb_path)
+        return "", ""
+
+    def save(self, key: str, timestamp: int | None = None) -> tuple[bool, str]:
+        """Persist a key into ASSella's config and spacebunny.conf.lua with timestamps."""
+        from . import sls_lua_config
+
+        key = str(key or "").strip()
+        ts = timestamp if timestamp is not None else (sls_lua_config.generate_hubcap_timestamp() if key else 0)
+
+        # 1. Update local settings
+        self._settings.set("manifest_api_key", key)
+        self._settings.set("manifest_api_key_timestamp", ts)
+
+        # 2. Update spacebunny.conf.lua
+        sb_path = self.spacebunny_conf_path()
+        wrote_lua = False
+        if sb_path is not None:
+            if key:
+                wrote_lua = sls_lua_config.sync_spacebunny_key(sb_path, key, timestamp=ts)
+            elif sb_path.exists():
+                try:
+                    sb_path.unlink()
+                    wrote_lua = True
+                except OSError:
+                    pass
+
+        # 3. Update ASSella ACCELA.conf
+        wrote_accela = False
+        where_accela = ""
+        if key:
+            wrote_accela, where_accela = paths.write_accela_api_key(key, self._home, timestamp=ts)
+
+        if wrote_lua and wrote_accela:
+            return True, f"Key saved to spacebunny.conf.lua and {where_accela}"
+        if wrote_lua:
+            return True, f"Key saved to {sb_path}"
+        if wrote_accela:
+            return True, where_accela
+        return True, "Key saved to plugin settings"

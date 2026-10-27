@@ -38,6 +38,9 @@ class Context:
     def sls_config(self) -> Path | None:
         return paths.sls_config(self.home)
 
+    def spacebunny_conf(self) -> Path | None:
+        return paths.spacebunny_conf(self.home)
+
     def steam_root(self) -> Path | None:
         return paths.steam_root(self.home)
 

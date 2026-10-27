@@ -117,6 +117,16 @@ def sls_config(user_home_path: Path) -> Path | None:
     return None
 
 
+def spacebunny_conf(user_home_path: Path) -> Path | None:
+    """Find spacebunny.conf.lua for the user's detected Steam installation."""
+    cfg = sls_config(user_home_path)
+    if cfg is not None:
+        return cfg.parent / "spacebunny.conf.lua"
+    if is_flatpak_steam(user_home_path):
+        return flatpak_steam_root(user_home_path) / ".config" / "SLSsteam" / "spacebunny.conf.lua"
+    return user_home_path / ".config" / "SLSsteam" / "spacebunny.conf.lua"
+
+
 def sls_plugins_dirs(user_home_path: Path) -> list[Path]:
     """Resolve only the plugin directory belonging to the detected Steam install."""
     config = sls_config(user_home_path)
@@ -306,8 +316,10 @@ def _build_ini_entry(original: str, key: str, value: str) -> str:
     return "\n".join(lines) + ("\n" if original.endswith("\n") else "")
 
 
-def write_accela_api_key(key: str, user_home_path: Path) -> tuple[bool, str]:
-    """Write morrenus_api_key into ASSella's ACCELA.conf so BOTH apps share it.
+def write_accela_api_key(
+    key: str, user_home_path: Path, timestamp: int | None = None
+) -> tuple[bool, str]:
+    """Write morrenus_api_key and optional timestamp into ASSella's ACCELA.conf so BOTH apps share it.
 
     Returns (ok, message).
     """
@@ -322,11 +334,15 @@ def write_accela_api_key(key: str, user_home_path: Path) -> tuple[bool, str]:
         try:
             if not path.exists():
                 continue
-            if read_ini_value(path, "morrenus_api_key") == key:
+            cur_key = read_ini_value(path, "morrenus_api_key")
+            cur_ts = read_ini_value(path, "morrenus_api_key_timestamp")
+            if cur_key == key and (timestamp is None or cur_ts == str(timestamp)):
                 return True, f"Key already present in {path}"
 
             original = path.read_text(encoding="utf-8", errors="replace")
             new_text = _build_ini_entry(original, "morrenus_api_key", key)
+            if timestamp is not None:
+                new_text = _build_ini_entry(new_text, "morrenus_api_key_timestamp", str(timestamp))
             if new_text == original:
                 return True, f"No change needed in {path}"
 
@@ -354,7 +370,8 @@ def write_accela_api_key(key: str, user_home_path: Path) -> tuple[bool, str]:
     try:
         primary = user_home_path / ".config" / "Tachibana Labs" / "ACCELA.conf"
         primary.parent.mkdir(parents=True, exist_ok=True)
-        primary.write_text(f"[General]\nmorrenus_api_key={key}\n", encoding="utf-8")
+        ts_line = f"morrenus_api_key_timestamp={timestamp}\n" if timestamp is not None else ""
+        primary.write_text(f"[General]\nmorrenus_api_key={key}\n{ts_line}", encoding="utf-8")
         logger.info("Created ACCELA config at %s and saved morrenus_api_key", primary)
         return True, f"Key saved to {primary} (shared with ASSella)"
     except Exception as exc:  # noqa: BLE001
