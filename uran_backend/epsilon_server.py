@@ -97,23 +97,27 @@ def dispatch_request(
 
     # 2. Handshake / Health Ping
     if method == "GET" and route in ("/ping", "/health"):
-        sls_active = False
-        sls_installed = False
-        has_plugins = False
-        has_hubcap_key = False
+        readiness = {}
         try:
-            gate = services.guards.check_sls_environment()
-            sls_active = bool(gate.get("sls_active") or gate.get("ok"))
-            sls_installed = gate.get("reason") not in ("no_sls_config", "sls_not_installed")
-            has_plugins = bool(gate.get("lua_plugins"))
-            has_hubcap_key = bool(gate.get("has_hubcap_key") or services.ctx.hubcap_key.current())
+            readiness = services.guards.check_system_readiness()
         except Exception:
-            pass
+            try:
+                gate = services.guards.check_sls_environment()
+                readiness = {"ready": bool(gate.get("ok")), "sls_active": bool(gate.get("ok"))}
+            except Exception:
+                readiness = {"ready": False, "error_code": "505"}
 
         from .updates import plugin_version
 
         version = plugin_version(services.ctx)
-        ready = sls_installed and has_plugins and has_hubcap_key
+        ready = bool(readiness.get("ready"))
+        error_code = readiness.get("error_code")
+        error_msg = readiness.get("error")
+        guide_url = (
+            f"https://assella.niwia.top/epsilon#err-{error_code}"
+            if error_code
+            else "https://assella.niwia.top/epsilon"
+        )
 
         return (
             200,
@@ -122,12 +126,14 @@ def dispatch_request(
                 "service": "epsilon",
                 "version": version,
                 "engine": "uran_backend",
-                "sls_active": sls_active,
-                "sls_installed": sls_installed,
-                "has_plugins": has_plugins,
-                "has_hubcap_key": has_hubcap_key,
+                "sls_active": readiness.get("sls_active", True),
+                "sls_installed": error_code not in ("501", "504"),
+                "has_plugins": error_code != "502",
+                "has_hubcap_key": bool(services.ctx.hubcap_key.current()),
                 "ready": ready,
-                "guide_url": "https://assella.niwia.top/epsilon",
+                "error_code": error_code,
+                "error": error_msg,
+                "guide_url": guide_url,
             },
             resp_headers,
         )
@@ -144,21 +150,41 @@ def dispatch_request(
         if not aid:
             return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
-        has_hubcap_key = bool(services.ctx.hubcap_key.current())
-        sls_installed = False
-        has_plugins = False
+        readiness = {}
         try:
-            gate = services.guards.check_sls_environment()
-            sls_installed = gate.get("reason") not in ("no_sls_config", "sls_not_installed")
-            has_plugins = bool(gate.get("lua_plugins"))
+            readiness = services.guards.check_system_readiness()
         except Exception:
             pass
 
-        ready = sls_installed and has_plugins and has_hubcap_key
+        ready = bool(readiness.get("ready", True))
+        error_code = readiness.get("error_code")
+        error_msg = readiness.get("error")
+
         added = bool(services.guards.is_app_added(aid))
         inject_status = services.injector.status(aid)
         details = services.steam.app_details(aid) or {}
         name = details.get("name", f"App {aid}")
+
+        # Check if recent inject attempt failed
+        if inject_status and inject_status.get("done") and inject_status.get("error"):
+            runtime_err = str(inject_status.get("error", ""))
+            if "401" in runtime_err or "Invalid Hubcap API key" in runtime_err:
+                error_code = "401"
+            elif "404" in runtime_err or "No Hubcap bundle" in runtime_err:
+                error_code = "404"
+            elif "429" in runtime_err or "rate limit" in runtime_err.lower():
+                error_code = "429"
+            elif "no keys" in runtime_err.lower():
+                error_code = "701"
+            else:
+                error_code = "707"
+            error_msg = runtime_err
+
+        guide_url = (
+            f"https://assella.niwia.top/epsilon#err-{error_code}"
+            if error_code
+            else "https://assella.niwia.top/epsilon"
+        )
 
         return (
             200,
@@ -168,9 +194,10 @@ def dispatch_request(
                 "name": name,
                 "added": added,
                 "inject_status": inject_status,
-                "ready": ready,
-                "setup_required": not ready,
-                "guide_url": "https://assella.niwia.top/epsilon",
+                "ready": ready and not error_code,
+                "error_code": error_code,
+                "error": error_msg,
+                "guide_url": guide_url,
             },
             resp_headers,
         )
@@ -200,14 +227,34 @@ def dispatch_request(
         if result.get("error"):
             # Return 400 for errors, unless it's already added which is a normal check
             status_code = 200 if result.get("already_added") else 400
+            err_text = str(result.get("error", ""))
+            blocked = result.get("blocked")
+            err_code = "707"
+            if blocked == "no_api_key" or "401" in err_text:
+                err_code = "401"
+            elif blocked == "no_sls_config":
+                err_code = "504"
+            elif blocked in ("sls_not_installed", "sls_inactive"):
+                err_code = "501"
+            elif blocked == "plugins_disabled":
+                err_code = "503"
+            elif blocked == "no_lua_plugins":
+                err_code = "502"
+            elif "404" in err_text or "No Hubcap bundle" in err_text:
+                err_code = "404"
+            elif "429" in err_text:
+                err_code = "429"
+            elif "no keys" in err_text.lower():
+                err_code = "701"
+
             resp_body = {
                 "ok": False,
                 "error": result["error"],
+                "error_code": err_code if not result.get("already_added") else None,
                 "already_added": result.get("already_added", False),
                 "blocked": result.get("blocked"),
+                "guide_url": f"https://assella.niwia.top/epsilon#err-{err_code}",
             }
-            if result.get("blocked"):
-                resp_body["guide_url"] = "https://assella.niwia.top/epsilon"
             return (
                 status_code,
                 resp_body,

@@ -62,6 +62,12 @@ def test_valid_host_accepted():
 def test_ping_endpoint():
     mock_services = MagicMock()
     mock_services.guards.check_sls_environment.return_value = {"ok": True}
+    mock_services.guards.check_system_readiness.return_value = {
+        "ready": True,
+        "sls_active": True,
+        "error_code": None,
+        "error": None,
+    }
     mock_services.ctx.hubcap_key.current.return_value = "test_key_123"
     mock_services.ctx.plugin_dir = ROOT
 
@@ -76,6 +82,12 @@ def test_ping_endpoint():
 
 def test_status_endpoint():
     mock_services = MagicMock()
+    mock_services.guards.check_system_readiness.return_value = {
+        "ready": True,
+        "sls_active": True,
+        "error_code": None,
+        "error": None,
+    }
     mock_services.guards.is_app_added.return_value = True
     mock_services.injector.status.return_value = {"done": True, "depots": ["731"]}
     mock_services.steam.app_details.return_value = {"name": "Counter-Strike 2"}
@@ -95,6 +107,12 @@ def test_status_endpoint():
 
 def test_inject_endpoint_success():
     mock_services = MagicMock()
+    mock_services.guards.check_system_readiness.return_value = {
+        "ready": True,
+        "sls_active": True,
+        "error_code": None,
+        "error": None,
+    }
     mock_services.injector.inject.return_value = {
         "name": "Portal 2",
         "depots": ["621", "622"],
@@ -113,6 +131,12 @@ def test_inject_endpoint_success():
 
 def test_inject_endpoint_already_added():
     mock_services = MagicMock()
+    mock_services.guards.check_system_readiness.return_value = {
+        "ready": True,
+        "sls_active": True,
+        "error_code": None,
+        "error": None,
+    }
     mock_services.injector.inject.return_value = {
         "error": "Portal 2 is already registered in your library.",
         "already_added": True,

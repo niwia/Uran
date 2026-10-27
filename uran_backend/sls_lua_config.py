@@ -109,15 +109,17 @@ def _timestamp_to_sort_key(ts: int) -> int:
     if ts <= 0:
         return 0
     s = str(ts).strip()
-    if len(s) == 10 and any(s.endswith(str(y)) for y in range(2020, 2040)):
-        try:
-            minute = int(s[0:2])
-            hour = int(s[2:4])
-            day = int(s[4:6])
-            year = int(s[6:10])
-            return (year * 100000000) + (day * 1000000) + (hour * 10000) + minute
-        except ValueError:
-            pass
+    if len(s) in (9, 10):
+        s_padded = s.zfill(10)
+        if any(s_padded.endswith(str(y)) for y in range(2020, 2040)):
+            try:
+                minute = int(s_padded[0:2])
+                hour = int(s_padded[2:4])
+                day = int(s_padded[4:6])
+                year = int(s_padded[6:10])
+                return (year * 100000000) + (day * 1000000) + (hour * 10000) + minute
+            except ValueError:
+                pass
     elif len(s) == 14:  # Legacy YYYYMMDDHHMMSS format support
         try:
             return int(s[:12])

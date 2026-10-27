@@ -127,11 +127,13 @@ class GuardService:
             return {
                 "ok": False,
                 "reason": "no_sls_config",
+                "error_code": "504",
                 "error": "SLSsteam config.yaml not found. SLSsteam must be running to generate it.",
             }
 
         # Check SLS binary or active process
         sls_active = is_sls_active()
+        steam_running = is_steam_running()
         binary_found = False
         for b_cand in paths.sls_binary_candidates(home):
             if b_cand.is_file():
@@ -142,7 +144,16 @@ class GuardService:
             return {
                 "ok": False,
                 "reason": "sls_not_installed",
+                "error_code": "501",
                 "error": "SLSsteam.so was not found on your system. Please install SLSsteam.",
+            }
+
+        if steam_running and not sls_active:
+            return {
+                "ok": False,
+                "reason": "sls_inactive",
+                "error_code": "501",
+                "error": "Steam is running without SLSsteam. Please restart Steam with SLSsteam.",
             }
 
         # Ensure required section headers (Plugins: yes, AdditionalDepots, DecryptionKeys)
@@ -161,16 +172,9 @@ class GuardService:
             return {
                 "ok": False,
                 "reason": "plugins_disabled",
+                "error_code": "503",
                 "error": "SLSsteam 'Plugins: yes' toggle is disabled in config.yaml. Enable it to run operations.",
             }
-
-        # Auto-deploy SpaceBunny from R2 if no interceptor plugin exists
-        deployer = getattr(core, "plugin_deployer", None)
-        if deployer is not None:
-            try:
-                deployer.ensure_default_interceptor()
-            except Exception as e:
-                logger.warning("Auto-deploy interceptor check failed: %s", e)
 
         # Check presence of Lua plugin in plugins directory
         plugin_dir, lua_files = find_lua_plugins(home)
@@ -178,6 +182,7 @@ class GuardService:
             return {
                 "ok": False,
                 "reason": "no_lua_plugins",
+                "error_code": "502",
                 "error": "No Lua download plugin found in your SLSsteam plugins folder. Please add the required Lua plugin.",
             }
 
@@ -189,6 +194,105 @@ class GuardService:
             "plugin_dir": str(plugin_dir) if plugin_dir else "",
             "lua_plugins": lua_files,
             "has_hubcap_key": bool(ctx.hubcap_key.current()),
+        }
+
+    def check_hubcap_status(self) -> dict:
+        """Validate Hubcap API key, expiration, and quota, cached during daemon session."""
+        ctx = self.core.ctx
+        key = ctx.hubcap_key.current()
+        if not key:
+            return {
+                "ok": False,
+                "error_code": "401",
+                "error": "Hubcap API key is missing. Set your key to enable downloads.",
+            }
+
+        global _key_check_cache
+        if "_key_check_cache" not in globals():
+            globals()["_key_check_cache"] = {"key": "", "timestamp": 0.0, "result": {}}
+
+        cache = globals()["_key_check_cache"]
+        now = time.time()
+        if cache["key"] == key and (now - cache["timestamp"] < 300):
+            return cache["result"]
+
+        from .hubcap import validate_key
+
+        try:
+            ok, msg, detail_json = validate_key(key)
+        except Exception:
+            return {"ok": True, "error_code": None, "error": None}
+
+        cache["key"] = key
+        cache["timestamp"] = now
+
+        if not ok:
+            err_code = "401"
+            if "429" in msg or "rate limit" in msg.lower():
+                err_code = "429"
+            elif "not allowed" in msg.lower() or "quota" in msg.lower():
+                err_code = "402"
+            res = {"ok": False, "error_code": err_code, "error": msg}
+            cache["result"] = res
+            return res
+
+        import json
+
+        username = ""
+        daily_usage = None
+        daily_limit = None
+        if detail_json:
+            try:
+                data = json.loads(detail_json)
+                username = data.get("username") or ""
+                daily_usage = data.get("daily_usage")
+                daily_limit = data.get("daily_limit")
+                can = data.get("can_make_requests", True)
+                if not can or (isinstance(daily_usage, int) and isinstance(daily_limit, int) and daily_usage >= daily_limit):
+                    err_msg = f"Hubcap daily quota exhausted ({daily_usage}/{daily_limit})."
+                    res = {"ok": False, "error_code": "402", "error": err_msg}
+                    cache["result"] = res
+                    return res
+            except Exception:
+                pass
+
+        res = {
+            "ok": True,
+            "error_code": None,
+            "error": None,
+            "username": username,
+            "daily_usage": daily_usage,
+            "daily_limit": daily_limit,
+        }
+        cache["result"] = res
+        return res
+
+    def check_system_readiness(self) -> dict:
+        """Check all prerequisites (SLS environment + Hubcap status) and return readiness."""
+        sls = self.check_sls_environment()
+        if not sls.get("ok"):
+            return {
+                "ready": False,
+                "error_code": sls.get("error_code") or "504",
+                "error": sls.get("error"),
+                "reason": sls.get("reason"),
+            }
+
+        hub = self.check_hubcap_status()
+        if not hub.get("ok"):
+            return {
+                "ready": False,
+                "error_code": hub.get("error_code") or "401",
+                "error": hub.get("error"),
+                "reason": "hubcap_error",
+            }
+
+        return {
+            "ready": True,
+            "error_code": None,
+            "error": None,
+            "sls_active": sls.get("sls_active", True),
+            "username": hub.get("username", ""),
         }
 
     def is_app_added(self, app_id: str) -> bool:

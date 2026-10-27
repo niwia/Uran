@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Photar — Steam & SteamDB at0-m Bridge
 // @namespace    https://github.com/niwia/Uran
-// @version      1.2.0
+// @version      1.3.0
 // @description  1-click game injection into SLSsteam via at0-m for Steam Store & SteamDB
 // @author       niwia, ASSella Team
 // @match        *://store.steampowered.com/app/*
@@ -29,12 +29,30 @@
   var IN_LIBRARY_HOVER_BG = 'linear-gradient(-60deg, #15803d 5%, #4ade80 95%)';
   var IN_LIBRARY_TEXT = '#86efac';
 
-  var WARN_BG = 'rgba(234, 179, 8, 0.2)';
-  var WARN_HOVER_BG = 'linear-gradient(-60deg, #a16207 5%, #eab308 95%)';
-  var WARN_TEXT = '#fde047';
+  var ERROR_BG = 'rgba(239, 68, 68, 0.2)';
+  var ERROR_HOVER_BG = 'linear-gradient(-60deg, #991b1b 5%, #ef4444 95%)';
+  var ERROR_TEXT = '#ef4444';
 
   var DEFAULT_GUIDE_URL = 'https://assella.niwia.top/epsilon';
   var TOOLTIP_TEXT = 'Add game to at0-m plugin and download from your library!';
+
+  function isDlcPage() {
+    // 1. Steam Store DLC indicator
+    if (document.querySelector('.game_area_dlc_bubble, div.game_area_bubble.game_area_dlc_bubble')) {
+      return true;
+    }
+    // 2. SteamDB DLC indicator
+    var tables = document.querySelectorAll('.table-bordered tr');
+    for (var i = 0; i < tables.length; i++) {
+      var cells = tables[i].children;
+      if (cells.length >= 2 && cells[0].textContent.trim() === 'App Type') {
+        if (cells[1].textContent.trim().toUpperCase() === 'DLC') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   function getAppId() {
     var match = window.location.pathname.match(/\/app\/(\d+)/);
@@ -84,7 +102,8 @@
     var pollTimer = null;
     var pollCount = 0;
     var guideUrl = DEFAULT_GUIDE_URL;
-    var setupRequired = false;
+    var currentErrorCode = null;
+    var currentErrorMsg = null;
 
     function applyState(newState, labelOverride, titleOverride) {
       state = newState;
@@ -96,11 +115,15 @@
       if (!lbl) {
         if (state === 'READY') lbl = 'Add to at0-m';
         else if (state === 'IN_LIBRARY') lbl = 'In Library';
-        else if (state === 'SETUP_REQUIRED') lbl = 'Add to at0-m';
         else if (state === 'ADDING') lbl = 'Adding...';
-        else if (state === 'OFFLINE') lbl = 'Add to at0-m';
-        else if (state === 'ERROR') lbl = 'Failed';
+        else if (state === 'ERROR') lbl = currentErrorCode || '707';
         else lbl = 'Add to at0-m';
+      }
+
+      if (state === 'ERROR') {
+        tip = currentErrorMsg
+          ? '[Error ' + (currentErrorCode || '707') + '] ' + currentErrorMsg + ' — Click to view guide'
+          : '[Error ' + (currentErrorCode || '707') + '] Click for troubleshooting guide';
       }
 
       span.textContent = lbl;
@@ -112,11 +135,13 @@
         if (state === 'IN_LIBRARY') {
           btn.style.borderColor = '#4ade80';
           span.style.color = IN_LIBRARY_TEXT;
-        } else if (state === 'SETUP_REQUIRED') {
-          btn.style.borderColor = '#eab308';
-          span.style.color = WARN_TEXT;
+        } else if (state === 'ERROR') {
+          btn.style.borderColor = '#ef4444';
+          span.style.color = ERROR_TEXT;
         } else if (state === 'ADDING') {
           btn.style.opacity = '0.7';
+          btn.style.borderColor = '';
+          span.style.color = '';
         } else {
           btn.style.opacity = '1';
           btn.style.borderColor = '';
@@ -128,10 +153,10 @@
           btn.style.opacity = '1';
           btn.style.background = IN_LIBRARY_BG;
           span.style.color = IN_LIBRARY_TEXT;
-        } else if (state === 'SETUP_REQUIRED') {
+        } else if (state === 'ERROR') {
           btn.style.opacity = '1';
-          btn.style.background = WARN_BG;
-          span.style.color = WARN_TEXT;
+          btn.style.background = ERROR_BG;
+          span.style.color = ERROR_TEXT;
         } else if (state === 'ADDING') {
           btn.style.opacity = '0.7';
           btn.style.background = BASE_BLUE_BG;
@@ -148,13 +173,20 @@
       req('GET', '/ping')
         .then(function (pingRes) {
           if (!pingRes.ok || !pingRes.data || pingRes.data.service !== 'epsilon') {
-            applyState('OFFLINE', null, 'Bridge offline. Start Epsilon or Uran to enable.');
+            currentErrorCode = '505';
+            currentErrorMsg = 'Bridge offline. Start Epsilon or Uran to enable.';
+            guideUrl = 'https://assella.niwia.top/epsilon#err-505';
+            applyState('ERROR');
             return;
           }
           if (pingRes.data.guide_url) {
             guideUrl = pingRes.data.guide_url;
           }
-          setupRequired = pingRes.data.ready === false;
+          if (pingRes.data.ready === false || pingRes.data.error_code) {
+            currentErrorCode = pingRes.data.error_code || '504';
+            currentErrorMsg = pingRes.data.error || 'System prerequisite missing';
+            guideUrl = pingRes.data.guide_url || ('https://assella.niwia.top/epsilon#err-' + currentErrorCode);
+          }
           return req('GET', '/status?appid=' + appId);
         })
         .then(function (statusRes) {
@@ -165,17 +197,29 @@
             }
             if (statusRes.data.added) {
               applyState('IN_LIBRARY', 'In Library', 'Game is registered in your at0-m library. Click to refetch keys.');
-            } else if (statusRes.data.setup_required || setupRequired) {
-              applyState('SETUP_REQUIRED', 'Add to at0-m', 'Setup required: SLSsteam, plugins, or Hubcap key missing. Click to open guide.');
+            } else if (currentErrorCode) {
+              applyState('ERROR');
+            } else if (!statusRes.data.ready || statusRes.data.error_code) {
+              currentErrorCode = statusRes.data.error_code || '707';
+              currentErrorMsg = statusRes.data.error || 'Error occurred';
+              guideUrl = statusRes.data.guide_url || ('https://assella.niwia.top/epsilon#err-' + currentErrorCode);
+              applyState('ERROR');
             } else {
               applyState('READY');
             }
           } else {
-            applyState('READY');
+            if (currentErrorCode) {
+              applyState('ERROR');
+            } else {
+              applyState('READY');
+            }
           }
         })
         .catch(function () {
-          applyState('OFFLINE', null, 'Bridge offline. Start Epsilon or Uran to enable.');
+          currentErrorCode = '505';
+          currentErrorMsg = 'Bridge offline. Start Epsilon or Uran to enable.';
+          guideUrl = 'https://assella.niwia.top/epsilon#err-505';
+          applyState('ERROR');
         });
     }
 
@@ -197,8 +241,10 @@
               if (injectStatus && injectStatus.done) {
                 clearInterval(pollTimer);
                 if (injectStatus.error) {
-                  applyState('ERROR', 'Failed', injectStatus.error);
-                  setTimeout(checkStatus, 4000);
+                  currentErrorCode = res.data.error_code || '701';
+                  currentErrorMsg = injectStatus.error;
+                  guideUrl = res.data.guide_url || ('https://assella.niwia.top/epsilon#err-' + currentErrorCode);
+                  applyState('ERROR');
                 } else {
                   applyState('IN_LIBRARY', 'In Library');
                 }
@@ -218,14 +264,9 @@
 
       if (state === 'ADDING') return;
 
-      if (state === 'SETUP_REQUIRED') {
-        var openSetupGuide = confirm(
-          'Epsilon requires SLSsteam, plugins, and a Hubcap API key to inject games into your library.\n\n' +
-          'Would you like to open the setup guide now?'
-        );
-        if (openSetupGuide) {
-          window.open(guideUrl || DEFAULT_GUIDE_URL, '_blank');
-        }
+      if (state === 'ERROR') {
+        var errTarget = guideUrl || ('https://assella.niwia.top/epsilon#err-' + (currentErrorCode || '707'));
+        window.open(errTarget, '_blank');
         return;
       }
 
@@ -237,11 +278,21 @@
 
         applyState('ADDING', 'Refetching...');
         req('POST', '/refetch', { appid: appId })
-          .then(function () {
-            applyState('IN_LIBRARY', 'In Library');
+          .then(function (res) {
+            if (res.ok && res.data && res.data.ok === false) {
+              currentErrorCode = res.data.error_code || '707';
+              currentErrorMsg = res.data.error || 'Refetch failed';
+              guideUrl = res.data.guide_url || ('https://assella.niwia.top/epsilon#err-' + currentErrorCode);
+              applyState('ERROR');
+            } else {
+              applyState('IN_LIBRARY', 'In Library');
+            }
           })
           .catch(function () {
-            applyState('IN_LIBRARY', 'In Library');
+            currentErrorCode = '505';
+            currentErrorMsg = 'Bridge connection failed during refetch';
+            guideUrl = 'https://assella.niwia.top/epsilon#err-505';
+            applyState('ERROR');
           });
         return;
       }
@@ -250,8 +301,10 @@
       req('POST', '/inject', { appid: appId })
         .then(function (res) {
           if (!res.ok || !res.data) {
-            applyState('ERROR', 'Failed', 'Connection error');
-            setTimeout(checkStatus, 3000);
+            currentErrorCode = '505';
+            currentErrorMsg = 'Bridge offline or connection refused';
+            guideUrl = 'https://assella.niwia.top/epsilon#err-505';
+            applyState('ERROR');
             return;
           }
 
@@ -260,21 +313,11 @@
             return;
           }
 
-          if (res.data.setup_required || res.data.blocked) {
-            var openGuide = confirm(
-              (res.data.error || 'Prerequisites missing.') + '\n\n' +
-              'Would you like to open the setup guide to complete configuration?'
-            );
-            if (openGuide) {
-              window.open(res.data.guide_url || guideUrl || DEFAULT_GUIDE_URL, '_blank');
-            }
-            applyState('SETUP_REQUIRED', 'Add to at0-m', res.data.error);
-            return;
-          }
-
-          if (res.data.ok === false) {
-            applyState('ERROR', 'Failed', res.data.error || 'Injection failed');
-            setTimeout(checkStatus, 4000);
+          if (res.data.ok === false || res.data.error_code) {
+            currentErrorCode = res.data.error_code || '707';
+            currentErrorMsg = res.data.error || 'Injection failed';
+            guideUrl = res.data.guide_url || ('https://assella.niwia.top/epsilon#err-' + currentErrorCode);
+            applyState('ERROR');
             return;
           }
 
@@ -282,8 +325,10 @@
           startPolling();
         })
         .catch(function (err) {
-          applyState('ERROR', 'Failed', err.message || 'Injection failed');
-          setTimeout(checkStatus, 3000);
+          currentErrorCode = '505';
+          currentErrorMsg = err.message || 'Bridge offline';
+          guideUrl = 'https://assella.niwia.top/epsilon#err-505';
+          applyState('ERROR');
         });
     }
 
@@ -299,6 +344,26 @@
       span = document.createElement('span');
       span.textContent = 'Add to at0-m';
       btn.appendChild(span);
+
+      btn.addEventListener('mouseenter', function () {
+        if (state === 'ERROR') {
+          btn.style.backgroundColor = '#ef4444';
+          span.style.color = '#ffffff';
+        } else if (state === 'IN_LIBRARY') {
+          btn.style.backgroundColor = '#4ade80';
+          span.style.color = '#000000';
+        }
+      });
+
+      btn.addEventListener('mouseleave', function () {
+        if (state === 'ERROR') {
+          btn.style.backgroundColor = '';
+          span.style.color = ERROR_TEXT;
+        } else if (state === 'IN_LIBRARY') {
+          btn.style.backgroundColor = '';
+          span.style.color = IN_LIBRARY_TEXT;
+        }
+      });
 
       btn.addEventListener('click', handleClick);
 
@@ -362,8 +427,8 @@
       if (state === 'IN_LIBRARY') {
         btn.style.background = IN_LIBRARY_HOVER_BG;
         span.style.color = '#ffffff';
-      } else if (state === 'SETUP_REQUIRED') {
-        btn.style.background = WARN_HOVER_BG;
+      } else if (state === 'ERROR') {
+        btn.style.background = ERROR_HOVER_BG;
         span.style.color = '#ffffff';
       } else {
         btn.style.background = BASE_BLUE_HOVER_BG;
@@ -376,9 +441,9 @@
       if (state === 'IN_LIBRARY') {
         btn.style.background = IN_LIBRARY_BG;
         span.style.color = IN_LIBRARY_TEXT;
-      } else if (state === 'SETUP_REQUIRED') {
-        btn.style.background = WARN_BG;
-        span.style.color = WARN_TEXT;
+      } else if (state === 'ERROR') {
+        btn.style.background = ERROR_BG;
+        span.style.color = ERROR_TEXT;
       } else {
         btn.style.background = BASE_BLUE_BG;
         span.style.color = TEXT_COLOR;
@@ -437,6 +502,10 @@
   }
 
   function mount() {
+    if (isDlcPage()) {
+      return;
+    }
+
     var appId = getAppId();
     if (!appId) return;
 
@@ -459,7 +528,7 @@
       if (existingDb) existingDb.remove();
       setTimeout(mount, 500);
     } else {
-      if (!document.getElementById('at0m-store-btn') && !document.getElementById('at0m-steamdb-btn')) {
+      if (!isDlcPage() && !document.getElementById('at0m-store-btn') && !document.getElementById('at0m-steamdb-btn')) {
         mount();
       }
     }
@@ -467,3 +536,4 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 })();
+

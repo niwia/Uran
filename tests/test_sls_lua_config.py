@@ -33,7 +33,7 @@ def main():
     # 1. Validation & Timestamp generation
     ts = generate_hubcap_timestamp()
     check("timestamp is integer", isinstance(ts, int))
-    check("timestamp is 10 digits", len(str(ts)) == 10)
+    check("timestamp is 9 or 10 digits", len(str(ts)) in (9, 10))
     check("timestamp format mmhhddyyyy ends with current year", str(ts).endswith("2026") or str(ts).endswith("2025") or str(ts).endswith("2024") or str(ts).endswith("2027"))
 
     # 2. Chronological sort key comparison
