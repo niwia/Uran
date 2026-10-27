@@ -86,16 +86,29 @@ assella-decky/
 
 ## 4. Setup & Installation Guide
 
-### Option 1: Standalone Linux Desktop & Steam Deck Desktop Mode
+### Option 1: 1-Line Remote Installer (Recommended for Linux Desktop & Steam Deck)
 
-To install Epsilon as a socket-activated systemd user service:
+Run the following command in terminal to automatically download the backend from GitHub and set up Epsilon:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash
+```
+
+To install into a custom directory (e.g. `/opt/epsilon` or `~/my_epsilon`):
+```bash
+curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash -s -- ~/my_epsilon
+```
+
+### Option 2: Local Installation from Cloned Repository
+
+If you already cloned the repository:
 
 ```bash
 cd /path/to/assella-decky/epsilon
 ./install.sh
 ```
 
-The script automatically:
+The installer automatically:
 1. Detects your Python 3 binary and project paths.
 2. Copies `epsilon.socket` and generates `epsilon.service` into `~/.config/systemd/user/`.
 3. Reloads `systemctl --user daemon-reload`.
@@ -158,11 +171,15 @@ python3 epsilon/daemon.py --port 1952
 
 ## 6. REST API Specification
 
-Epsilon strictly binds to `127.0.0.1:1952`. It enforces numeric AppID sanitization to prevent injection vulnerabilities.
+Epsilon strictly binds to `127.0.0.1:1952` and implements strict security controls:
+- **Host Header Validation**: Rejects requests whose `Host` is not `127.0.0.1:1952` or `localhost:1952` with `403 Forbidden` (defeats DNS rebinding attacks).
+- **Origin Whitelist**: Wildcard CORS is dropped. Only trusted origins (`store.steampowered.com`, `steamdb.info`) or direct local clients are accepted.
+- **Async Execution**: Embedded loopback offloads all requests to `asyncio.to_thread` so Decky GamepadUI never stutters.
+- **Dynamic Versioning**: Single source of truth read directly from `plugin.json`.
 
 ### `OPTIONS *`
-- **Purpose**: CORS preflight for browser `fetch` and `XMLHttpRequest`.
-- **Response**: `200 OK` with `Access-Control-Allow-Origin: *`.
+- **Purpose**: CORS preflight for browser requests from trusted origins.
+- **Response**: `200 OK` with `Access-Control-Allow-Origin: <origin>` when matching the whitelist.
 
 ### `GET /ping`
 - **Purpose**: Health check & capability probe.

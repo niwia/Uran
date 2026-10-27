@@ -31,9 +31,14 @@ mkdir -p "$TARGET_CONFIG_DIR"
 echo "[+] Installing epsilon.socket to $SYSTEMD_USER_DIR/epsilon.socket"
 cp "$SCRIPT_DIR/epsilon.socket" "$SYSTEMD_USER_DIR/epsilon.socket"
 
-# Generate tailored epsilon.service with exact paths
+# Generate tailored epsilon.service with exact paths from template
 echo "[+] Generating $SYSTEMD_USER_DIR/epsilon.service"
-cat <<EOF > "$SYSTEMD_USER_DIR/epsilon.service"
+if [ -f "$SCRIPT_DIR/epsilon.service.in" ]; then
+    sed -e "s|@PYTHON_BIN@|$PYTHON_BIN|g" \
+        -e "s|@DAEMON_SCRIPT@|$DAEMON_SCRIPT|g" \
+        "$SCRIPT_DIR/epsilon.service.in" > "$SYSTEMD_USER_DIR/epsilon.service"
+else
+    cat <<EOF > "$SYSTEMD_USER_DIR/epsilon.service"
 [Unit]
 Description=Epsilon Bridge Service (Epsilon - at0-m and uran companion)
 Documentation=https://github.com/niwia/Uran
@@ -52,6 +57,7 @@ StandardError=journal
 [Install]
 WantedBy=default.target
 EOF
+fi
 
 echo "[+] Reloading systemd user daemon..."
 systemctl --user daemon-reload

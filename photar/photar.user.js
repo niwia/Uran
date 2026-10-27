@@ -40,7 +40,10 @@
       GM_xmlhttpRequest({
         method: method,
         url: EPSILON_URL + path,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Photar-Client': '1'
+        },
         data: body ? JSON.stringify(body) : null,
         timeout: 8000,
         onload: function (res) {

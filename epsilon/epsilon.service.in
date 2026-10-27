@@ -6,7 +6,7 @@ Requires=epsilon.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/.config/assella-decky/epsilon/daemon.py --socket-activated --idle-timeout 120
+ExecStart=@PYTHON_BIN@ @DAEMON_SCRIPT@ --socket-activated --idle-timeout 120
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10

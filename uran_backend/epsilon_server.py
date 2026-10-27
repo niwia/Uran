@@ -2,7 +2,7 @@
 
 Exposes a lightweight, secure REST API on 127.0.0.1:1952 allowing the Photar
 browser userscript to trigger game injections, status checks, and config syncs
-directly via the Uran 0.6.3 backend engine.
+directly via the Uran backend engine.
 """
 
 import asyncio
@@ -20,6 +20,18 @@ logger = logging.getLogger("Epsilon")
 DEFAULT_PORT = 1952
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_IDLE_TIMEOUT = 120  # Exit after 120 seconds of inactivity under systemd socket
+
+ALLOWED_HOSTS = {
+    f"127.0.0.1:{DEFAULT_PORT}",
+    f"localhost:{DEFAULT_PORT}",
+    "127.0.0.1",
+    "localhost",
+}
+
+ALLOWED_ORIGINS = {
+    "https://store.steampowered.com",
+    "https://steamdb.info",
+}
 
 
 def is_port_in_use(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> bool:
@@ -46,15 +58,42 @@ def get_systemd_listen_fd() -> socket.socket | None:
     return None
 
 
-def dispatch_request(services, method: str, path: str, body_bytes: bytes, headers: dict) -> tuple[int, dict]:
-    """Pure request dispatcher shared by both standalone and async embedded servers."""
+def dispatch_request(
+    services, method: str, path: str, body_bytes: bytes, headers: dict
+) -> tuple[int, dict, dict]:
+    """Pure request dispatcher shared by both standalone and async embedded servers.
+
+    Returns:
+        (status_code, response_data, response_headers)
+    """
+    # Normalize headers to lowercase
+    norm_headers = {str(k).lower(): str(v).strip() for k, v in headers.items()}
+    host = norm_headers.get("host", "")
+    origin = norm_headers.get("origin", "")
+
+    # Security Check 1: Host header validation (Defeats DNS-rebinding attacks)
+    if host and host not in ALLOWED_HOSTS:
+        return 403, {"ok": False, "error": "Forbidden: invalid Host header"}, {}
+
+    # Security Check 2: Origin header validation (Defeats arbitrary web page cross-origin requests)
+    if origin and origin not in ALLOWED_ORIGINS:
+        return 403, {"ok": False, "error": "Forbidden: unauthorized Origin"}, {}
+
+    # Build safe CORS headers if caller provided a recognized Origin
+    resp_headers = {}
+    if origin in ALLOWED_ORIGINS:
+        resp_headers["Access-Control-Allow-Origin"] = origin
+        resp_headers["Vary"] = "Origin"
+        resp_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp_headers["Access-Control-Allow-Headers"] = "Content-Type, X-Photar-Client"
+
     parsed = urllib.parse.urlparse(path)
     route = parsed.path.rstrip("/") or "/"
     query = urllib.parse.parse_qs(parsed.query)
 
     # 1. CORS Preflight
     if method == "OPTIONS":
-        return 200, {"ok": True}
+        return 200, {"ok": True}, resp_headers
 
     # 2. Handshake / Health Ping
     if method == "GET" and route in ("/ping", "/health"):
@@ -63,38 +102,52 @@ def dispatch_request(services, method: str, path: str, body_bytes: bytes, header
             sls_active = bool(services.guards.check_sls_environment().get("ok"))
         except Exception:
             pass
-        return 200, {
-            "ok": True,
-            "service": "epsilon",
-            "version": "0.6.3",
-            "engine": "uran_backend",
-            "sls_active": sls_active,
-            "has_hubcap_key": bool(services.ctx.hubcap_key.current()),
-        }
+
+        from .updates import plugin_version
+
+        version = plugin_version(services.ctx)
+
+        return (
+            200,
+            {
+                "ok": True,
+                "service": "epsilon",
+                "version": version,
+                "engine": "uran_backend",
+                "sls_active": sls_active,
+                "has_hubcap_key": bool(services.ctx.hubcap_key.current()),
+            },
+            resp_headers,
+        )
 
     # 3. Game Status Check
     if method == "GET" and route == "/status":
         app_id_list = query.get("appid") or query.get("app_id") or []
         if not app_id_list:
-            return 400, {"ok": False, "error": "Missing 'appid' query parameter"}
+            return 400, {"ok": False, "error": "Missing 'appid' query parameter"}, resp_headers
         raw_id = str(app_id_list[0]).strip()
         from .sls_config import sanitize_id
+
         aid = sanitize_id(raw_id)
         if not aid:
-            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}
+            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
         added = bool(services.guards.is_app_added(aid))
         inject_status = services.injector.status(aid)
         details = services.steam.app_details(aid) or {}
         name = details.get("name", f"App {aid}")
 
-        return 200, {
-            "ok": True,
-            "appid": aid,
-            "name": name,
-            "added": added,
-            "inject_status": inject_status,
-        }
+        return (
+            200,
+            {
+                "ok": True,
+                "appid": aid,
+                "name": name,
+                "added": added,
+                "inject_status": inject_status,
+            },
+            resp_headers,
+        )
 
     # Helper for parsing JSON payloads
     def _parse_json_payload():
@@ -109,58 +162,72 @@ def dispatch_request(services, method: str, path: str, body_bytes: bytes, header
     if method == "POST" and route == "/inject":
         payload, err = _parse_json_payload()
         if err:
-            return 400, {"ok": False, "error": err}
+            return 400, {"ok": False, "error": err}, resp_headers
         raw_id = str(payload.get("appid") or payload.get("app_id") or "").strip()
         from .sls_config import sanitize_id
+
         aid = sanitize_id(raw_id)
         if not aid:
-            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}
+            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
-        # Trigger injection via Uran 0.6.3 pipeline
         result = services.injector.inject(aid)
         if result.get("error"):
-            return 200, {
-                "ok": False,
-                "error": result["error"],
-                "already_added": result.get("already_added", False),
-                "blocked": result.get("blocked"),
-            }
-        return 200, {
-            "ok": True,
-            "name": result.get("name"),
-            "depots": result.get("depots", []),
-            "fetching": result.get("fetching", True),
-        }
+            # Return 400 for errors, unless it's already added which is a normal check
+            status_code = 200 if result.get("already_added") else 400
+            return (
+                status_code,
+                {
+                    "ok": False,
+                    "error": result["error"],
+                    "already_added": result.get("already_added", False),
+                    "blocked": result.get("blocked"),
+                },
+                resp_headers,
+            )
+        return (
+            200,
+            {
+                "ok": True,
+                "name": result.get("name"),
+                "depots": result.get("depots", []),
+                "fetching": result.get("fetching", True),
+            },
+            resp_headers,
+        )
 
     # 5. Refresh Game Config
     if method == "POST" and route == "/refresh":
         payload, err = _parse_json_payload()
         if err:
-            return 400, {"ok": False, "error": err}
+            return 400, {"ok": False, "error": err}, resp_headers
         raw_id = str(payload.get("appid") or payload.get("app_id") or "").strip()
         from .sls_config import sanitize_id
+
         aid = sanitize_id(raw_id)
         if not aid:
-            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}
+            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
         result = services.injector.refresh(aid)
-        return 200, {"ok": result.get("ok", True), "result": result}
+        code = 200 if result.get("ok", True) else 400
+        return code, {"ok": result.get("ok", True), "result": result}, resp_headers
 
     # 6. Refetch Fresh Hubcap Bundle
     if method == "POST" and route == "/refetch":
         payload, err = _parse_json_payload()
         if err:
-            return 400, {"ok": False, "error": err}
+            return 400, {"ok": False, "error": err}, resp_headers
         raw_id = str(payload.get("appid") or payload.get("app_id") or "").strip()
         from .sls_config import sanitize_id
+
         aid = sanitize_id(raw_id)
         if not aid:
-            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}
+            return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
         result = services.injector.refetch_game(aid)
-        return 200, {"ok": result.get("ok", False), "result": result}
+        code = 200 if result.get("ok", False) else 400
+        return code, {"ok": result.get("ok", False), "result": result}, resp_headers
 
-    return 404, {"ok": False, "error": f"Unknown route: {method} {route}"}
+    return 404, {"ok": False, "error": f"Unknown route: {method} {route}"}, resp_headers
 
 
 class StandaloneHTTPHandler(BaseHTTPRequestHandler):
@@ -173,33 +240,39 @@ class StandaloneHTTPHandler(BaseHTTPRequestHandler):
         if callable(self.on_activity):
             self.on_activity()
 
-    def _send_response_json(self, status_code: int, data: dict):
+    def _send_response_json(self, status_code: int, data: dict, extra_headers: dict | None = None):
         body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Origin, Accept, Authorization")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self._notify_activity()
-        code, resp = dispatch_request(self.services, "OPTIONS", self.path, b"", dict(self.headers))
-        self._send_response_json(code, resp)
+        code, resp, headers = dispatch_request(
+            self.services, "OPTIONS", self.path, b"", dict(self.headers)
+        )
+        self._send_response_json(code, resp, headers)
 
     def do_GET(self):
         self._notify_activity()
-        code, resp = dispatch_request(self.services, "GET", self.path, b"", dict(self.headers))
-        self._send_response_json(code, resp)
+        code, resp, headers = dispatch_request(
+            self.services, "GET", self.path, b"", dict(self.headers)
+        )
+        self._send_response_json(code, resp, headers)
 
     def do_POST(self):
         self._notify_activity()
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length > 0 else b""
-        code, resp = dispatch_request(self.services, "POST", self.path, body, dict(self.headers))
-        self._send_response_json(code, resp)
+        code, resp, headers = dispatch_request(
+            self.services, "POST", self.path, body, dict(self.headers)
+        )
+        self._send_response_json(code, resp, headers)
 
     def log_message(self, fmt, *args):
         # Clean log format to avoid polluting systemd journals
@@ -235,13 +308,16 @@ class AsyncEpsilonServer:
             return False
 
         try:
-            self.server = await asyncio.start_server(
-                self._handle_client, self.host, self.port
-            )
+            self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
             logger.info("Epsilon embedded loopback running on %s:%s", self.host, self.port)
             return True
         except Exception as exc:
-            logger.warning("Failed starting Epsilon embedded loopback on %s:%s: %s", self.host, self.port, exc)
+            logger.warning(
+                "Failed starting Epsilon embedded loopback on %s:%s: %s",
+                self.host,
+                self.port,
+                exc,
+            )
             return False
 
     async def stop(self):
@@ -280,15 +356,19 @@ class AsyncEpsilonServer:
             if content_len > 0:
                 body = await reader.readexactly(content_len)
 
-            status_code, data = dispatch_request(self.services, method, path, body, headers)
+            # Offload synchronous/network logic to a worker thread so Decky UI never freezes
+            status_code, data, extra_headers = await asyncio.to_thread(
+                dispatch_request, self.services, method, path, body, headers
+            )
             body_out = json.dumps(data, indent=2).encode("utf-8")
 
-            writer.write(f"HTTP/1.1 {status_code} OK\r\n".encode("utf-8"))
+            status_text = "OK" if status_code == 200 else ("Forbidden" if status_code == 403 else "Error")
+            writer.write(f"HTTP/1.1 {status_code} {status_text}\r\n".encode("utf-8"))
             writer.write(b"Content-Type: application/json; charset=utf-8\r\n")
             writer.write(f"Content-Length: {len(body_out)}\r\n".encode("utf-8"))
-            writer.write(b"Access-Control-Allow-Origin: *\r\n")
-            writer.write(b"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
-            writer.write(b"Access-Control-Allow-Headers: Content-Type, Origin, Accept, Authorization\r\n")
+            if extra_headers:
+                for k, v in extra_headers.items():
+                    writer.write(f"{k}: {v}\r\n".encode("utf-8"))
             writer.write(b"Connection: close\r\n\r\n")
             writer.write(body_out)
             await writer.drain()
