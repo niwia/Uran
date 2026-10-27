@@ -1,0 +1,17 @@
+[Unit]
+Description=Epsilon Bridge Service (Epsilon - at0-m and uran companion)
+Documentation=https://github.com/niwia/Uran
+After=network.target epsilon.socket
+Requires=epsilon.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.config/assella-decky/epsilon/daemon.py --socket-activated --idle-timeout 120
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

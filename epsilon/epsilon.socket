@@ -1,0 +1,12 @@
+[Unit]
+Description=Epsilon Bridge Socket (Epsilon - at0-m and uran companion)
+Documentation=https://github.com/niwia/Uran
+PartOf=epsilon.service
+
+[Socket]
+ListenStream=127.0.0.1:1952
+Accept=no
+KeepAlive=true
+
+[Install]
+WantedBy=sockets.target

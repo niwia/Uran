@@ -85,7 +85,19 @@ class Plugin:
             except Exception as exc:
                 logger.warning("Plugin deployer initialization check failed: %s", exc)
 
+        # Start Epsilon embedded loopback if port 1952 is not already handled by systemd/external
+        try:
+            from .epsilon_server import ensure_loopback_running
+            self._epsilon_server = await ensure_loopback_running(self.s)
+        except Exception as exc:
+            logger.warning("Epsilon embedded loopback initialization failed: %s", exc)
+
     async def _unload(self) -> None:
+        if getattr(self, "_epsilon_server", None):
+            try:
+                await self._epsilon_server.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Epsilon server cleanup on unload: %s", exc)
         try:
             self.s.keycare.stop()
         except Exception as exc:  # noqa: BLE001
