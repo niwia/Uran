@@ -98,14 +98,22 @@ def dispatch_request(
     # 2. Handshake / Health Ping
     if method == "GET" and route in ("/ping", "/health"):
         sls_active = False
+        sls_installed = False
+        has_plugins = False
+        has_hubcap_key = False
         try:
-            sls_active = bool(services.guards.check_sls_environment().get("ok"))
+            gate = services.guards.check_sls_environment()
+            sls_active = bool(gate.get("sls_active") or gate.get("ok"))
+            sls_installed = gate.get("reason") not in ("no_sls_config", "sls_not_installed")
+            has_plugins = bool(gate.get("lua_plugins"))
+            has_hubcap_key = bool(gate.get("has_hubcap_key") or services.ctx.hubcap_key.current())
         except Exception:
             pass
 
         from .updates import plugin_version
 
         version = plugin_version(services.ctx)
+        ready = sls_installed and has_plugins and has_hubcap_key
 
         return (
             200,
@@ -115,7 +123,11 @@ def dispatch_request(
                 "version": version,
                 "engine": "uran_backend",
                 "sls_active": sls_active,
-                "has_hubcap_key": bool(services.ctx.hubcap_key.current()),
+                "sls_installed": sls_installed,
+                "has_plugins": has_plugins,
+                "has_hubcap_key": has_hubcap_key,
+                "ready": ready,
+                "guide_url": "https://assella.niwia.top/epsilon",
             },
             resp_headers,
         )
@@ -132,6 +144,17 @@ def dispatch_request(
         if not aid:
             return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
+        has_hubcap_key = bool(services.ctx.hubcap_key.current())
+        sls_installed = False
+        has_plugins = False
+        try:
+            gate = services.guards.check_sls_environment()
+            sls_installed = gate.get("reason") not in ("no_sls_config", "sls_not_installed")
+            has_plugins = bool(gate.get("lua_plugins"))
+        except Exception:
+            pass
+
+        ready = sls_installed and has_plugins and has_hubcap_key
         added = bool(services.guards.is_app_added(aid))
         inject_status = services.injector.status(aid)
         details = services.steam.app_details(aid) or {}
@@ -145,6 +168,9 @@ def dispatch_request(
                 "name": name,
                 "added": added,
                 "inject_status": inject_status,
+                "ready": ready,
+                "setup_required": not ready,
+                "guide_url": "https://assella.niwia.top/epsilon",
             },
             resp_headers,
         )
@@ -174,14 +200,17 @@ def dispatch_request(
         if result.get("error"):
             # Return 400 for errors, unless it's already added which is a normal check
             status_code = 200 if result.get("already_added") else 400
+            resp_body = {
+                "ok": False,
+                "error": result["error"],
+                "already_added": result.get("already_added", False),
+                "blocked": result.get("blocked"),
+            }
+            if result.get("blocked"):
+                resp_body["guide_url"] = "https://assella.niwia.top/epsilon"
             return (
                 status_code,
-                {
-                    "ok": False,
-                    "error": result["error"],
-                    "already_added": result.get("already_added", False),
-                    "blocked": result.get("blocked"),
-                },
+                resp_body,
                 resp_headers,
             )
         return (

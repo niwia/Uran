@@ -24,6 +24,12 @@ if [ ! -f "$DAEMON_SCRIPT" ]; then
 fi
 
 chmod +x "$DAEMON_SCRIPT"
+if [ -f "$SCRIPT_DIR/check_prereqs.py" ]; then
+    chmod +x "$SCRIPT_DIR/check_prereqs.py"
+    "$PYTHON_BIN" "$SCRIPT_DIR/check_prereqs.py" || true
+    echo ""
+fi
+
 mkdir -p "$SYSTEMD_USER_DIR"
 mkdir -p "$TARGET_CONFIG_DIR"
 

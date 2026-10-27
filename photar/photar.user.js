@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Photar — Steam & SteamDB at0-m Bridge
 // @namespace    https://github.com/niwia/Uran
-// @version      1.1.0
+// @version      1.2.0
 // @description  1-click game injection into SLSsteam via at0-m for Steam Store & SteamDB
 // @author       niwia, ASSella Team
 // @match        *://store.steampowered.com/app/*
@@ -19,9 +19,19 @@
   var MAX_POLLS = 40;
 
   var BASE_BLUE_BG = 'rgba(103, 193, 245, 0.2)';
-  var BASE_BLUE_HOVER_BG = 'rgba(103, 193, 245, 0.4)';
+  var BASE_BLUE_HOVER_BG = 'linear-gradient(-60deg, #417a9b 5%, #67c1f5 95%)';
   var TEXT_COLOR = '#67c1f5';
   var TEXT_HOVER_COLOR = '#ffffff';
+
+  var IN_LIBRARY_BG = 'rgba(74, 222, 128, 0.2)';
+  var IN_LIBRARY_HOVER_BG = 'linear-gradient(-60deg, #15803d 5%, #4ade80 95%)';
+  var IN_LIBRARY_TEXT = '#86efac';
+
+  var WARN_BG = 'rgba(234, 179, 8, 0.2)';
+  var WARN_HOVER_BG = 'linear-gradient(-60deg, #a16207 5%, #eab308 95%)';
+  var WARN_TEXT = '#fde047';
+
+  var DEFAULT_GUIDE_URL = 'https://assella.niwia.top/epsilon';
   var TOOLTIP_TEXT = 'Add game to at0-m plugin and download from your library!';
 
   function getAppId() {
@@ -71,6 +81,8 @@
     var span = null;
     var pollTimer = null;
     var pollCount = 0;
+    var guideUrl = DEFAULT_GUIDE_URL;
+    var setupRequired = false;
 
     function applyState(newState, labelOverride, titleOverride) {
       state = newState;
@@ -82,6 +94,7 @@
       if (!lbl) {
         if (state === 'READY') lbl = 'Add to at0-m';
         else if (state === 'IN_LIBRARY') lbl = 'In Library';
+        else if (state === 'SETUP_REQUIRED') lbl = 'Add to at0-m';
         else if (state === 'ADDING') lbl = 'Adding...';
         else if (state === 'OFFLINE') lbl = 'Add to at0-m';
         else if (state === 'ERROR') lbl = 'Failed';
@@ -96,7 +109,10 @@
         btn.setAttribute('aria-label', tip);
         if (state === 'IN_LIBRARY') {
           btn.style.borderColor = '#4ade80';
-          span.style.color = '#86efac';
+          span.style.color = IN_LIBRARY_TEXT;
+        } else if (state === 'SETUP_REQUIRED') {
+          btn.style.borderColor = '#eab308';
+          span.style.color = WARN_TEXT;
         } else if (state === 'ADDING') {
           btn.style.opacity = '0.7';
         } else {
@@ -107,8 +123,13 @@
       } else {
         btn.setAttribute('data-tooltip-text', tip);
         if (state === 'IN_LIBRARY') {
-          btn.style.background = 'rgba(74, 222, 128, 0.2)';
-          span.style.color = '#86efac';
+          btn.style.opacity = '1';
+          btn.style.background = IN_LIBRARY_BG;
+          span.style.color = IN_LIBRARY_TEXT;
+        } else if (state === 'SETUP_REQUIRED') {
+          btn.style.opacity = '1';
+          btn.style.background = WARN_BG;
+          span.style.color = WARN_TEXT;
         } else if (state === 'ADDING') {
           btn.style.opacity = '0.7';
           btn.style.background = BASE_BLUE_BG;
@@ -128,12 +149,25 @@
             applyState('OFFLINE', null, 'Bridge offline. Start Epsilon or Uran to enable.');
             return;
           }
+          if (pingRes.data.guide_url) {
+            guideUrl = pingRes.data.guide_url;
+          }
+          setupRequired = pingRes.data.ready === false;
           return req('GET', '/status?appid=' + appId);
         })
         .then(function (statusRes) {
           if (!statusRes) return;
-          if (statusRes.ok && statusRes.data && statusRes.data.added) {
-            applyState('IN_LIBRARY', 'In Library', 'Game is registered in your at0-m library.');
+          if (statusRes.ok && statusRes.data) {
+            if (statusRes.data.guide_url) {
+              guideUrl = statusRes.data.guide_url;
+            }
+            if (statusRes.data.added) {
+              applyState('IN_LIBRARY', 'In Library', 'Game is registered in your at0-m library. Click to refetch keys.');
+            } else if (statusRes.data.setup_required || setupRequired) {
+              applyState('SETUP_REQUIRED', 'Add to at0-m', 'Setup required: SLSsteam, plugins, or Hubcap key missing. Click to open guide.');
+            } else {
+              applyState('READY');
+            }
           } else {
             applyState('READY');
           }
@@ -182,9 +216,20 @@
 
       if (state === 'ADDING') return;
 
+      if (state === 'SETUP_REQUIRED') {
+        var openSetupGuide = confirm(
+          'Epsilon requires SLSsteam, plugins, and a Hubcap API key to inject games into your library.\n\n' +
+          'Would you like to open the setup guide now?'
+        );
+        if (openSetupGuide) {
+          window.open(guideUrl || DEFAULT_GUIDE_URL, '_blank');
+        }
+        return;
+      }
+
       if (state === 'IN_LIBRARY') {
         var confirmed = confirm(
-          'App ' + appId + ' is already in your at0-m library.\n\nDo you want to re-project configuration and fetch fresh decryption keys?'
+          'App ' + appId + ' is already registered in your library.\n\nDo you want to re-project configuration and fetch fresh decryption keys?'
         );
         if (!confirmed) return;
 
@@ -210,6 +255,18 @@
 
           if (res.data.already_added) {
             applyState('IN_LIBRARY', 'In Library');
+            return;
+          }
+
+          if (res.data.setup_required || res.data.blocked) {
+            var openGuide = confirm(
+              (res.data.error || 'Prerequisites missing.') + '\n\n' +
+              'Would you like to open the setup guide to complete configuration?'
+            );
+            if (openGuide) {
+              window.open(res.data.guide_url || guideUrl || DEFAULT_GUIDE_URL, '_blank');
+            }
+            applyState('SETUP_REQUIRED', 'Add to at0-m', res.data.error);
             return;
           }
 
@@ -243,7 +300,6 @@
 
       btn.addEventListener('click', handleClick);
 
-      // Injection logic matching CS.RIN.RU Enhanced
       var siteSelectors = {
         steamdb: function () {
           var appLinks = document.querySelectorAll('.app-links');
@@ -269,21 +325,19 @@
       return;
     }
 
-    // 2. Create Element for Steam Store (matches Uran StorePatch)
+    // 2. Create Element for Steam Store (matches Steam native button layout)
     btn = document.createElement('a');
     btn.id = 'at0m-store-btn';
     btn.className = 'btnv6_blue_hoverfade btn_medium queue_btn_inactive';
     btn.href = 'javascript:void(0);';
     btn.style.cssText =
-      'display:inline-block;' +
+      'display:block;' +
       'background:' + BASE_BLUE_BG + ';' +
       'border:none;' +
       'border-radius:2px;' +
       'padding:1px;' +
       'cursor:pointer;' +
       'text-decoration:none;' +
-      'margin-right:4px;' +
-      'vertical-align:middle;' +
       'transition:all 0.2s ease;';
 
     span = document.createElement('span');
@@ -291,8 +345,7 @@
       'display:block;' +
       'background:transparent;' +
       'color:' + TEXT_COLOR + ';' +
-      'border-radius:2px;' +
-      'font-family:"Motiva Sans", Arial, sans-serif;' +
+      'font-family:"Motiva Sans", Arial, Helvetica, sans-serif;' +
       'font-size:15px;' +
       'line-height:30px;' +
       'padding:0 15px;' +
@@ -303,16 +356,30 @@
     btn.appendChild(span);
 
     btn.addEventListener('mouseenter', function () {
-      if (state !== 'ADDING') {
-        btn.style.background = state === 'IN_LIBRARY' ? 'rgba(74, 222, 128, 0.35)' : BASE_BLUE_HOVER_BG;
-        span.style.color = state === 'IN_LIBRARY' ? '#ffffff' : TEXT_HOVER_COLOR;
+      if (state === 'ADDING') return;
+      if (state === 'IN_LIBRARY') {
+        btn.style.background = IN_LIBRARY_HOVER_BG;
+        span.style.color = '#ffffff';
+      } else if (state === 'SETUP_REQUIRED') {
+        btn.style.background = WARN_HOVER_BG;
+        span.style.color = '#ffffff';
+      } else {
+        btn.style.background = BASE_BLUE_HOVER_BG;
+        span.style.color = TEXT_HOVER_COLOR;
       }
     });
 
     btn.addEventListener('mouseleave', function () {
-      if (state !== 'ADDING') {
-        btn.style.background = state === 'IN_LIBRARY' ? 'rgba(74, 222, 128, 0.2)' : BASE_BLUE_BG;
-        span.style.color = state === 'IN_LIBRARY' ? '#86efac' : TEXT_COLOR;
+      if (state === 'ADDING') return;
+      if (state === 'IN_LIBRARY') {
+        btn.style.background = IN_LIBRARY_BG;
+        span.style.color = IN_LIBRARY_TEXT;
+      } else if (state === 'SETUP_REQUIRED') {
+        btn.style.background = WARN_BG;
+        span.style.color = WARN_TEXT;
+      } else {
+        btn.style.background = BASE_BLUE_BG;
+        span.style.color = TEXT_COLOR;
       }
     });
 
@@ -320,22 +387,49 @@
 
     var wrap = document.createElement('div');
     wrap.id = 'at0m-store-wrap';
-    wrap.style.cssText = 'display:inline-block; margin:4px 0; vertical-align:middle;';
     wrap.appendChild(btn);
 
     // Target injection positions on Steam Store
-    var wishlistArea =
-      document.querySelector('#add_to_wishlist_area') ||
-      document.querySelector('.queue_actions_ctn') ||
-      document.querySelector('.game_area_purchase_action') ||
-      document.querySelector('#game_area_purchase');
+    var injected = false;
 
-    if (wishlistArea) {
-      if (wishlistArea.id === 'add_to_wishlist_area' || wishlistArea.classList.contains('queue_actions_ctn')) {
-        wishlistArea.insertAdjacentElement('afterbegin', wrap);
-      } else {
-        wishlistArea.insertAdjacentElement('beforebegin', wrap);
+    // Strategy A: Next to Wishlist button inside .queue_actions_ctn
+    var wishArea = document.querySelector('#add_to_wishlist_area');
+    var queueCtn = document.querySelector('.queue_actions_ctn');
+
+    if (wishArea) {
+      var wishCol = wishArea.closest('.queue_control_button') || wishArea;
+      if (wishCol.parentElement) {
+        wrap.className = 'queue_control_button queue_btn_at0m';
+        wrap.style.cssText = 'float:left; margin-right:4px; margin-bottom:4px;';
+        wishCol.parentElement.insertBefore(wrap, wishCol.nextSibling || wishCol);
+        injected = true;
       }
+    } else if (queueCtn) {
+      wrap.className = 'queue_control_button queue_btn_at0m';
+      wrap.style.cssText = 'float:left; margin-right:4px; margin-bottom:4px;';
+      queueCtn.appendChild(wrap);
+      injected = true;
+    }
+
+    // Strategy B: Fallback to the purchase area (e.g. Free-to-play or games without wishlist)
+    if (!injected) {
+      var purchaseAction =
+        document.querySelector('.game_area_purchase_game .game_purchase_action') ||
+        document.querySelector('.game_purchase_action');
+      if (purchaseAction) {
+        wrap.className = 'at0m_purchase_action_wrap';
+        wrap.style.cssText = 'display:inline-block; margin-right:6px; vertical-align:middle;';
+        var cartBtn = purchaseAction.querySelector('.btn_addtocart') || purchaseAction.firstElementChild;
+        if (cartBtn) {
+          purchaseAction.insertBefore(wrap, cartBtn);
+        } else {
+          purchaseAction.appendChild(wrap);
+        }
+        injected = true;
+      }
+    }
+
+    if (injected) {
       checkStatus();
     }
   }

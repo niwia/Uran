@@ -60,6 +60,7 @@ cp "$EXTRACTED_DIR/EPSILON_PHOTAR.md" "$INSTALL_DIR/" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/epsilon/daemon.py"
 chmod +x "$INSTALL_DIR/epsilon/install.sh"
 chmod +x "$INSTALL_DIR/epsilon/uninstall.sh"
+chmod +x "$INSTALL_DIR/epsilon/check_prereqs.py" 2>/dev/null || true
 
 echo "[+] Running local setup in $INSTALL_DIR/epsilon..."
 echo ""
