@@ -65,11 +65,25 @@ WantedBy=default.target
 EOF
 fi
 
+# Install optional daily auto-updater timer
+if [ -f "$SCRIPT_DIR/epsilon-updater.service.in" ] && [ -f "$SCRIPT_DIR/epsilon-updater.timer" ]; then
+    echo "[+] Installing daily auto-updater timer..."
+    chmod +x "$SCRIPT_DIR/update.sh" 2>/dev/null || true
+    sed -e "s|@UPDATE_SCRIPT@|$SCRIPT_DIR/update.sh|g" \
+        "$SCRIPT_DIR/epsilon-updater.service.in" > "$SYSTEMD_USER_DIR/epsilon-updater.service"
+    cp "$SCRIPT_DIR/epsilon-updater.timer" "$SYSTEMD_USER_DIR/epsilon-updater.timer"
+fi
+
 echo "[+] Reloading systemd user daemon..."
 systemctl --user daemon-reload
 
 echo "[+] Enabling and starting epsilon.socket..."
 systemctl --user enable --now epsilon.socket
+
+if [ -f "$SYSTEMD_USER_DIR/epsilon-updater.timer" ]; then
+    echo "[+] Enabling daily auto-update timer (epsilon-updater.timer)..."
+    systemctl --user enable --now epsilon-updater.timer 2>/dev/null || true
+fi
 
 echo ""
 echo "[+] Checking socket status:"
@@ -96,8 +110,9 @@ echo "  Installation complete!                                  "
 echo "  Now install Photar in Tampermonkey to start injecting.  "
 echo ""
 echo "  How to manage Epsilon:                                  "
-echo "    Stop temporarily:  systemctl --user stop epsilon.socket epsilon.service"
-echo "    Start service:     systemctl --user start epsilon.socket"
-echo "    Check logs:        journalctl --user -u epsilon.service -f"
-echo "    Uninstall:         ./uninstall.sh"
+echo "    Update from GitHub: $SCRIPT_DIR/update.sh"
+echo "    Stop temporarily:   systemctl --user stop epsilon.socket epsilon.service"
+echo "    Start service:      systemctl --user start epsilon.socket"
+echo "    Check logs:         journalctl --user -u epsilon.service -f"
+echo "    Uninstall:          $SCRIPT_DIR/uninstall.sh"
 echo "=========================================================="

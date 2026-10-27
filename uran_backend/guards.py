@@ -192,95 +192,28 @@ class GuardService:
         }
 
     def is_app_added(self, app_id: str) -> bool:
-        """Check if an AppID is already added to SLS / AT0M library or installed in Steam."""
-        from .sls_config import parse_key_section, parse_list_section, sanitize_id, section_bounds
+        """Check if an AppID is in the at0-m library (plugin_library.json)."""
+        from .sls_config import sanitize_id
 
-        ctx = self.core.ctx
         aid = sanitize_id(str(app_id))
         if not aid:
             return False
 
-        # 1. Check plugin_library.json
-        if aid in self.core.library.load():
-            return True
-
-        # 2. Check FakeAppIds
-        if aid in self.core.integrations.list_fake_app_ids().get("ids", []):
-            return True
-
-        # 3. Check config.yaml sections directly (AdditionalApps, FakeAppIds, AppId)
-        cfg = ctx.sls_config()
-        if cfg and cfg.exists():
-            try:
-                content = cfg.read_text(encoding="utf-8", errors="replace")
-                for sec in ("AdditionalApps", "FakeAppIds", "AppId"):
-                    bounds = section_bounds(content, sec)
-                    if bounds:
-                        sub = content[bounds[0]:bounds[1]]
-                        if sec == "FakeAppIds":
-                            if aid in parse_key_section(sub, "FakeAppIds")[0]:
-                                return True
-                        else:
-                            if aid in parse_list_section(sub, sec):
-                                return True
-            except Exception:
-                pass
-
-        # 4. Check if game is locally installed in Steam (appmanifest_<aid>.acf)
         try:
-            info = self.core.steam.install_info(aid)
-            if info and (info.get("installed") or info.get("acf_path")):
-                return True
+            return aid in (self.core.library.load() or {})
         except Exception:
-            pass
-
-        return False
+            return False
 
     def get_added_app_ids(self) -> list[str]:
-        """Return a list of all registered AppIDs across SLS, AT0-M, and Steam installs."""
-        from .sls_config import parse_key_section, parse_list_section, sanitize_id, section_bounds
+        """Return a list of all registered AppIDs in plugin_library.json."""
+        from .sls_config import sanitize_id
 
-        ctx = self.core.ctx
         added = set()
-
-        for key in self.core.library.load().keys():
-            aid = sanitize_id(str(key))
-            if aid:
-                added.add(aid)
-
-        for fid in self.core.integrations.list_fake_app_ids().get("ids", []):
-            aid = sanitize_id(str(fid))
-            if aid:
-                added.add(aid)
-
-        cfg = ctx.sls_config()
-        if cfg and cfg.exists():
-            try:
-                content = cfg.read_text(encoding="utf-8", errors="replace")
-                for sec in ("AdditionalApps", "FakeAppIds", "AppId"):
-                    bounds = section_bounds(content, sec)
-                    if bounds:
-                        sub = content[bounds[0]:bounds[1]]
-                        items = parse_key_section(sub, "FakeAppIds")[0] if sec == "FakeAppIds" else parse_list_section(sub, sec)
-                        for item in items:
-                            aid = sanitize_id(str(item))
-                            if aid:
-                                added.add(aid)
-            except Exception:
-                pass
-
-        # 4. Include all locally installed games across Steam libraries
         try:
-            import re
-            for lib in self.core.steam.libraries():
-                steamapps = lib / "steamapps"
-                if steamapps.is_dir():
-                    for acf in steamapps.glob("appmanifest_*.acf"):
-                        m = re.search(r"appmanifest_(\d+)\.acf", acf.name)
-                        if m:
-                            aid = sanitize_id(m.group(1))
-                            if aid:
-                                added.add(aid)
+            for key in (self.core.library.load() or {}).keys():
+                aid = sanitize_id(str(key))
+                if aid:
+                    added.add(aid)
         except Exception:
             pass
 

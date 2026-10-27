@@ -1,0 +1,10 @@
+[Unit]
+Description=Epsilon Background Auto-Updater
+Documentation=https://github.com/niwia/Uran
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@UPDATE_SCRIPT@
+StandardOutput=journal
+StandardError=journal

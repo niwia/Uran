@@ -8,6 +8,8 @@
 // @match        *://steamdb.info/app/*
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
+// @updateURL    https://raw.githubusercontent.com/niwia/Uran/main/photar/photar.user.js
+// @downloadURL  https://raw.githubusercontent.com/niwia/Uran/main/photar/photar.user.js
 // @run-at       document-end
 // ==/UserScript==
 

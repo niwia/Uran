@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Update Check for Epsilon Bridge
+Documentation=https://github.com/niwia/Uran
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+Persistent=true
+
+[Install]
+WantedBy=timers.target
