@@ -16,7 +16,21 @@ echo "=========================================================="
 echo "Target directory: $INSTALL_DIR"
 echo ""
 
-# 1. Dependency checks
+# 1. Target directory validation
+if [ "$INSTALL_DIR" = "/path/to/custom/dir" ] || [ "$INSTALL_DIR" = "/custom/path/epsilon" ]; then
+    echo "[-] Error: '$INSTALL_DIR' is an example placeholder." >&2
+    echo "[-] Please specify a real folder in your user home directory, or run without arguments to use default (~/epsilon):" >&2
+    echo "    curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash" >&2
+    exit 1
+fi
+
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    echo "[-] Error: Cannot create target directory '$INSTALL_DIR' (permission denied or invalid path)." >&2
+    echo "[-] Please specify a writable folder in your user directory (e.g. \$HOME/epsilon)." >&2
+    exit 1
+fi
+
+# 2. Dependency checks
 if ! which python3 >/dev/null 2>&1; then
     echo "[-] Error: python3 is required but not installed." >&2
     exit 1
@@ -32,7 +46,7 @@ if ! which curl >/dev/null 2>&1 && ! which wget >/dev/null 2>&1; then
     exit 1
 fi
 
-# 2. Download from GitHub into a temporary directory
+# 3. Download from GitHub into a temporary directory
 TMP_DIR=$(mktemp -d -t epsilon_install_XXXXXX)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -47,9 +61,7 @@ echo "[+] Unpacking components..."
 tar -xzf "$TMP_DIR/uran.tar.gz" -C "$TMP_DIR"
 EXTRACTED_DIR="$TMP_DIR/Uran-main"
 
-mkdir -p "$INSTALL_DIR"
-
-# 3. Copy only the backend, daemon, userscript, and metadata into target dir
+# 4. Copy only the backend, daemon, userscript, and metadata into target dir
 echo "[+] Installing backend and Epsilon files into $INSTALL_DIR..."
 cp -r "$EXTRACTED_DIR/uran_backend" "$INSTALL_DIR/"
 cp -r "$EXTRACTED_DIR/epsilon" "$INSTALL_DIR/"
