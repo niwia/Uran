@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect, useRef, useReducer } from "react";
 import {
   PanelSection,
   PanelSectionRow,
@@ -6,27 +6,31 @@ import {
   ButtonItem,
   DialogButton,
   ConfirmModal,
+  Field,
   showModal,
 } from "@decky/ui";
+import { FaSearch, FaHistory, FaChevronDown, FaChevronUp } from "react-icons/fa";
 import { injectFinishedText, notify } from "../notify";
 import {
   getRecentInjects,
   searchGames,
   injectGame,
   getInjectStatus,
-  SearchResult,
-  RecentInject,
+  type SearchResult,
+  type RecentInject,
 } from "../api";
 import { addedAppIds, pendingAppIds } from "../StorePatch";
 import { showQrKeyModal } from "../components/QrKeyModal";
 
 export const SearchTab: React.FC = () => {
-  const [query, setQuery] = React.useState("");
-  const [results, setResults] = React.useState<SearchResult[]>([]);
-  const [searching, setSearching] = React.useState(false);
-  const [msg, setMsg] = React.useState("");
-  const [recent, setRecent] = React.useState<RecentInject[]>([]);
-  const [, bumpVersion] = React.useReducer((n: number) => n + 1, 0);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [recent, setRecent] = useState<RecentInject[]>([]);
+  const [recentCollapsed, setRecentCollapsed] = useState(false);
+  const [, bumpVersion] = useReducer((n: number) => n + 1, 0);
+  const searchSeq = useRef(0);
 
   const loadRecent = async () => {
     try {
@@ -35,7 +39,7 @@ export const SearchTab: React.FC = () => {
     } catch {}
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     loadRecent();
     const t = setInterval(() => {
       if (document.visibilityState === "visible") void loadRecent();
@@ -43,13 +47,16 @@ export const SearchTab: React.FC = () => {
     return () => clearInterval(t);
   }, []);
 
-  const searchSeq = React.useRef(0);
-
   const runSearch = async (raw: string) => {
     const q = raw.trim();
     const isAppId = /^\d+$/.test(q);
     const minLen = isAppId ? 1 : 3;
-    if (q.length < minLen) return;
+    if (q.length < minLen) {
+      setResults([]);
+      setMsg("");
+      setSearching(false);
+      return;
+    }
     const seq = ++searchSeq.current;
     setSearching(true);
     setMsg("");
@@ -77,7 +84,7 @@ export const SearchTab: React.FC = () => {
     }
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     const isAppId = /^\d+$/.test(query.trim());
     const minLen = isAppId ? 1 : 3;
     if (query.trim().length < minLen) {
@@ -88,7 +95,6 @@ export const SearchTab: React.FC = () => {
     }
     const t = setTimeout(() => void runSearch(query), 400);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
   const doInject = async (appId: string, title: string, force: boolean = false) => {
@@ -99,7 +105,7 @@ export const SearchTab: React.FC = () => {
           onCancel={() => {}}
           bOKDisabled={false}
           strTitle="Already in Library"
-          strDescription={`${title} (${appId}) is already registered in your library. Would you like to re-inject and refresh its manifests?`}
+          strDescription={`${title} (${appId}) is already registered in SLSsteam. Would you like to re-inject and refresh its manifests?`}
           strOKButtonText="Re-inject"
           strCancelButtonText="Cancel"
         />,
@@ -108,9 +114,11 @@ export const SearchTab: React.FC = () => {
       );
       return;
     }
+
     pendingAppIds.add(appId);
     bumpVersion();
-    setMsg(`Adding ${title} to SLS...`);
+    setMsg(`Adding ${title} to SLSsteam...`);
+
     try {
       const r = await injectGame(appId);
       if ((r as any)?.already_added && !force) {
@@ -123,7 +131,7 @@ export const SearchTab: React.FC = () => {
             onCancel={() => {}}
             bOKDisabled={false}
             strTitle="Already in Library"
-            strDescription={`${title} (${appId}) is already registered in your library. Would you like to re-inject and refresh its manifests?`}
+            strDescription={`${title} (${appId}) is already registered in SLSsteam. Would you like to re-inject and refresh its manifests?`}
             strOKButtonText="Re-inject"
             strCancelButtonText="Cancel"
           />,
@@ -132,11 +140,13 @@ export const SearchTab: React.FC = () => {
         );
         return;
       }
+
       if (r && !r.error) {
         const name = r.name ?? title;
-        const toastMsg = `Added ${name} to SLS`;
-        notify("Uran", toastMsg);
+        const toastMsg = `Added ${name} to SLSsteam`;
+        notify("ASSella", toastMsg);
         setMsg(toastMsg);
+        loadRecent();
 
         const startedAt = Date.now();
         const MAX_WAIT_MS = 300000;
@@ -148,13 +158,14 @@ export const SearchTab: React.FC = () => {
               pendingAppIds.delete(appId);
               addedAppIds.add(appId);
               bumpVersion();
-              notify("Uran", injectFinishedText(name, job));
+              loadRecent();
+              notify("ASSella", injectFinishedText(name, job));
             } else if (Date.now() - startedAt > MAX_WAIT_MS) {
               clearInterval(timer);
               pendingAppIds.delete(appId);
               addedAppIds.add(appId);
               bumpVersion();
-              notify("Uran", `Background work for ${name} timed out`);
+              notify("ASSella", `Background work for ${name} timed out`);
             }
           } catch {
             // keep polling
@@ -167,14 +178,14 @@ export const SearchTab: React.FC = () => {
         if (r?.blocked === "no_api_key") {
           showQrKeyModal(() => void doInject(appId, title, force));
         } else {
-          notify("Uran", err);
+          notify("ASSella", err);
           setMsg(err);
         }
       }
     } catch (e: any) {
       pendingAppIds.delete(appId);
       bumpVersion();
-      notify("Uran", `Error: ${e}`);
+      notify("ASSella", `Error: ${e}`);
       setMsg(`Error: ${e}`);
     }
   };
@@ -189,25 +200,26 @@ export const SearchTab: React.FC = () => {
             label="Game Name or App ID"
             value={query}
             onChange={(e: any) => setQuery(e.target.value)}
-            onSubmit={() => void runSearch(query)}
+            placeholder="Search Steam games..."
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            disabled={
-              searching || query.trim().length < (isAppIdInput ? 1 : 3)
-            }
+            disabled={searching || query.trim().length < (isAppIdInput ? 1 : 3)}
             onClick={() => void runSearch(query)}
           >
-            {searching ? "Searching..." : isAppIdInput ? "Search App ID" : "Search Games"}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+              <FaSearch size={12} />
+              <span>{searching ? "Searching..." : isAppIdInput ? "Search App ID" : "Search Games"}</span>
+            </div>
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
       {msg && (
         <PanelSectionRow>
-          <div style={{ fontSize: "12px", opacity: 0.8, padding: "8px" }}>
+          <div style={{ fontSize: "12px", opacity: 0.8, padding: "4px 8px" }}>
             {msg}
           </div>
         </PanelSectionRow>
@@ -249,7 +261,7 @@ export const SearchTab: React.FC = () => {
                       {item.title}
                     </span>
                     <span style={{ fontSize: "11px", opacity: 0.6 }}>
-                      App ID: {item.app_id}
+                      App ID {item.app_id}
                     </span>
                   </div>
                   <div style={{ flexShrink: 0 }}>
@@ -263,7 +275,7 @@ export const SearchTab: React.FC = () => {
                       disabled={isPending}
                       onClick={() => doInject(item.app_id, item.title)}
                     >
-                      {isAdded ? "In Library" : isPending ? "Adding..." : "Add"}
+                      {isAdded ? "In Library" : isPending ? "Adding..." : "Add Game"}
                     </DialogButton>
                   </div>
                 </div>
@@ -273,47 +285,61 @@ export const SearchTab: React.FC = () => {
         </PanelSection>
       )}
 
-      {recent.length > 0 && (
-        <PanelSection title="Recent Activity">
-          {recent.slice(0, 5).map((r) => (
-            <PanelSectionRow key={r.app_id}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  width: "100%",
-                  fontSize: "12px",
-                }}
-              >
-                <span
+      {query.trim().length === 0 && recent.length > 0 && (
+        <PanelSection
+          title={
+            <div
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", width: "100%" }}
+              onClick={() => setRecentCollapsed((c) => !c)}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <FaHistory size={12} />
+                <span>Recent Injections ({recent.length})</span>
+              </span>
+              <span>{recentCollapsed ? <FaChevronDown size={12} /> : <FaChevronUp size={12} />}</span>
+            </div>
+          }
+        >
+          {!recentCollapsed &&
+            recent.slice(0, 6).map((r) => (
+              <PanelSectionRow key={r.app_id}>
+                <div
                   style={{
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    maxWidth: "70%",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    width: "100%",
+                    fontSize: "12px",
                   }}
                 >
-                  {r.name || r.app_id}
-                </span>
-                <span
-                  style={{
-                    fontSize: "11px",
-                    color: r.error
-                      ? "#e57373"
-                      : r.done
-                      ? "#81c784"
-                      : "#ffb74d",
-                  }}
-                >
-                  {r.error ? "Failed" : r.done ? "Done" : "Working..."}
-                </span>
-              </div>
-            </PanelSectionRow>
-          ))}
+                  <span
+                    style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: "70%",
+                    }}
+                  >
+                    {r.name || `App ID ${r.app_id}`}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      color: r.error
+                        ? "#e57373"
+                        : r.done
+                        ? "#7ee2a8"
+                        : "#ffb74d",
+                    }}
+                  >
+                    {r.error ? "Failed" : r.done ? "Injected" : "Working..."}
+                  </span>
+                </div>
+              </PanelSectionRow>
+            ))}
         </PanelSection>
       )}
     </>
   );
 };
-

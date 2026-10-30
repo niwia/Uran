@@ -1,16 +1,14 @@
-import React from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   PanelSection,
   PanelSectionRow,
+  Field,
+  ToggleField,
   ButtonItem,
   DropdownItem,
-  ToggleField,
-  Focusable,
-  ConfirmModal,
-  showModal,
-
+  TextField,
 } from "@decky/ui";
-import QRCode from "qrcode";
+import { FaKey, FaQrcode, FaSyncAlt } from "react-icons/fa";
 import {
   NOTIFICATION_MODE_OPTIONS,
   notify,
@@ -20,70 +18,52 @@ import {
 import {
   getSetting,
   setSetting,
-  startKeyServer,
-  keyServerStatus,
-  stopKeyServer,
-  getHubcapUserStats,
   getHubcapKeyStatus,
+  getHubcapUserStats,
+  saveHubcapKey,
+  validateHubcapKey,
+  getHealthStatus,
   checkConfigStatus,
-  ConfigCheck,
-  getStoreDebugStatus,
   isGlobalSlsOnlineEnabled,
   setGlobalSlsOnline,
-  getHubcapRoutes,
   testHubcapRoutes,
   checkForUpdates,
   getPluginInfo,
-  openExternalUrl,
-  HUBCAP_HOST,
   GATEWAY_LABELS,
-  GATEWAY_OPTIONS,
-  routeLabel,
-  routeTone,
-  UpdateInfo,
-  GatewayMode,
-  RouteStatus,
-  SlsPluginDeployStatus,
-  getSlsPluginDeployStatus,
-  deploySlsPlugin,
-  enableSlsPlugin,
-  disableSlsPlugin,
-  once,
-  refreshOnce,
+  type HealthStatus,
+  type ConfigCheck,
+  type UpdateInfo,
+  type GatewayMode,
+  type RouteProbe,
 } from "../api";
 import { setStorePatchEnabled } from "../StorePatch";
-import { HealthStatusRow } from "../components/HealthStatus";
 import { formatExpiry } from "../components/format";
-import { showSpaceBunnyModal } from "../components/SpaceBunnyModal";
+import { showQrKeyModal } from "../components/QrKeyModal";
 
-export const SettingsTab: React.FC = () => {
-  const [steamStoreEnabled, setSteamStoreEnabled] = React.useState(true);
-  const [addDelistedDlcs, setAddDelistedDlcs] = React.useState(true);
-  const [fetchDlcsOnInject, setFetchDlcsOnInject] = React.useState(true);
-  const [storeStatus, setStoreStatus] = React.useState<{
-    available: boolean;
-    port?: number | null;
-    store_tab: boolean;
-    target_count: number;
-    message: string;
-    logs: string[];
+interface SettingsTabProps {
+  onSetupStatusChange?: (setupComplete: boolean) => void;
+}
+
+export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange }) => {
+  // General settings
+  const [steamStoreEnabled, setSteamStoreEnabled] = useState(true);
+  const [addDelistedDlcs, setAddDelistedDlcs] = useState(true);
+  const [fetchDlcsOnInject, setFetchDlcsOnInject] = useState(true);
+  const [notificationMode, setNotificationModeState] = useState<"auto" | "steam" | "desktop" | "none">("auto");
+
+  // Health & Environment
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+
+  // Hubcap Key & User stats
+  const [keyStatus, setKeyStatus] = useState<{
+    ok: boolean;
+    source: string;
+    configured_path: string;
+    masked: string;
+    is_override: boolean;
+    timestamp?: number;
   } | null>(null);
-  const [globalSlsOnline, setGlobalSlsOnlineState] = React.useState(false);
-  const [globalSlsConfigPath, setGlobalSlsConfigPath] = React.useState("");
-  const [checkingUpdate, setCheckingUpdate] = React.useState(false);
-  const [gatewayMode, setGatewayMode] = React.useState<GatewayMode>("auto");
-  const [routeStatus, setRouteStatus] = React.useState<RouteStatus | null>(null);
-  const [testingRoutes, setTestingRoutes] = React.useState(false);
-  const [updateInfo, setUpdateInfo] = React.useState<UpdateInfo | null>(null);
-  const [notificationMode, setNotificationModeState] = React.useState<
-    "auto" | "steam" | "desktop" | "none"
-  >("auto");
-  const [msg, setMsg] = React.useState("");
-  const [pluginInfo, setPluginInfo] = React.useState<{ name: string; version: string }>({
-    name: "Uran",
-    version: "",
-  });
-  const [stats, setStats] = React.useState<{
+  const [stats, setStats] = useState<{
     ok: boolean;
     username?: string;
     daily_usage?: number;
@@ -93,680 +73,331 @@ export const SettingsTab: React.FC = () => {
     error?: string;
   }>({ ok: false });
 
-  const [keyStatus, setKeyStatus] = React.useState<{
-    ok: boolean;
-    source: string;
-    configured_path: string;
-    masked: string;
-    is_override: boolean;
-    timestamp?: number;
-  } | null>(null);
+  // Key manual input
+  const [manualKey, setManualKey] = useState("");
+  const [showManualKeyInput, setShowManualKeyInput] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
 
-  const loadKeyStatus = React.useCallback(async () => {
+  // Advanced & Diagnostics
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [globalSlsOnline, setGlobalSlsOnlineState] = useState(false);
+  const [gatewayMode, setGatewayMode] = useState<GatewayMode>("auto");
+  const [routeProbe, setRouteProbe] = useState<RouteProbe | null>(null);
+  const [testingRoutes, setTestingRoutes] = useState(false);
+  const [checkingConfig, setCheckingConfig] = useState(false);
+  const [configCheck, setConfigCheck] = useState<ConfigCheck | null>(null);
+  const [pluginInfo, setPluginInfo] = useState<{ name: string; version: string }>({
+    name: "Uran",
+    version: "0.7.1",
+  });
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const loadHealthAndKey = useCallback(async () => {
     try {
-      const res = await getHubcapKeyStatus();
-      if (res) setKeyStatus(res);
+      const [h, k, s] = await Promise.all([
+        getHealthStatus().catch(() => null),
+        getHubcapKeyStatus().catch(() => null),
+        getHubcapUserStats().catch(() => ({ ok: false })),
+      ]);
+      if (h) setHealth(h);
+      if (k) setKeyStatus(k);
+      if (s) setStats(s);
+
+      const isSlsReady = h?.sls?.status !== "no_local";
+      const hasPlugins = (h?.plugins?.plugins?.length ?? 0) > 0;
+      const hasKey = Boolean(k?.masked);
+      onSetupStatusChange?.(isSlsReady && hasPlugins && hasKey);
     } catch {
       // ignore
     }
-  }, []);
+  }, [onSetupStatusChange]);
 
-  // Version comes from the backend, which reads plugin.json — the single
-  // source of truth. Never hardcode it here. The update check hits GitHub,
-  // so it runs session-once, not on every tab visit.
-  React.useEffect(() => {
-    void loadKeyStatus();
-    void getPluginInfo()
+  useEffect(() => {
+    loadHealthAndKey();
+
+    getSetting("steam_store_enabled", true)
+      .then((v) => setSteamStoreEnabled(Boolean(v)))
+      .catch(() => {});
+    getSetting("add_delisted_dlcs", true)
+      .then((v) => setAddDelistedDlcs(Boolean(v)))
+      .catch(() => {});
+    getSetting("fetch_dlcs_on_inject", true)
+      .then((v) => setFetchDlcsOnInject(Boolean(v)))
+      .catch(() => {});
+    getSetting("notification_mode", "auto")
+      .then((v) => setNotificationModeState(v as any))
+      .catch(() => {});
+    getSetting("hubcap_gateway", "auto")
+      .then((v) => setGatewayMode(v as GatewayMode))
+      .catch(() => {});
+
+    isGlobalSlsOnlineEnabled()
+      .then((v) => setGlobalSlsOnlineState(Boolean(v?.enabled)))
+      .catch(() => {});
+
+    getPluginInfo()
       .then((info) => info && setPluginInfo(info))
       .catch(() => {});
-    void once("plugin-updates", checkForUpdates)
-      .then((res) => res?.ok && setUpdateInfo(res))
-      .catch(() => {});
-  }, [loadKeyStatus]);
+  }, [loadHealthAndKey]);
 
-  // -- QR key capture --
-  const [keyServer, setKeyServer] = React.useState<{
-    running: boolean;
-    urls: string[];
-    status: string;
-    expires_in?: number;
-  }>({ running: false, urls: [], status: "idle" });
-  const [qrSvg, setQrSvg] = React.useState<string | null>(null);
-  const [qrError, setQrError] = React.useState<string>("");
-  const [checkingConfig, setCheckingConfig] = React.useState(false);
-  const [configCheck, setConfigCheck] = React.useState<ConfigCheck | null>(null);
-  const [slsPlugins, setSlsPlugins] = React.useState<SlsPluginDeployStatus | null>(null);
-  const [loadingSlsPlugins, setLoadingSlsPlugins] = React.useState(false);
-  const [deployingSlsPlugin, setDeployingSlsPlugin] = React.useState<string | null>(null);
-
-  const refreshSlsPlugins = React.useCallback(async () => {
-    setLoadingSlsPlugins(true);
+  // Key save handler
+  const handleSaveKey = async () => {
+    const raw = manualKey.trim();
+    if (!raw) return;
+    setSavingKey(true);
     try {
-      const status = await getSlsPluginDeployStatus();
-      if (status) setSlsPlugins(status);
-    } catch {
-      setSlsPlugins({ ok: false, error: "Could not check SLSsteam plugins." });
-    } finally {
-      setLoadingSlsPlugins(false);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    void refreshSlsPlugins();
-  }, [refreshSlsPlugins]);
-
-  const deployPlugin = async (filename: string, label: string) => {
-    setDeployingSlsPlugin(filename);
-    try {
-      const result = await deploySlsPlugin(filename);
-      if (!result?.ok) {
-        notify("Uran", result?.error || `Could not deploy ${label}.`);
+      const val = await validateHubcapKey(raw);
+      if (!val?.ok) {
+        notify("Hubcap Key", val?.message || "Invalid API key format");
+        return;
+      }
+      const saved = await saveHubcapKey(raw);
+      if (saved?.ok) {
+        notify("Hubcap Key", "API key saved successfully");
+        setManualKey("");
+        setShowManualKeyInput(false);
+        loadHealthAndKey();
       } else {
-        notify("Uran", result.message || `${label} deployed.`);
+        notify("Hubcap Key", saved?.message || "Failed to save key");
       }
-      await refreshSlsPlugins();
-    } catch {
-      notify("Uran", `Could not deploy ${label}.`);
     } finally {
-      setDeployingSlsPlugin(null);
+      setSavingKey(false);
     }
   };
 
-  const requestPluginDeploy = (filename: string, label: string) => {
-    if (filename !== "spliced-tickets.lua") {
-      void deployPlugin(filename, label);
-      return;
-    }
-    showModal(
-      <ConfirmModal
-        onOK={() => void deployPlugin(filename, label)}
-        onCancel={() => {}}
-        bOKDisabled={false}
-        strTitle="Spliced Tickets"
-        strDescription="This plugin changes SLSsteam ticket handling and enables SmartTickets. Use it only if you understand and are permitted to use this functionality. Continue?"
-        strOKButtonText="Install"
-        strCancelButtonText="Cancel"
-      />,
-      undefined,
-      { bNeverPopOut: true },
-    );
+  const handleToggleSteamStore = async (val: boolean) => {
+    setSteamStoreEnabled(val);
+    await setSetting("steam_store_enabled", val);
+    setStorePatchEnabled(val);
+    notify("Steam Store", val ? "Store injection enabled" : "Store injection disabled");
   };
 
-  const pluginButtonText = (filename: string, label: string) => {
-    const plugin = slsPlugins?.plugins?.[filename];
-    if (plugin?.user_disabled) return `${label} (Disabled)`;
-    if (deployingSlsPlugin === filename) return `Deploying ${label}…`;
-    if (plugin?.state === "outdated") return `${label} (Update)`;
-    if (plugin?.state === "missing") {
-      if (plugin.available_remote === false) return `${label} (Not in cloud)`;
-      return `${label} (Install)`;
-    }
-    return label;
+  const handleToggleAddDelisted = async (val: boolean) => {
+    setAddDelistedDlcs(val);
+    await setSetting("add_delisted_dlcs", val);
   };
 
-  const pluginIsActive = (filename: string) => {
-    const plugin = slsPlugins?.plugins?.[filename];
-    return Boolean(plugin?.active);
+  const handleToggleFetchDlcs = async (val: boolean) => {
+    setFetchDlcsOnInject(val);
+    await setSetting("fetch_dlcs_on_inject", val);
   };
 
-  const pluginActiveLabel = (filename: string, label: string) => {
-    const plugin = slsPlugins?.plugins?.[filename];
-    const versionTag = plugin?.version ? ` v${plugin.version}` : '';
-    if (plugin?.state === "up_to_date") {
-      return `${label}${versionTag} (Active — verified)`;
-    }
-    return `${label}${versionTag} (Active — local)`;
-  };
-
-  const pluginButtonDisabled = loadingSlsPlugins || deployingSlsPlugin !== null || !slsPlugins?.ok;
-
-  const togglePlugin = async (filename: string, enabled: boolean) => {
-    const apiCall = enabled ? enableSlsPlugin : disableSlsPlugin;
-    await apiCall(filename);
-    void refreshSlsPlugins();
-  };
-
-  const renderPluginRow = (
-    filename: string,
-    label: string,
-    description: string,
-  ) => {
-    const plugin = slsPlugins?.plugins?.[filename];
-    const isActive = Boolean(plugin?.active);
-    const canDeploy = plugin?.available_remote !== false && plugin?.state !== "unknown";
-    const isDisabled = Boolean(plugin?.user_disabled);
-    const versionTag = plugin?.version ? ` v${plugin.version}` : '';
-
-    return (
-      <PanelSectionRow>
-        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "2px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            {isActive ? (
-              <div style={{ color: "#7ee2a8", fontWeight: 600, fontSize: "13px" }}>
-                {pluginActiveLabel(filename, label)}
-              </div>
-            ) : (
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>
-                {label}{versionTag}
-              </span>
-            )}
-            <ToggleField
-              checked={!isDisabled}
-              onChange={(checked) => void togglePlugin(filename, checked)}
-              disabled={loadingSlsPlugins || deployingSlsPlugin !== null}
-            />
-          </div>
-          {isActive ? null : (
-            <ButtonItem
-              layout="below"
-              disabled={pluginButtonDisabled || !canDeploy || isDisabled}
-              onClick={() => requestPluginDeploy(filename, label)}
-            >
-              {pluginButtonText(filename, label)}
-            </ButtonItem>
-          )}
-          <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px", lineHeight: 1.3 }}>
-            {description}
-            {isDisabled ? " Auto-deployment disabled." : " Auto-deployment enabled."}
-          </div>
-        </div>
-      </PanelSectionRow>
-    );
-  };
-
-  const refreshGlobalSlsOnlineStatus = async () => {
-    try {
-      const status = await isGlobalSlsOnlineEnabled();
-      setGlobalSlsOnlineState(!!status?.enabled);
-      setGlobalSlsConfigPath(status?.config_path ?? "");
-    } catch {
-      notify("Uran", "Could not read SLS config status");
-    }
-  };
-
-  const runConfigCheck = async () => {
-    setCheckingConfig(true);
-    try {
-      const r = await checkConfigStatus(true);
-      if (r) setConfigCheck(r);
-    } catch {}
-    setCheckingConfig(false);
-  };
-
-  const stopQr = React.useCallback(async () => {
-    try {
-      await stopKeyServer();
-    } catch {}
-    setKeyServer({ running: false, urls: [], status: "idle" });
-    setQrSvg(null);
-  }, []);
-
-  const startQr = React.useCallback(async () => {
-    setQrError("");
-    setQrSvg(null);
-    try {
-      const r = await startKeyServer();
-      if (!r?.ok) {
-        setQrError(r?.error || "Could not start the local server");
-        return;
-      }
-      const url = r.urls?.[0];
-      if (!url) {
-        setQrError(
-          "No network address found. Connect the Deck to Wi-Fi, then try again.",
-        );
-        return;
-      }
-      const svg = await QRCode.toString(url, {
-        type: "svg",
-        errorCorrectionLevel: "M",
-        margin: 1,
-        width: 220,
-        color: { dark: "#000000", light: "#ffffff" },
-      });
-      setQrSvg(svg);
-      setKeyServer({
-        running: true,
-        urls: r.urls,
-        status: r.status,
-        expires_in: r.expires_in,
-      });
-    } catch (e: any) {
-      setQrError(e?.message || "Failed to start");
-    }
-  }, []);
-
-  const loadStats = React.useCallback(async () => {
-    try {
-      void loadKeyStatus();
-      // Manual refresh points (e.g. after a key is accepted) bypass the
-      // session memo and update it, so later tab visits see fresh stats.
-      const s = await refreshOnce("hubcap-stats", getHubcapUserStats);
-      if (s) {
-        setStats(s);
-        if (!s.ok || s.error) {
-          void startQr();
-        }
-      }
-    } catch {
-      setStats({ ok: false });
-      void startQr();
-    }
-  }, [loadKeyStatus, startQr]);
-
-  const loadStatsOnce = React.useCallback(async () => {
-    try {
-      void loadKeyStatus();
-      const s = await once("hubcap-stats", getHubcapUserStats);
-      if (s) {
-        setStats(s);
-        if (!s.ok || s.error) {
-          void startQr();
-        }
-      }
-    } catch {
-      setStats({ ok: false });
-      void startQr();
-    }
-  }, [loadKeyStatus, startQr]);
-
-  React.useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const [
-          nm,
-          storeEnabled,
-          initialStoreStatus,
-          gSls,
-          gw,
-          routes,
-          delistedDlcs,
-          dlcsOnInject,
-        ] = await Promise.all([
-          getSetting("notification_mode", "auto"),
-          getSetting("steam_store_enabled", true),
-          // CEF port scan + route state: session-once, not per tab visit.
-          once("store-debug", () => getStoreDebugStatus(false)),
-          isGlobalSlsOnlineEnabled(),
-          getSetting("hubcap_gateway", "auto"),
-          once("hubcap-routes", getHubcapRoutes),
-          getSetting("add_delisted_dlcs", true),
-          getSetting("fetch_dlcs_on_inject", true),
-        ]);
-        if (!alive) return;
-        setSteamStoreEnabled(storeEnabled !== false);
-        setStorePatchEnabled(storeEnabled !== false);
-        setStoreStatus(initialStoreStatus);
-        setGlobalSlsOnlineState(!!gSls?.enabled);
-        setGlobalSlsConfigPath(gSls?.config_path ?? "");
-        setGatewayMode(
-          gw === "direct" || gw === "proxy" ? (gw as GatewayMode) : "auto",
-        );
-        setRouteStatus(routes ?? null);
-        setAddDelistedDlcs(delistedDlcs !== false);
-        setFetchDlcsOnInject(dlcsOnInject !== false);
-        if (nm) setNotificationModeState(nm);
-      } catch {}
-      loadStatsOnce();
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [loadStatsOnce]);
-
-  const changeSteamStoreEnabled = async (enabled: boolean) => {
-    setSteamStoreEnabled(enabled);
-    setStorePatchEnabled(enabled);
-    await setSetting("steam_store_enabled", enabled);
-  };
-
-  React.useEffect(() => {
-    if (!keyServer.running) return;
-    let alive = true;
-    const t = setInterval(async () => {
-      try {
-        const s = await keyServerStatus();
-        if (!alive || !s) return;
-        setKeyServer((prev) => ({
-          ...prev,
-          running: s.running,
-          status: s.status,
-          expires_in: s.expires_in,
-        }));
-        if (!s.running || s.status === "accepted") {
-          clearInterval(t);
-          if (s.status === "accepted") {
-            notify("Uran", "Hubcap key received");
-            setMsg("Key received from your phone");
-            setQrSvg(null);
-            loadStats();
-          }
-        }
-      } catch {}
-    }, 1500);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [keyServer.running, loadStats]);
-
-  const changeNotificationMode = async (opt: any) => {
+  const handleNotificationModeChange = async (opt: any) => {
     const val = opt.data;
     setNotificationModeState(val);
+    setNotificationMode(val);
     await setSetting("notification_mode", val);
-    await setNotificationMode(val);
     await refreshNotificationChannel();
   };
 
+  const handleToggleGlobalSlsOnline = async (val: boolean) => {
+    const res = await setGlobalSlsOnline(val);
+    if (res?.ok) {
+      setGlobalSlsOnlineState(val);
+      notify("Global SLS Online", val ? "Enabled for all games (0: 480)" : "Disabled");
+    } else {
+      notify("Global SLS Online", "Failed to toggle Global SLS Online");
+    }
+  };
+
+  const handleGatewayChange = async (opt: any) => {
+    const mode = opt.data as GatewayMode;
+    setGatewayMode(mode);
+    await setSetting("hubcap_gateway", mode);
+    notify("Hubcap Gateway", `Switched to ${GATEWAY_LABELS[mode] || mode}`);
+  };
+
+  const handleTestRoutes = async () => {
+    setTestingRoutes(true);
+    try {
+      const res = await testHubcapRoutes();
+      if (res?.ok) {
+        setRouteProbe(res);
+        const directMs = res.routes?.direct?.ms ? `${res.routes.direct.ms}ms` : "unreachable";
+        notify("Route Test", `Direct: ${directMs}`);
+      }
+    } finally {
+      setTestingRoutes(false);
+    }
+  };
+
+  const handleCheckConfig = async () => {
+    setCheckingConfig(true);
+    try {
+      const res = await checkConfigStatus(true);
+      if (res?.ok) {
+        setConfigCheck(res);
+        notify("Config Check", res.summary);
+      }
+    } finally {
+      setCheckingConfig(false);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const res = await checkForUpdates();
+      if (res?.ok) {
+        setUpdateInfo(res);
+        notify(
+          "Update Check",
+          res.has_update ? `Update available: v${res.latest_version}` : "Plugin is up to date!",
+        );
+      }
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  // Setup checks
+  const isSlsInstalled = health?.sls?.status !== "no_local";
+  const pluginsList = health?.plugins?.plugins ?? [];
+  const hasPlugins = pluginsList.length > 0;
+  const hasKey = Boolean(keyStatus?.masked);
+  const setupIncomplete = !isSlsInstalled || !hasPlugins || !hasKey;
+
+  const pluginsText = hasPlugins ? pluginsList.join(", ") : "None detected";
+
   return (
     <>
-      <PanelSection title="Hubcap API">
-        {stats.ok ? (
+      {setupIncomplete && (
+        <PanelSection title="Setup Notice">
           <PanelSectionRow>
-            <div
-              style={{
-                background: "rgba(255, 255, 255, 0.04)",
-                border: "1px solid rgba(255, 255, 255, 0.1)",
-                borderRadius: "8px",
-                padding: "10px 14px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "6px",
-                fontSize: "12px",
-                width: "100%",
-                boxSizing: "border-box",
-                overflow: "hidden",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
-                <span style={{ opacity: 0.65, flexShrink: 0 }}>user :</span>
-                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginLeft: "12px", textAlign: "right" }}>
-                  {stats.username || "—"}
-                </span>
+            <div className="uran-alert-banner">
+              <div style={{ fontWeight: 700, marginBottom: "4px" }}>Setup Incomplete</div>
+              <div style={{ fontSize: "12px", lineHeight: 1.4 }}>
+                {!isSlsInstalled && <div>• SLSsteam is not detected on this system.</div>}
+                {!hasPlugins && <div>• No SLSsteam plugins detected in the plugins directory.</div>}
+                {!hasKey && <div>• Hubcap API key is not configured.</div>}
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
-                <span style={{ opacity: 0.65, flexShrink: 0 }}>API :</span>
-                <span style={{ fontWeight: 600, marginLeft: "12px", textAlign: "right" }}>
-                  {stats.daily_usage ?? 0}/{stats.daily_limit ?? 0}
-                </span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
-                <span style={{ opacity: 0.65, flexShrink: 0 }}>expiry :</span>
-                <span style={{ fontWeight: 600, marginLeft: "12px", textAlign: "right" }}>
-                  {formatExpiry(stats.expires_at)}
-                </span>
-              </div>
-              {keyStatus?.source ? (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
-                  <span style={{ opacity: 0.65, flexShrink: 0 }}>source :</span>
-                  <span style={{ fontWeight: 500, opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginLeft: "12px", textAlign: "right", fontSize: "11px" }}>
-                    {keyStatus.source}
-                  </span>
-                </div>
-              ) : null}
-              {keyStatus?.timestamp ? (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
-                  <span style={{ opacity: 0.65, flexShrink: 0 }}>key ts :</span>
-                  <span style={{ fontWeight: 600, fontFamily: "monospace", marginLeft: "12px", textAlign: "right", fontSize: "11px" }}>
-                    {keyStatus.timestamp}
-                  </span>
-                </div>
-              ) : null}
             </div>
           </PanelSectionRow>
-        ) : (
+        </PanelSection>
+      )}
+
+      <PanelSection title="Environment & Status">
+        <PanelSectionRow>
+          <Field
+            label="SLSsteam"
+            description={
+              health?.sls?.status === "no_local"
+                ? "Not installed / not found"
+                : health?.sls?.status === "outdated"
+                ? "Outdated binary"
+                : "Installed & active"
+            }
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field
+            label="Active SLS Plugins"
+            description={pluginsText}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Hubcap API Key">
+        <PanelSectionRow>
+          <Field
+            label="API Key"
+            description={
+              keyStatus?.masked ? (
+                <span>
+                  {keyStatus.masked}{" "}
+                  {stats.ok && (
+                    <span style={{ opacity: 0.75 }}>
+                      ({stats.requests_remaining ?? 0} requests left)
+                    </span>
+                  )}
+                </span>
+              ) : (
+                "Not configured"
+              )
+            }
+          />
+        </PanelSectionRow>
+
+        {stats.ok && (
           <PanelSectionRow>
-            <div style={{ fontSize: "12px", opacity: 0.7, padding: "4px 0" }}>
-              {stats.error || "No API key configured."}
-            </div>
+            <Field
+              label="Account Stats"
+              description={`User: ${stats.username || "Anonymous"} · Daily usage: ${stats.daily_usage ?? 0}/${stats.daily_limit ?? 0} · Expiry: ${formatExpiry(stats.expires_at)}`}
+            />
           </PanelSectionRow>
         )}
 
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            onClick={() => {
-              showSpaceBunnyModal(() => {
-                void loadStats();
-                void loadKeyStatus();
-              });
-            }}
+            onClick={() => showQrKeyModal(loadHealthAndKey)}
           >
-            Configure SpaceBunny (Bridge)
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+              <FaQrcode size={13} />
+              <span>Scan QR Code with Phone</span>
+            </div>
           </ButtonItem>
         </PanelSectionRow>
 
         <PanelSectionRow>
-          <ToggleField
-            label="Show QR code"
-            description="Scan with your phone to paste the key — no keyboard needed."
-            checked={keyServer.running}
-            onChange={(v) => (v ? startQr() : stopQr())}
-          />
+          <ButtonItem
+            layout="below"
+            onClick={() => setShowManualKeyInput((s) => !s)}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+              <FaKey size={12} />
+              <span>{showManualKeyInput ? "Cancel Key Input" : "Enter Key Manually"}</span>
+            </div>
+          </ButtonItem>
         </PanelSectionRow>
 
-        {keyServer.running && (
+        {showManualKeyInput && (
           <>
             <PanelSectionRow>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "center",
-                  padding: "8px 0",
-                }}
-              >
-                {qrSvg ? (
-                  <div
-                    style={{
-                      background: "#fff",
-                      padding: "10px",
-                      borderRadius: "10px",
-                      lineHeight: 0,
-                    }}
-                    dangerouslySetInnerHTML={{ __html: qrSvg }}
-                  />
-                ) : (
-                  <div style={{ opacity: 0.6, fontSize: "12px" }}>
-                    Generating…
-                  </div>
-                )}
-              </div>
+              <TextField
+                label="Hubcap API Key"
+                value={manualKey}
+                onChange={(e) => setManualKey(e.target.value)}
+                placeholder="Paste key here..."
+              />
             </PanelSectionRow>
             <PanelSectionRow>
-              <div
-                style={{
-                  fontSize: "12px",
-                  textAlign: "center",
-                  color:
-                    keyServer.status === "accepted" ? "#7ee2a8" : "#9aa4b2",
-                }}
+              <ButtonItem
+                layout="below"
+                onClick={handleSaveKey}
+                disabled={savingKey || !manualKey.trim()}
               >
-                {keyServer.status === "accepted"
-                  ? "Key received — you can close this"
-                  : `Scan with your phone${
-                      keyServer.expires_in
-                        ? ` · closes in ${Math.max(0, keyServer.expires_in)}s`
-                        : ""
-                    }`}
-              </div>
+                {savingKey ? "Saving..." : "Save Key"}
+              </ButtonItem>
             </PanelSectionRow>
           </>
         )}
-        {qrError && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#e57373" }}>{qrError}</div>
-          </PanelSectionRow>
-        )}
       </PanelSection>
 
-      <PanelSection title="SLS Online (0: 480)">
+      <PanelSection title="DLC & Store Settings">
         <PanelSectionRow>
           <ToggleField
-            label="Global SLS Online"
-            description="Map AppID 0 to 480 in SLS config so all games use Spacewar networking simultaneously. Locks individual game toggles ON."
-            checked={globalSlsOnline}
-            onChange={async (v) => {
-              setGlobalSlsOnlineState(v);
-              const res = await setGlobalSlsOnline(v);
-              if (!res?.ok) {
-                notify("Uran", "Failed to update Global SLS Online");
-                setGlobalSlsOnlineState(!v);
-              } else {
-                notify("Uran", v ? "Global SLS Online enabled" : "Global SLS Online disabled");
-              }
-            }}
-          />
-        </PanelSectionRow>
-        {globalSlsConfigPath ? (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.75 }}>
-              Reading SLS config: {globalSlsConfigPath}
-            </div>
-          </PanelSectionRow>
-        ) : null}
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void refreshGlobalSlsOnlineStatus()}>
-            Refresh SLS Config Status
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="Hubcap Connection">
-        <PanelSectionRow>
-          <DropdownItem
-            label="Route"
-            description={
-              GATEWAY_LABELS[gatewayMode] ??
-              "Automatic (try direct, fall back to the edge proxy if blocked)"
-            }
-            rgOptions={GATEWAY_OPTIONS}
-            selectedOption={gatewayMode}
-            onChange={(opt: any) => {
-              const next = opt?.data ?? opt;
-              setGatewayMode(next);
-              setSetting("hubcap_gateway", next);
-              notify("Uran", `Hubcap route: ${GATEWAY_LABELS[next] ?? next}`);
-            }}
-          />
-        </PanelSectionRow>
-
-        <PanelSectionRow>
-          <div
-            style={{ fontSize: "12px", opacity: 0.85, lineHeight: 1.6, width: "100%" }}
-          >
-            <div style={{ marginBottom: "6px", fontWeight: 600 }}>Route status</div>
-            {routeStatus ? (
-              <>
-                <div style={{ color: routeTone(routeStatus.direct) }}>
-                  &bull; Direct ({HUBCAP_HOST}): {routeLabel(routeStatus.direct)}
-                </div>
-                <div style={{ color: routeTone(routeStatus.proxy) }}>
-                  &bull; Edge proxy: {routeLabel(routeStatus.proxy)}
-                </div>
-                {routeStatus.fallback_used && (
-                  <div style={{ color: "#f0c674", marginTop: "2px" }}>
-                    The edge proxy is in use because the direct route is blocked.
-                  </div>
-                )}
-                {routeStatus.last_error && (
-                  <div
-                    style={{
-                      marginTop: "4px",
-                      opacity: 0.7,
-                      fontSize: "11px",
-                      wordBreak: "break-word",
-                    }}
-                  >
-                    Last detail: {routeStatus.last_error}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={{ opacity: 0.6 }}>Not checked yet.</div>
-            )}
-          </div>
-        </PanelSectionRow>
-
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={testingRoutes}
-            onClick={async () => {
-              setTestingRoutes(true);
-              const r = await testHubcapRoutes();
-              setTestingRoutes(false);
-              if (!r) {
-                notify("Uran", "Could not test the routes.");
-                return;
-              }
-              const direct = r.routes?.direct?.ok;
-              const proxy = r.routes?.proxy?.ok;
-              setRouteStatus({
-                direct: direct ? "ok" : "blocked",
-                proxy: proxy ? "ok" : "failed",
-                fallback_used: false,
-                last_error: `direct: ${r.routes?.direct?.detail ?? "?"} · proxy: ${
-                  r.routes?.proxy?.detail ?? "?"
-                }`,
-              });
-              notify(
-                "Uran",
-                direct && proxy
-                  ? "Both routes reachable."
-                  : direct
-                    ? "Direct works; the edge proxy is unreachable."
-                    : proxy
-                      ? "Direct is blocked; the edge proxy works."
-                      : "Neither route is reachable.",
-              );
-            }}
-          >
-            {testingRoutes ? "Testing…" : "Test Connection"}
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="DLC Configuration">
-        <PanelSectionRow>
-          <ToggleField
-            label="Add Delisted DLCs"
-            description="Include delisted and historical DLCs in future game adds and DLC fetches. Turning this off does not remove DLCs already configured."
-            checked={addDelistedDlcs}
-            onChange={async (v) => {
-              setAddDelistedDlcs(v);
-              await setSetting("add_delisted_dlcs", v);
-              notify("Uran", v ? "Add Delisted DLCs enabled" : "Add Delisted DLCs disabled");
-            }}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="Fetch DLCs on Add"
-            description="Automatically fetch and mount DLCs into SLS config when adding a game to Uran."
+            label="Fetch DLCs on Inject"
+            description="Automatically retrieve game DLCs when injecting"
             checked={fetchDlcsOnInject}
-            onChange={async (v) => {
-              setFetchDlcsOnInject(v);
-              await setSetting("fetch_dlcs_on_inject", v);
-              notify("Uran", v ? "Auto-fetch DLCs enabled" : "Auto-fetch DLCs disabled");
-            }}
+            onChange={handleToggleFetchDlcs}
           />
         </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="Steam Store">
         <PanelSectionRow>
           <ToggleField
-            label="Steam Store"
+            label="Auto-add Delisted DLCs"
+            description="Include delisted and bonus DLC manifests"
+            checked={addDelistedDlcs}
+            onChange={handleToggleAddDelisted}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Steam Store Button"
+            description="Inject 'Add to ASSella' button into Steam Store webview"
             checked={steamStoreEnabled}
-            onChange={changeSteamStoreEnabled}
-            description={
-              storeStatus?.port
-                ? `Port: ${storeStatus.port}`
-                : storeStatus?.available
-                ? "Port: 8080"
-                : "CEF debugging unavailable"
-            }
+            onChange={handleToggleSteamStore}
           />
         </PanelSectionRow>
       </PanelSection>
@@ -774,137 +405,118 @@ export const SettingsTab: React.FC = () => {
       <PanelSection title="Notifications">
         <PanelSectionRow>
           <DropdownItem
-            label="Notification channel"
+            label="Notification Mode"
             rgOptions={NOTIFICATION_MODE_OPTIONS}
             selectedOption={notificationMode}
-            onChange={changeNotificationMode}
+            onChange={handleNotificationModeChange}
           />
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Plugins">
-        <PanelSectionRow>
-          <div style={{ fontSize: "12px", lineHeight: 1.5, opacity: 0.75 }}>
-            {slsPlugins?.directory ? <div>SLSsteam plugin folder: {slsPlugins.directory}</div> : null}
-            {slsPlugins && !slsPlugins.ok ? <div>{slsPlugins.error}</div> : null}
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <div style={{ fontSize: "11px", fontWeight: 700, opacity: 0.85, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: "4px" }}>
-            Download Interceptors (1 Active)
-          </div>
-        </PanelSectionRow>
-
-        {renderPluginRow("download.lua", "Standard", "Standard SLSsteam download interceptor.")}
-        {renderPluginRow("spacebunny.lua", "SpaceBunny", "Standardized SLSsteam download interceptor with multi-provider MRC authority & circuit breakers.")}
-        {renderPluginRow("spacebunny1.5.lua", "SpaceBunny 1.5", "Legacy SpaceBunny interceptor (1.5).")}
-
-        <PanelSectionRow>
-          <div style={{ fontSize: "11px", fontWeight: 700, opacity: 0.85, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: "10px" }}>
-            Companion Plugins (Coexist)
-          </div>
-        </PanelSectionRow>
-
-        {renderPluginRow("hubcap.lua", "Hubcap Auto-Fetch", "Standalone key resolver. Automatically fetches missing AES decryption keys from Hubcap API.")}
-        {renderPluginRow("lobster.lua", "Lobster Config Recovery", "Disaster recovery companion. Automatically restores AdditionalDepots & DecryptionKeys if wiped by Headcrab.")}
-        {renderPluginRow("spliced-tickets.lua", "Spliced Tickets", "Smart ticket companion. Alters SLSsteam ticket handling and enables SmartTickets.")}
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={loadingSlsPlugins || deployingSlsPlugin !== null}
-            onClick={() => void refreshSlsPlugins()}
+      <PanelSection
+        title={
+          <div
+            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", width: "100%" }}
+            onClick={() => setShowAdvanced((a) => !a)}
           >
-            {loadingSlsPlugins ? "Checking Plugins…" : "Refresh Plugin Status"}
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
+            <span>Advanced & Diagnostics</span>
+            <span style={{ fontSize: "12px", opacity: 0.8 }}>{showAdvanced ? "Hide" : "Show"}</span>
+          </div>
+        }
+      >
+        {showAdvanced && (
+          <>
+            <PanelSectionRow>
+              <ToggleField
+                label="Global SLS Online"
+                description="Redirect all multiplayer to App ID 480 (Spacewar)"
+                checked={globalSlsOnline}
+                onChange={handleToggleGlobalSlsOnline}
+              />
+            </PanelSectionRow>
 
-      <PanelSection title="SLS Config">
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={checkingConfig}
-            onClick={runConfigCheck}
-          >
-            {checkingConfig ? "Checking…" : "Check Config"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {configCheck && (
-          <PanelSectionRow>
-            <div style={{ fontSize: "12px", lineHeight: 1.6, width: "100%" }}>
-              <div
-                style={{
-                  color: !configCheck.ok
-                    ? "#ff9a9a"
-                    : configCheck.needs_attention
-                      ? "#f0c674"
-                      : "#7ee2a8",
-                  fontWeight: 600,
-                  marginBottom: "4px",
-                }}
+            <PanelSectionRow>
+              <DropdownItem
+                label="Gateway Route"
+                rgOptions={[
+                  { data: "auto", label: "Auto (Fastest)" },
+                  { data: "direct", label: "Direct Connection" },
+                  { data: "proxy", label: "Cloudflare Worker Proxy" },
+                ]}
+                selectedOption={gatewayMode}
+                onChange={handleGatewayChange}
+              />
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                onClick={handleTestRoutes}
+                disabled={testingRoutes}
               >
-                {configCheck.summary}
-              </div>
-              {configCheck.details.slice(0, 10).map((d) => (
-                <div key={d} style={{ opacity: 0.8, fontSize: "11px" }}>
-                  • {d}
+                {testingRoutes ? "Testing Routes..." : "Test Gateway Latency"}
+              </ButtonItem>
+            </PanelSectionRow>
+
+            {routeProbe?.routes && (
+              <PanelSectionRow>
+                <div style={{ fontSize: "12px", opacity: 0.8, padding: "2px 0" }}>
+                  Direct: {routeProbe.routes.direct?.ms ? `${routeProbe.routes.direct.ms}ms` : "unreachable"} · Proxy: {routeProbe.routes.proxy?.ms ? `${routeProbe.routes.proxy.ms}ms` : "unreachable"}
                 </div>
-              ))}
-              {configCheck.details.length > 10 && (
-                <div style={{ opacity: 0.6, fontSize: "11px" }}>
-                  …and {configCheck.details.length - 10} more
+              </PanelSectionRow>
+            )}
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                onClick={handleCheckConfig}
+                disabled={checkingConfig}
+              >
+                {checkingConfig ? "Checking Config..." : "Verify SLSsteam Config"}
+              </ButtonItem>
+            </PanelSectionRow>
+
+            {configCheck && (
+              <PanelSectionRow>
+                <div style={{ fontSize: "12px", opacity: 0.85, padding: "4px 0" }}>
+                  <div style={{ fontWeight: 600 }}>{configCheck.summary}</div>
+                  {configCheck.details?.map((d, i) => (
+                    <div key={i} style={{ opacity: 0.7, fontSize: "11px" }}>• {d}</div>
+                  ))}
                 </div>
-              )}
-            </div>
-          </PanelSectionRow>
+              </PanelSectionRow>
+            )}
+
+            <PanelSectionRow>
+              <Field
+                label="Plugin Version"
+                description={`v${pluginInfo.version}`}
+              />
+            </PanelSectionRow>
+
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                onClick={handleCheckUpdate}
+                disabled={checkingUpdate}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                  <FaSyncAlt size={12} />
+                  <span>{checkingUpdate ? "Checking..." : "Check for Updates"}</span>
+                </div>
+              </ButtonItem>
+            </PanelSectionRow>
+
+            {updateInfo?.has_update && (
+              <PanelSectionRow>
+                <div style={{ color: "#7ee2a8", fontSize: "12px", padding: "4px 0" }}>
+                  Update available: v{updateInfo.latest_version}
+                </div>
+              </PanelSectionRow>
+            )}
+          </>
         )}
       </PanelSection>
-
-      <PanelSection>
-        <HealthStatusRow />
-        <PanelSectionRow>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              width: "100%",
-              fontSize: "12px",
-              paddingTop: "6px",
-              borderTop: "1px solid rgba(255, 255, 255, 0.08)",
-            }}
-          >
-            <span style={{ opacity: 0.65 }}>
-              Uran v{pluginInfo.version || "0.6.3"}
-            </span>
-            {updateInfo?.has_update && (
-              <Focusable
-                style={{
-                  color: "#7ee2a8",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  textDecoration: "underline",
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  const url = updateInfo.release_url;
-                  if (url) void openExternalUrl(url);
-                }}
-              >
-                v{updateInfo.latest_version} update available
-              </Focusable>
-            )}
-          </div>
-        </PanelSectionRow>
-      </PanelSection>
-
-      {msg && (
-        <PanelSectionRow>
-          <div style={{ fontSize: "12px", opacity: 0.8, padding: "8px" }}>
-            {msg}
-          </div>
-        </PanelSectionRow>
-      )}
     </>
   );
 };
