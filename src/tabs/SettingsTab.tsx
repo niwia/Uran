@@ -89,7 +89,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
   const [configCheck, setConfigCheck] = useState<ConfigCheck | null>(null);
   const [pluginInfo, setPluginInfo] = useState<{ name: string; version: string }>({
     name: "Uran",
-    version: "0.7.1",
+    version: "0.7.5",
   });
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
