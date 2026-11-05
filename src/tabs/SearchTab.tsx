@@ -144,7 +144,7 @@ export const SearchTab: React.FC = () => {
       if (r && !r.error) {
         const name = r.name ?? title;
         const toastMsg = `Added ${name} to SLSsteam`;
-        notify("ASSella", toastMsg);
+        notify("Uran", toastMsg);
         setMsg(toastMsg);
         loadRecent();
 
@@ -159,13 +159,13 @@ export const SearchTab: React.FC = () => {
               addedAppIds.add(appId);
               bumpVersion();
               loadRecent();
-              notify("ASSella", injectFinishedText(name, job));
+              notify("Uran", injectFinishedText(name, job));
             } else if (Date.now() - startedAt > MAX_WAIT_MS) {
               clearInterval(timer);
               pendingAppIds.delete(appId);
               addedAppIds.add(appId);
               bumpVersion();
-              notify("ASSella", `Background work for ${name} timed out`);
+              notify("Uran", `Background work for ${name} timed out`);
             }
           } catch {
             // keep polling
@@ -178,14 +178,14 @@ export const SearchTab: React.FC = () => {
         if (r?.blocked === "no_api_key") {
           showQrKeyModal(() => void doInject(appId, title, force));
         } else {
-          notify("ASSella", err);
+          notify("Uran", err);
           setMsg(err);
         }
       }
     } catch (e: any) {
       pendingAppIds.delete(appId);
       bumpVersion();
-      notify("ASSella", `Error: ${e}`);
+      notify("Uran", `Error: ${e}`);
       setMsg(`Error: ${e}`);
     }
   };

@@ -502,7 +502,8 @@ class Injector:
             #    also covers the parent appid's full injected depot list.
             depot_keys = self._merge_existing_keys(app_id, depot_keys, candidate_depots or set())
 
-            # 4. Project the config: base game only on inject (DLCs are opt-in).
+            # 4. Project the config the way ASSella's AT0-M mode does: the base
+            #    game plus every DLC, with every depot that has a key.
             details = self.steam.app_details(app_id)
             installed_depots = (
                 (self.steam.install_info(app_id) or {}).get("installed_depots") or {}
@@ -512,8 +513,9 @@ class Injector:
                 depot_dlc=((details or {}).get("depot_dlc") or {}),
                 installed_depots=installed_depots,
             )
+            all_dlcs = self._known_dlcs(app_id, owner_map, details or {}, {})
             result = self._project_config(
-                app_id, resolved_name, depot_keys, owner_map, set(),
+                app_id, resolved_name, depot_keys, owner_map, all_dlcs,
                 candidate_depots=candidate_depots,
                 manifest_ids=manifest_ids,
                 app_tokens=app_tokens,
@@ -534,11 +536,9 @@ class Injector:
                     resolved_name,
                     depots_added,
                     depot_keys,
-                    installdir="",
+                    installdir=self._installdir(app_id, details),
                     depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
-                    # This UI injects the base game in normal AT0-M mode. DLC
-                    # layers are opt-in and enabled later via set_game_apps.
-                    dlc_appids=[],
+                    dlc_appids=result.get("dlc_appids", []),
                 ):
                     status["registered"] = True
                     logger.info("Registered %s (%s) in plugin_library.json", resolved_name, app_id)
@@ -547,9 +547,6 @@ class Injector:
                         "Config injected but plugin_library.json registration failed for %s", app_id
                     )
 
-                # 6. Optional DLC registration (separate, batched write)
-                if self.ctx.read_setting("fetch_dlcs_on_inject"):
-                    self.fetch_dlcs(app_id)
 
             status["done"] = True
             status["running"] = False
@@ -624,6 +621,28 @@ class Injector:
         return out
 
     # -- appid-driven projection ----------------------------------------------
+    def _known_dlcs(self, aid: str, owner_map: dict, details: dict, record: dict) -> set:
+        """Every DLC AppID we can attribute to the game (Steam lists + depot owners)."""
+        known = set(owner_map) - {"base"}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("dlc") or [])) if d}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("dlc_all") or [])) if d}
+        known |= {d for d in (sanitize_id(x) for x in (details.get("depot_dlc") or {}).values()) if d}
+        known |= {str(d) for d in (record.get("dlc_appids") or []) if str(d).isdigit()}
+        known.discard(aid)
+        return known
+
+    def _installdir(self, aid: str, details: dict | None, record: dict | None = None) -> str:
+        """Steam's folder name for the game, as ASSella records it.
+
+        Order: Steam's own appmanifest (if Steam already knows the game), PICS
+        ``config.installdir``, then whatever the record already had.
+        """
+        try:
+            local = (self.steam.install_info(aid) or {}).get("install_dir") or ""
+        except Exception:  # noqa: BLE001
+            local = ""
+        return (local or (details or {}).get("installdir") or (record or {}).get("installdir") or "").strip()
+
     def _enabled_dlcs(self, app_id: str) -> list[str]:
         """DLC AppIDs currently enabled for a game, read from the live config."""
         aid = sanitize_id(app_id)
@@ -690,10 +709,9 @@ class Injector:
                 result.get("name") or f"App {aid}",
                 depots_added,
                 depot_keys,
-                installdir=record.get("installdir", ""),
+                installdir=self._installdir(aid, details, record),
                 depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
-                dlc_appids=record.get("dlc_appids", []),
-                enabled_dlc_appids=sort_ids(enabled),
+                dlc_appids=sort_ids(enabled),
             )
             signal_api("RELOAD", logger)
         return result
@@ -761,10 +779,9 @@ class Injector:
                 result.get("name") or name,
                 depots_added,
                 depot_keys,
-                installdir=record.get("installdir", ""),
+                installdir=self._installdir(aid, details, record),
                 depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
-                dlc_appids=record.get("dlc_appids", []),
-                enabled_dlc_appids=sort_ids(enabled),
+                dlc_appids=sort_ids(enabled),
             )
             signal_api("RELOAD", logger)
         return result
@@ -867,10 +884,9 @@ class Injector:
                 resolved_name,
                 depots_added,
                 depot_keys,
-                installdir=record.get("installdir", ""),
+                installdir=self._installdir(aid, details, record),
                 depot_names={d: self.ctx.depot_names.get(d, "") for d in depots_added},
-                dlc_appids=record.get("dlc_appids", []),
-                enabled_dlc_appids=sort_ids(dlcs),
+                dlc_appids=sort_ids(dlcs),
             )
             signal_api("RELOAD", logger)
             result["name"] = resolved_name

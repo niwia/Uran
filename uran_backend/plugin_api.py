@@ -77,14 +77,6 @@ class Plugin:
             if seeded:
                 logger.info("Restored %s cached manifest(s) to depotcache", seeded)
 
-        # Check and auto-deploy default interceptor (SpaceBunny) if none is present
-        if self.s.plugin_deployer:
-            try:
-                await asyncio.to_thread(self.s.plugin_deployer.ensure_default_interceptor)
-                await asyncio.to_thread(self.s.plugin_deployer.sync_spacebunny_conf)
-            except Exception as exc:
-                logger.warning("Plugin deployer initialization check failed: %s", exc)
-
         # Start Epsilon embedded loopback if port 1952 is not already handled by systemd/external
         try:
             from .epsilon_server import ensure_loopback_running
@@ -144,28 +136,6 @@ class Plugin:
         from .updates import plugin_info
 
         return plugin_info(self.s.ctx)
-
-    async def get_sls_plugin_deploy_status(self) -> dict:
-        if self.s.plugin_deployer is None:
-            return {"ok": False, "error": "Plugin deployment is unavailable."}
-        return await asyncio.to_thread(self.s.plugin_deployer.status)
-
-    async def deploy_sls_plugin(self, filename: str) -> dict:
-        if self.s.plugin_deployer is None:
-            return {"ok": False, "error": "Plugin deployment is unavailable."}
-        return await asyncio.to_thread(self.s.plugin_deployer.deploy, filename)
-
-    async def enable_sls_plugin(self, filename: str) -> dict:
-        """Enable a previously disabled plugin."""
-        if self.s.plugin_deployer is None:
-            return {"ok": False, "error": "Plugin deployment is unavailable."}
-        return await asyncio.to_thread(self.s.plugin_deployer.enable_plugin, filename)
-
-    async def disable_sls_plugin(self, filename: str) -> dict:
-        """Disable a plugin so it won't be auto-deployed on startup."""
-        if self.s.plugin_deployer is None:
-            return {"ok": False, "error": "Plugin deployment is unavailable."}
-        return await asyncio.to_thread(self.s.plugin_deployer.disable_plugin, filename)
 
     async def check_for_updates(self) -> dict:
         from .updates import check_for_updates

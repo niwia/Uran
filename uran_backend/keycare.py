@@ -162,11 +162,6 @@ class Keycare:
         if not ok:
             return False, message
         wrote, where = self.ctx.hubcap_key.save(key)
-        if wrote and self.plugin_deployer:
-            try:
-                self.plugin_deployer.sync_spacebunny_conf()
-            except Exception as exc:
-                logger.warning("Could not sync spacebunny.conf.lua: %s", exc)
         return wrote, where
 
     def user_stats(self) -> dict:

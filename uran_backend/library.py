@@ -97,15 +97,15 @@ class PluginLibrary:
         installdir: str = "",
         depot_names: dict | None = None,
         dlc_appids: list | None = None,
-        enabled_dlc_appids: list | None = None,
+        is_dlc_only: bool = False,
     ) -> bool:
         """Register a game in the AT0-M library.
 
         Schema is taken verbatim from ASSella's register_plugin_game so ASSella
         treats games injected here identically to games it injected itself.
-        ``enabled_dlc_appids`` records the DLC layers a base-game install has
-        switched on (distinct from ``dlc_appids``, ASSella's DLC-only mode); a
-        later uninstall removes both sets.
+        Like ASSella, ``dlc_appids`` lists the game's DLC entitlements and
+        ``dlc_only`` is a separate mode flag: a full game has its DLC AppIDs
+        here with ``dlc_only: false``.
         """
         appid_str = str(appid).strip()
         if not appid_str.isdigit() or appid_str in ("0", "N/A", "unknown"):
@@ -113,15 +113,11 @@ class PluginLibrary:
             return False
 
         clean_dlc = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
-        clean_enabled = sorted({
-            str(d).strip() for d in (enabled_dlc_appids or []) if str(d).strip().isdigit()
-        })
         clean_depots = [
             str(d).strip() for d in (depot_ids or [])
             if str(d).strip().isdigit()
             and str(d).strip() != appid_str
             and str(d).strip() not in clean_dlc
-            and str(d).strip() not in clean_enabled
         ]
 
         clean_keys = {
@@ -154,9 +150,8 @@ class PluginLibrary:
             "depots": clean_depots,
             "keys": clean_keys,
             "depot_names": clean_names,
-            "dlc_only": bool(clean_dlc),
+            "dlc_only": bool(is_dlc_only and clean_dlc),
             "dlc_appids": clean_dlc,
-            "enabled_dlc_appids": clean_enabled,
             "updated_at": int(time.time()),
             "source": "plugin_native",
         }

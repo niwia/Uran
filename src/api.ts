@@ -50,6 +50,10 @@ export type InjectStatus = {
 export type AtomGame = {
   app_id: string;
   name: string;
+  /** installed | downloading | queued (Steam has it) | added (not started) */
+  state?: "installed" | "downloading" | "queued" | "added";
+  /** config.yaml no longer matches plugin_library.json */
+  issues?: string[];
   installed: boolean;
   downloading?: boolean;
   install_path: string;
@@ -371,37 +375,8 @@ export const setGlobalSlsOnline = callable<[enabled: boolean], { ok: boolean; en
 );
 export const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
 export const getPluginInfo = callable<[], { name: string; version: string }>("get_plugin_info");
-export type SlsPluginDeployStatus = {
-  ok: boolean;
-  error?: string;
-  directory?: string;
-  active_interceptor?: string | null;
-  plugins?: Record<string, {
-    label: string;
-    kind?: "interceptor" | "companion";
-    state: "missing" | "outdated" | "up_to_date" | "unknown";
-    active: boolean;
-    version?: string | null;
-    available_remote?: boolean;
-    user_disabled?: boolean;
-  }>;
-};
-export const getSlsPluginDeployStatus = callable<[], SlsPluginDeployStatus>(
-  "get_sls_plugin_deploy_status",
-);
-export const deploySlsPlugin = callable<[filename: string], {
-  ok: boolean;
-  message?: string;
-  error?: string;
-}>("deploy_sls_plugin");
-export const enableSlsPlugin = callable<[filename: string], {
-  ok: boolean;
-  error?: string;
-}>("enable_sls_plugin");
-export const disableSlsPlugin = callable<[filename: string], {
-  ok: boolean;
-  error?: string;
-}>("disable_sls_plugin");
+// Plugin deployment was removed: ASSella installs SLSsteam plugins; Uran only checks them (see HealthPlugins).
+
 
 export const checkAtomGameUpdates = callable<[app_id: string], AtomUpdate>(
   "check_atom_game_updates",
@@ -456,6 +431,8 @@ export type HealthPlugins = {
   ok: boolean;
   plugins_enabled: boolean;
   plugins: string[];
+  required?: string[];
+  missing?: string[];
   searched?: string[];
 };
 export type HealthSls = {

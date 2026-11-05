@@ -33,6 +33,7 @@ else
 
     echo "[+] Updating backend and service files in $INSTALL_DIR..."
     cp -r "$EXTRACTED_DIR/uran_backend" "$INSTALL_DIR/"
+    cp -r "$EXTRACTED_DIR/assella_shared" "$INSTALL_DIR/"
     cp -r "$EXTRACTED_DIR/epsilon" "$INSTALL_DIR/"
     cp -r "$EXTRACTED_DIR/photar" "$INSTALL_DIR/"
     cp "$EXTRACTED_DIR/plugin.json" "$INSTALL_DIR/" 2>/dev/null || true

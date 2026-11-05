@@ -1,5 +1,5 @@
 """Tests for operational gates: config.yaml non-generation, required sections,
-SpaceBunny auto-deployment, and spacebunny.conf.lua sync.
+and the plugin presence check (Uran no longer deploys plugins).
 """
 
 import hashlib
@@ -12,7 +12,6 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from uran_backend.guards import GuardService
-from uran_backend.plugin_deploy import PluginDeployer
 from uran_backend.sls_config import SlsConfig, ensure_required_sections, ensure_section_header
 
 
@@ -81,89 +80,13 @@ def run():
         check("reason is no_sls_config", res["reason"] == "no_sls_config")
         check("error mentions SLSsteam must be running", "running to generate it" in res["error"])
 
-    # 4. SpaceBunny auto-deployment from R2 if no interceptor exists
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp)
-        cfg_path = home / ".config" / "SLSsteam" / "config.yaml"
-        plugins_dir = cfg_path.parent / "plugins"
-        cfg_path.parent.mkdir(parents=True)
-        plugins_dir.mkdir(parents=True)
-        cfg_path.write_text("Plugins: yes\n", encoding="utf-8")
-
-        hubcap_key_val = ["test-key-abc"]
-        ctx = SimpleNamespace(
-            home=home,
-            runtime_dir=home / "runtime",
-            sls_config=lambda: cfg_path,
-            hubcap_key=SimpleNamespace(current=lambda: hubcap_key_val[0]),
-            sls_lock=SimpleNamespace(__enter__=lambda self: None, __exit__=lambda *a: None),
-            _settings={},
-            read_setting=lambda key, default=None: ctx._settings.get(key, default),
-            write_setting=lambda key, value: ctx._settings.update({key: value}),
-        )
-        sls = SlsConfig(ctx)
-
-        content = {
-            "spacebunny1.5.lua": b"-- spacebunny plugin code\n",
-            "spliced-tickets.lua": b"-- spliced tickets code\n",
-        }
-        manifest = {
-            "plugins": {
-                name: {"sha256": hashlib.sha256(data).hexdigest(), "version": "1.5.0"}
-                for name, data in content.items()
-            }
-        }
-
-        import urllib.request
-        from uran_backend import plugin_deploy
-
-        def fake_urlopen(request, timeout=10):
-            url = request.full_url
-            if url.endswith("plugins_manifest.json"):
-                return FakeResponse(json.dumps(manifest).encode())
-            name = url.rsplit("/", 1)[-1]
-            return FakeResponse(content[name])
-
-        plugin_deploy.urllib.request.urlopen = fake_urlopen
-        deployer = PluginDeployer(ctx, sls)
-
-        # Initially, no lua plugin exists. ensure_default_interceptor must deploy SpaceBunny
-        r = deployer.ensure_default_interceptor()
-        check("auto-deploy SpaceBunny succeeded", r["ok"])
-        check("spacebunny1.5.lua deployed", (plugins_dir / "spacebunny1.5.lua").is_file())
-        check("spacebunny.conf.lua created with key", (cfg_path.parent / "spacebunny.conf.lua").is_file())
-        check("spacebunny.conf.lua contains key", "test-key-abc" in (cfg_path.parent / "spacebunny.conf.lua").read_text())
-
-        # Existing SpaceBunny settings must survive key synchronization.
-        conf = cfg_path.parent / "spacebunny.conf.lua"
-        conf.write_text(
-            'return { standalone = true, hubcap = { enabled = false, '
-            'api_key = "old", api_key_timestamp = 1, '
-            'base_url = "https://example.test", timeout_sec = 17, '
-            'write_config = false, notify = false, preflight = "all", '
-            'depot_index = true, write_depot_comments = true } }\n',
-            encoding="utf-8",
-        )
-        hubcap_key_val[0] = "new-key-xyz"
-        deployer.sync_spacebunny_conf()
-        synced = conf.read_text(encoding="utf-8")
-        check("standalone setting preserved", "standalone = true" in synced)
-        check("Hubcap boolean settings preserved", "enabled = false" in synced and "write_config = false" in synced and "notify = false" in synced)
-        check("Hubcap string settings preserved", 'base_url = "https://example.test"' in synced and 'preflight = "all"' in synced)
-        check("Hubcap depot settings preserved", "depot_index = true" in synced and "write_depot_comments = true" in synced)
-        check("Hubcap timeout preserved", "timeout_sec = 17" in synced)
-
-        # If user clears hubcap key, sync_spacebunny_conf removes spacebunny.conf.lua
-        hubcap_key_val[0] = ""
-        deployer.sync_spacebunny_conf()
-        check("spacebunny.conf.lua removed when key is empty", not (cfg_path.parent / "spacebunny.conf.lua").exists())
-
-        # If user has another interceptor (e.g. custom.lua), ensure_default_interceptor ignores it
-        (plugins_dir / "custom.lua").write_text("-- custom interceptor\n")
-        (plugins_dir / "spacebunny1.5.lua").unlink()
-        r2 = deployer.ensure_default_interceptor()
-        check("custom lua present -> ignored auto-deploy", r2["ok"] and not r2.get("deployed", False))
-        check("spacebunny was not deployed over custom", not (plugins_dir / "spacebunny1.5.lua").exists())
+    # 4. Uran only checks plugins; the required set comes from assella_shared.
+    from assella_shared.plugin_manifest import missing_plugins, MANIFEST_ENABLED
+    check("signed manifest reader is switched off", MANIFEST_ENABLED is False)
+    check("all present -> nothing missing", missing_plugins(
+        ["spacebunny.lua", "styx.lua", "lobster.lua", "katamari.lua", "lettuce.lua"]) == [])
+    check("legacy bypass.lua counts as lettuce", "lettuce.lua" not in missing_plugins(["bypass.lua"]))
+    check("missing interceptor reported", "spacebunny.lua" in missing_plugins(["styx.lua"]))
 
     print("\nall operational gates checks pass")
 

@@ -16,7 +16,7 @@ const tabIcons = {
 };
 
 export const Content: React.FC = () => {
-  const [tab, setTab] = useState("Games");
+  const [tab, setTab] = useState("Search");
   const [setupComplete, setSetupComplete] = useState(true);
   const [contentFocused, setContentFocused] = useState(false);
   const [games, setGames] = useState<AtomGame[]>([]);
@@ -61,7 +61,7 @@ export const Content: React.FC = () => {
     if (runningAppId && runningAppId !== previous && nowPlayingGame) {
       setTab("NowPlaying");
     } else if (!runningAppId && previous && tab === "NowPlaying") {
-      setTab("Games");
+      setTab("Search");
     }
   }, [runningAppId, nowPlayingGame, tab]);
 
@@ -85,14 +85,14 @@ export const Content: React.FC = () => {
         ]
       : []),
     {
-      id: "Games",
-      title: tabIcons.games,
-      content: tabContent(<GamesTab />),
-    },
-    {
       id: "Search",
       title: tabIcons.search,
       content: tabContent(<SearchTab />),
+    },
+    {
+      id: "Games",
+      title: tabIcons.games,
+      content: tabContent(<GamesTab />),
     },
     {
       id: "Settings",
@@ -102,7 +102,7 @@ export const Content: React.FC = () => {
   ];
 
   const availableTabIds = new Set(tabs.map(({ id }) => id));
-  const activeTab = availableTabIds.has(tab) ? tab : "Games";
+  const activeTab = availableTabIds.has(tab) ? tab : "Search";
 
   return (
     <div

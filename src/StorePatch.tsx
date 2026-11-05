@@ -1,5 +1,5 @@
 /**
- * StorePatch.ts — Injects "Add to ASSella" button into Steam Store webview.
+ * StorePatch.ts — Injects the "Add to Uran" button into Steam Store webview.
  *
  * The Big Picture store is a webview (GamepadUI route /routes/steamweb -> real
  * document is store.steampowered.com). We drive it through CDP WebSocket.
@@ -296,11 +296,18 @@ function buildInjectScript(): string {
 
         b.appendChild(span);
 
+        // Swallow the gamepad OK / Enter here. Left to bubble, it reaches the
+        // store's own purchase area, whose handler starts Steam's Install for a
+        // game that has just become owned through AdditionalApps.
         b.addEventListener('vgp_onok', function(e) {
+          e.stopPropagation();
+          e.preventDefault();
           b.click();
-        });
+        }, true);
         b.addEventListener('keydown', function(e) {
           if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+            e.preventDefault();
             b.click();
           }
         });

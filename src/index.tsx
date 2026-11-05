@@ -24,8 +24,8 @@ export default definePlugin(() => {
     .catch(() => {});
 
   return {
-    name: "ASSella",
-    titleView: <div className={staticClasses.Title}>ASSella</div>,
+    name: "Uran",
+    titleView: <div className={staticClasses.Title}>Uran</div>,
     alwaysRender: true,
     content: <Content />,
     icon: (

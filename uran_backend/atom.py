@@ -56,8 +56,48 @@ class AtomLibrary:
         self.manifests = manifests
         self.integrations = integrations
 
+    @staticmethod
+    def _state(install: dict) -> str:
+        """installed | downloading | queued | added (Steam has not started it)."""
+        try:
+            flags = int(install.get("state_flags") or 0)
+        except (TypeError, ValueError):
+            flags = 0
+        if install.get("acf_path"):
+            return "installed" if flags & 4 else "queued"
+        if install.get("downloading"):
+            return "downloading"
+        return "added"
+
+    def _config_issues(self, aid: str, record: dict, apps: set, keys: set) -> list[str]:
+        """Where config.yaml no longer matches the plugin_library record (same rules as ASSella)."""
+        issues = []
+        if record.get("dlc_only"):
+            dlcs = [str(d) for d in record.get("dlc_appids", [])]
+            if dlcs and not any(d in apps for d in dlcs):
+                issues.append("DLC not in AdditionalApps")
+        elif aid not in apps:
+            issues.append("Not in AdditionalApps")
+        missing = [
+            str(d) for d in (record.get("keys") or {})
+            if str(d) != aid and str(d) not in keys
+        ]
+        if missing:
+            issues.append(f"{len(missing)} key(s) missing from config.yaml")
+        return issues
+
     def list_games(self) -> list[dict]:
         """All AT0-M registered games with their install state."""
+        apps: set = set()
+        keys: set = set()
+        cfg = self.ctx.sls_config()
+        if cfg and cfg.exists():
+            try:
+                content = cfg.read_text(encoding="utf-8", errors="ignore")
+                apps = set(parse_list_section(content, "AdditionalApps").keys())
+                keys = set(parse_key_section(content, "DecryptionKeys")[0].keys())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("SLS config parse error: %s", exc)
         games = []
         for app_id, record in (self.library.load() or {}).items():
             if not isinstance(record, dict):
@@ -66,11 +106,14 @@ class AtomLibrary:
             if not aid:
                 continue
             install = self.steam.install_info(aid)
+            state = self._state(install)
             games.append({
+                "state": state,
+                "issues": self._config_issues(aid, record, apps, keys) if cfg else [],
                 "app_id": aid,
                 "name": record.get("name") or install.get("game_name") or f"App {aid}",
-                "installed": bool(install.get("installed")),
-                "downloading": bool(install.get("downloading")),
+                "installed": state == "installed",
+                "downloading": state in ("downloading", "queued"),
                 "install_path": install.get("install_path", ""),
                 "install_dir": install.get("install_dir", ""),
                 "size_on_disk": install.get("size_on_disk", 0),

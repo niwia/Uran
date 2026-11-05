@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
+  Navigation,
   PanelSection,
   PanelSectionRow,
   Field,
@@ -9,7 +10,7 @@ import {
   ConfirmModal,
   showModal,
 } from "@decky/ui";
-import { FaChevronDown, FaChevronUp, FaRedo, FaTrash, FaExternalLinkAlt } from "react-icons/fa";
+import { FaChevronDown, FaChevronUp, FaRedo, FaTrash, FaSlidersH, FaSteam, FaExclamationCircle } from "react-icons/fa";
 import {
   listAtomGames,
   getAtomGame,
@@ -160,63 +161,95 @@ const GameAccordionItem: React.FC<GameAccordionItemProps> = ({
     }
   };
 
-  const sizeText = game.size_on_disk ? ` · ${formatBytes(game.size_on_disk)}` : "";
-  const updateBadge = updateInfo?.has_update ? " [Update Available]" : "";
+  const state = game.state ?? (game.installed ? "installed" : "added");
+  const issues = game.issues ?? [];
+  const attention = state === "added" || issues.length > 0;
+  const stateText: Record<string, string> = {
+    installed: game.size_on_disk ? formatBytes(game.size_on_disk) : "Installed",
+    downloading: "Downloading in Steam",
+    queued: "Queued in Steam",
+    added: "Added · not downloaded",
+  };
+  const subtitle = issues.length > 0 ? `Incomplete · ${issues[0]}` : stateText[state];
+  const hasUpdate = Boolean(updateInfo?.has_update);
+  const busy = busyAction !== null;
+
+  const actionButton = (key: string, icon: React.ReactNode, text: string, onClick: () => void, danger = false) => (
+    <PanelSectionRow key={key}>
+      <ButtonItem layout="below" onClick={onClick} disabled={busy}>
+        <div className={`uran-game-action${danger ? " uran-game-action--danger" : ""}`}>
+          {icon}
+          <span>{text}</span>
+        </div>
+      </ButtonItem>
+    </PanelSectionRow>
+  );
 
   return (
     <>
       <PanelSectionRow>
         <Field
           label={
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: "8px" }}>
-                {game.name}
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#8ba5b8", flexShrink: 0 }}>
-                {detail?.slsonline && (
-                  <span style={{ color: "#7ee2a8", fontWeight: "bold" }}>480</span>
-                )}
-                {isExpanded ? <FaChevronUp size={12} /> : <FaChevronDown size={12} />}
-              </span>
+            <div className="uran-game-head">
+              <span className="uran-game-name">{game.name}</span>
+              {attention && (
+                <span className="uran-game-attn">
+                  <FaExclamationCircle size={12} />
+                </span>
+              )}
+              {hasUpdate && <span className="uran-chip uran-chip--update">Update</span>}
+              {detail?.slsonline && <span className="uran-chip">480</span>}
+              {isExpanded ? <FaChevronUp size={11} /> : <FaChevronDown size={11} />}
             </div>
           }
-          description={`App ID ${game.app_id}${sizeText}${updateBadge}`}
+          description={<span className={issues.length ? "uran-game-sub uran-game-sub--warn" : "uran-game-sub"}>{subtitle}</span>}
           onClick={onToggle}
           highlightOnFocus
         />
       </PanelSectionRow>
 
       {isExpanded && (
-        <div className="uran-accordion-body">
+        <div className="uran-game-panel">
+          <div className="uran-game-meta">
+            <span>App {game.app_id}</span>
+            {game.buildid && <span>Build {game.buildid}</span>}
+            <span>{game.key_count} key{game.key_count === 1 ? "" : "s"}</span>
+            {game.dlc_only && <span>DLC only</span>}
+          </div>
+          {issues.length > 0 && (
+            <div className="uran-game-warn">
+              {issues.join(" · ")}. Refetch writes it back from Hubcap; Remove clears what is left.
+            </div>
+          )}
+
           {loadingDetail ? (
             <PanelSectionRow>
-              <Field label="Loading details..." />
+              <Field label="Loading..." />
             </PanelSectionRow>
           ) : (
             <>
+              <div className="uran-game-group">Online</div>
               <PanelSectionRow>
                 <ToggleField
-                  label="SLS Online (0: 480)"
-                  description="Redirect multiplayer to App ID 480"
+                  label="SLSonline"
+                  description={detail?.global_slsonline ? "On for all games in Settings" : "Play online as Spacewar (480)"}
                   checked={detail?.slsonline ?? false}
                   disabled={busyAction === "slsonline" || detail?.global_slsonline}
                   onChange={handleToggleSlsOnline}
                 />
               </PanelSectionRow>
-
               <PanelSectionRow>
                 <ToggleField
-                  label="NetSock Intercept"
+                  label="NetSock"
                   checked={detail?.netsock ?? false}
                   disabled={busyAction === "netsock"}
                   onChange={handleToggleNetsock}
                 />
               </PanelSectionRow>
-
               {detail?.eos_available && (
                 <PanelSectionRow>
                   <ToggleField
-                    label="EOS Intercept"
+                    label="EOS proxy"
                     checked={detail?.eos === "manual" || detail?.eos === "auto"}
                     disabled={busyAction === "eos"}
                     onChange={handleToggleEos}
@@ -224,43 +257,15 @@ const GameAccordionItem: React.FC<GameAccordionItemProps> = ({
                 </PanelSectionRow>
               )}
 
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={handleRefetch}
-                  disabled={busyAction === "refetch"}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
-                    <FaRedo size={12} />
-                    <span>{busyAction === "refetch" ? "Refetching..." : "Refetch Manifests"}</span>
-                  </div>
-                </ButtonItem>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => openAdvanced(game.app_id)}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
-                    <FaExternalLinkAlt size={12} />
-                    <span>Manage Depots & DLCs</span>
-                  </div>
-                </ButtonItem>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={handleUninstall}
-                  disabled={busyAction !== null}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
-                    <FaTrash size={12} />
-                    <span>Uninstall Game</span>
-                  </div>
-                </ButtonItem>
-              </PanelSectionRow>
+              <div className="uran-game-group">Manage</div>
+              {state !== "installed" &&
+                actionButton("steam", <FaSteam size={12} />, "Open in Steam Library", () =>
+                  Navigation.Navigate(`/library/app/${game.app_id}`))}
+              {actionButton("refetch", <FaRedo size={12} />,
+                busyAction === "refetch" ? "Refetching..." : "Refetch keys & manifests", handleRefetch)}
+              {actionButton("depots", <FaSlidersH size={12} />, "Manage depots", () => openAdvanced(game.app_id))}
+              {actionButton("remove", <FaTrash size={12} />,
+                state === "installed" ? "Uninstall" : "Remove from AT0-M", handleUninstall, true)}
             </>
           )}
         </div>
@@ -268,6 +273,27 @@ const GameAccordionItem: React.FC<GameAccordionItemProps> = ({
     </>
   );
 };
+
+const gameCardStyles = `
+  .uran-game-head { display: flex; align-items: center; gap: 6px; width: 100%; }
+  .uran-game-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .uran-game-attn { color: #ffb74d; flex-shrink: 0; }
+  .uran-chip { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px;
+    background: rgba(126, 226, 168, 0.15); color: #7ee2a8; flex-shrink: 0; }
+  .uran-chip--update { background: rgba(255, 183, 77, 0.15); color: #ffb74d; }
+  .uran-game-sub { font-size: 12px; color: #8ba5b8; }
+  .uran-game-sub--warn { color: #ffb74d; }
+  .uran-game-panel { margin: 0 4px 8px 4px; padding: 6px 4px 4px 4px; border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.07); }
+  .uran-game-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 2px 10px 6px 10px;
+    font-size: 11px; color: #8ba5b8; }
+  .uran-game-warn { margin: 0 8px 6px 8px; padding: 6px 8px; border-radius: 6px; font-size: 11px;
+    line-height: 1.35; color: #ffcc80; background: rgba(255, 183, 77, 0.10); }
+  .uran-game-group { padding: 6px 10px 0 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: rgba(255, 255, 255, 0.45); }
+  .uran-game-action { display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .uran-game-action--danger { color: #ff9a9a; }
+`;
 
 export const GamesTab: React.FC = () => {
   const [games, setGames] = useState<AtomGame[]>([]);
@@ -319,7 +345,8 @@ export const GamesTab: React.FC = () => {
 
   return (
     <>
-      <PanelSection title={`Installed Games (${games.length})`}>
+      <style>{gameCardStyles}</style>
+      <PanelSection title={`AT0-M Games (${games.length})`}>
         {games.length > 5 && (
           <PanelSectionRow>
             <TextField

@@ -23,6 +23,8 @@ import {
   saveHubcapKey,
   validateHubcapKey,
   getHealthStatus,
+  once,
+  refreshOnce,
   checkConfigStatus,
   isGlobalSlsOnlineEnabled,
   setGlobalSlsOnline,
@@ -48,7 +50,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
   // General settings
   const [steamStoreEnabled, setSteamStoreEnabled] = useState(true);
   const [addDelistedDlcs, setAddDelistedDlcs] = useState(true);
-  const [fetchDlcsOnInject, setFetchDlcsOnInject] = useState(true);
   const [notificationMode, setNotificationModeState] = useState<"auto" | "steam" | "desktop" | "none">("auto");
 
   // Health & Environment
@@ -93,19 +94,23 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
-  const loadHealthAndKey = useCallback(async () => {
+  // Health (plugin presence, SLSsteam version) and Hubcap stats are cached for
+  // the session: opening Settings must not re-run the checks every time.
+  // `fresh` re-runs them (after saving a key, or from Refresh).
+  const loadHealthAndKey = useCallback(async (fresh: boolean = false) => {
     try {
+      const cached = fresh ? refreshOnce : once;
       const [h, k, s] = await Promise.all([
-        getHealthStatus().catch(() => null),
+        cached("health", getHealthStatus).catch(() => null),
         getHubcapKeyStatus().catch(() => null),
-        getHubcapUserStats().catch(() => ({ ok: false })),
+        cached("hubcap_stats", getHubcapUserStats).catch(() => ({ ok: false })),
       ]);
       if (h) setHealth(h);
       if (k) setKeyStatus(k);
       if (s) setStats(s);
 
       const isSlsReady = h?.sls?.status !== "no_local";
-      const hasPlugins = (h?.plugins?.plugins?.length ?? 0) > 0;
+      const hasPlugins = (h?.plugins?.plugins?.length ?? 0) > 0 && (h?.plugins?.missing?.length ?? 0) === 0;
       const hasKey = Boolean(k?.masked);
       onSetupStatusChange?.(isSlsReady && hasPlugins && hasKey);
     } catch {
@@ -121,9 +126,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
       .catch(() => {});
     getSetting("add_delisted_dlcs", true)
       .then((v) => setAddDelistedDlcs(Boolean(v)))
-      .catch(() => {});
-    getSetting("fetch_dlcs_on_inject", true)
-      .then((v) => setFetchDlcsOnInject(Boolean(v)))
       .catch(() => {});
     getSetting("notification_mode", "auto")
       .then((v) => setNotificationModeState(v as any))
@@ -157,7 +159,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
         notify("Hubcap Key", "API key saved successfully");
         setManualKey("");
         setShowManualKeyInput(false);
-        loadHealthAndKey();
+        loadHealthAndKey(true);
       } else {
         notify("Hubcap Key", saved?.message || "Failed to save key");
       }
@@ -176,11 +178,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
   const handleToggleAddDelisted = async (val: boolean) => {
     setAddDelistedDlcs(val);
     await setSetting("add_delisted_dlcs", val);
-  };
-
-  const handleToggleFetchDlcs = async (val: boolean) => {
-    setFetchDlcsOnInject(val);
-    await setSetting("fetch_dlcs_on_inject", val);
   };
 
   const handleNotificationModeChange = async (opt: any) => {
@@ -254,7 +251,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
   // Setup checks
   const isSlsInstalled = health?.sls?.status !== "no_local";
   const pluginsList = health?.plugins?.plugins ?? [];
-  const hasPlugins = pluginsList.length > 0;
+  const missingPlugins = health?.plugins?.missing ?? [];
+  const hasPlugins = pluginsList.length > 0 && missingPlugins.length === 0;
   const hasKey = Boolean(keyStatus?.masked);
   const setupIncomplete = !isSlsInstalled || !hasPlugins || !hasKey;
 
@@ -269,7 +267,14 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
               <div style={{ fontWeight: 700, marginBottom: "4px" }}>Setup Incomplete</div>
               <div style={{ fontSize: "12px", lineHeight: 1.4 }}>
                 {!isSlsInstalled && <div>• SLSsteam is not detected on this system.</div>}
-                {!hasPlugins && <div>• No SLSsteam plugins detected in the plugins directory.</div>}
+                {!hasPlugins && (
+                  <div>
+                    • {pluginsList.length === 0
+                      ? "No SLSsteam plugins found."
+                      : `Missing SLSsteam plugins: ${missingPlugins.join(", ")}.`}{" "}
+                    Install them with ASSella (Settings → AT0-M).
+                  </div>
+                )}
                 {!hasKey && <div>• Hubcap API key is not configured.</div>}
               </div>
             </div>
@@ -331,7 +336,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            onClick={() => showQrKeyModal(loadHealthAndKey)}
+            onClick={() => showQrKeyModal(() => loadHealthAndKey(true))}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
               <FaQrcode size={13} />
@@ -378,14 +383,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
       <PanelSection title="DLC & Store Settings">
         <PanelSectionRow>
           <ToggleField
-            label="Fetch DLCs on Inject"
-            description="Automatically retrieve game DLCs when injecting"
-            checked={fetchDlcsOnInject}
-            onChange={handleToggleFetchDlcs}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
             label="Auto-add Delisted DLCs"
             description="Include delisted and bonus DLC manifests"
             checked={addDelistedDlcs}
@@ -395,7 +392,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
         <PanelSectionRow>
           <ToggleField
             label="Steam Store Button"
-            description="Inject 'Add to ASSella' button into Steam Store webview"
+            description="Add an 'Add to Uran' button to the Steam Store page"
             checked={steamStoreEnabled}
             onChange={handleToggleSteamStore}
           />

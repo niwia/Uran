@@ -295,6 +295,9 @@ class SteamMeta:
         return {
             "app_id": app_id,
             "name": store.get("name") or cmd.get("common", {}).get("name") or f"App {app_id}",
+            # Steam's own folder name under steamapps/common (PICS config.installdir),
+            # the same value ASSella stores in plugin_library.json.
+            "installdir": str((cmd.get("config") or {}).get("installdir") or "").strip(),
             "packages": list(set(packages)),
             "depots": list(set(depots)),
             "depot_dlc": depot_dlc,

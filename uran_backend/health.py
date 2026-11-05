@@ -19,8 +19,8 @@ from . import paths
 
 logger = logging.getLogger("Uran")
 
-# Plugins ASSella treats as required (plugin_manager.FALLBACK_REQUIRED_PLUGINS).
-# Uran only lists what is actually in the folder; see check_plugins.
+# The required plugin set lives in assella_shared.plugin_manifest (same list
+# as ASSella). Uran only checks it; ASSella installs the plugins.
 SLS_PLUGIN_SUFFIX = ".lua"
 
 SLS_RELEASES_URL = "https://api.github.com/repos/AceSLS/SLSsteam/releases/latest"
@@ -110,10 +110,15 @@ class Health:
                         names.add(entry.name)
             except OSError as exc:
                 logger.debug("Plugin dir scan failed for %s: %s", directory, exc)
+        from assella_shared.plugin_manifest import missing_plugins, required_plugins
+
+        missing = missing_plugins(names)
         return {
             "ok": True,
             "plugins_enabled": self._plugins_flag(),
             "plugins": sorted(names),
+            "required": list(required_plugins()),
+            "missing": missing,
             "searched": searched,
         }
 

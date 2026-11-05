@@ -12,7 +12,6 @@ from .integrations import Integrations
 from .keycare import Keycare
 from .library import PluginLibrary
 from .manifests import Manifests
-from .plugin_deploy import PluginDeployer
 from .sls_config import SlsConfig
 from .steam_store import StoreDebugger
 from .steammeta import SteamMeta
@@ -59,7 +58,7 @@ def build(decky_module=None):
     steam = SteamMeta(ctx, library)
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
-    plugin_deployer = PluginDeployer(ctx, sls)
+    plugin_deployer = None  # plugin installation is ASSella's job; Uran only checks
 
     # Guards reach across services, so they are constructed after them.
     guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations, plugin_deployer))
