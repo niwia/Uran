@@ -5,6 +5,7 @@ and bidirectional synchronization with Uran and ASSella.
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,8 +34,11 @@ def main():
     # 1. Validation & Timestamp generation
     ts = generate_hubcap_timestamp()
     check("timestamp is integer", isinstance(ts, int))
-    check("timestamp is 9 or 10 digits", len(str(ts)) in (9, 10))
-    check("timestamp format mmhhddyyyy ends with current year", str(ts).endswith("2026") or str(ts).endswith("2025") or str(ts).endswith("2024") or str(ts).endswith("2027"))
+    check("timestamp is YYYYMMDDHHMMSS (14 digits)", len(str(ts)) == 14 and str(ts)[:4] == time.strftime("%Y"))
+    check("new form sorts above the old monthless form",
+          _timestamp_to_sort_key(20261107120000) > _timestamp_to_sort_key(2221262026))
+    check("Nov 7 beats Oct 26 (old form could not tell months apart)",
+          _timestamp_to_sort_key(20261107000000) > _timestamp_to_sort_key(20261026235959))
 
     # 2. Chronological sort key comparison
     # 10-digit mmhhddyyyy:
@@ -122,7 +126,7 @@ def main():
         check("settings.json updated with Lua timestamp", settings.get("manifest_api_key_timestamp") == 2522262026)
 
         # Case B: Uran refreshes with a newer timestamp
-        newer_ts = 5523262026
+        newer_ts = 20261107120000
         settings.set("manifest_api_key", "fresh_decky_key_22222")
         settings.set("manifest_api_key_timestamp", newer_ts)
 
@@ -135,7 +139,7 @@ def main():
         # Case C: ACCELA.conf shared sync
         accela_conf = root / ".config" / "Tachibana Labs" / "ACCELA.conf"
         accela_conf.parent.mkdir(parents=True, exist_ok=True)
-        accela_conf.write_text("[General]\nmorrenus_api_key=assella_key_33333\nmorrenus_api_key_timestamp=5923262026\n", encoding="utf-8")
+        accela_conf.write_text("[General]\nmorrenus_api_key=assella_key_33333\nmorrenus_api_key_timestamp=20261107130000\n", encoding="utf-8")
 
         # Clear Uran settings so it discovers ASSella/Lua
         settings.set("manifest_api_key", "")
@@ -144,6 +148,23 @@ def main():
         # Sync adopts newer key from ACCELA / Lua
         active_key, synced, reason = sync_hubcap_key_bidirectional(settings, conf, root)
         check("Adopts valid key across bridge", bool(active_key))
+        check("Newest key (ASSella) wins", active_key == "assella_key_33333")
+
+        # Case D: a newer ASSella key reaches Uran even when Uran already has one,
+        # and katamari.conf.lua (what the Lua plugins read) gets it too.
+        kat = conf.parent / "katamari.conf.lua"
+        kat.write_text('return {\n\thubcap = {\n\t\t-- api_key = "note",\n\t\tapi_key = "old_kat_key_44444",\n'
+                       '\t\tapi_key_timestamp = 20261101000000,\n\t},\n\tpinapple = { api_key = "x" },\n}\n')
+        settings.set("manifest_api_key", "uran_key_55555")
+        settings.set("manifest_api_key_timestamp", 20261102000000)
+        accela_conf.write_text("[General]\nmorrenus_api_key=assella_key_66666\nmorrenus_api_key_timestamp=20261107140000\n")
+        active_key, synced, reason = sync_hubcap_key_bidirectional(settings, conf, root)
+        check("newer ASSella key wins over Uran's own", synced and active_key == "assella_key_66666")
+        check("Uran settings take it", settings.get("manifest_api_key") == "assella_key_66666")
+        kat_text = kat.read_text()
+        check("katamari.conf.lua gets it", 'api_key = "assella_key_66666"' in kat_text)
+        check("katamari: other sections and comments untouched",
+              'pinapple = { api_key = "x" }' in kat_text and '-- api_key = "note"' in kat_text)
 
         # 7. write_accela_api_key writes key and timestamp
         ok, msg = paths.write_accela_api_key("final_key_77777", root, timestamp=1122262026)

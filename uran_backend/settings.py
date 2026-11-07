@@ -43,15 +43,25 @@ class Settings:
         # RLock: get+set is often performed as a pair while already holding it.
         self._lock = threading.RLock()
         self._cache: dict | None = None
+        self._cache_mtime = 0.0
 
     @property
     def path(self) -> Path:
         return self._path
 
+    def _mtime(self) -> float:
+        try:
+            return self._path.stat().st_mtime
+        except OSError:
+            return 0.0
+
     def load(self) -> dict:
         with self._lock:
-            if self._cache is not None:
+            # ASSella (Settings -> Companions) writes this file too: a changed
+            # mtime drops the cache so its edits apply without reloading Uran.
+            if self._cache is not None and self._mtime() == self._cache_mtime:
                 return self._cache
+            self._cache_mtime = self._mtime()
             cfg = dict(DEFAULTS)
             if self._path.exists():
                 try:
@@ -71,6 +81,7 @@ class Settings:
                 tmp.write_text(json.dumps(data, indent=2))
                 tmp.replace(self._path)
                 self._cache = dict(data)
+                self._cache_mtime = self._mtime()
             except Exception as exc:  # noqa: BLE001
                 logger.error("failed saving settings: %s", exc)
 
@@ -185,6 +196,10 @@ class HubcapKey:
                     wrote_lua = True
                 except OSError:
                     pass
+
+        # 2b. katamari.conf.lua: what the AT0-M plugins read (key fields only)
+        if key:
+            sls_lua_config.write_katamari_hubcap_key(sls_lua_config.katamari_conf_path(sb_path), key, ts)
 
         # 3. Update ASSella ACCELA.conf
         wrote_accela = False

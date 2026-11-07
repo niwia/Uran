@@ -98,31 +98,39 @@ def _parse_int(val_str: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 def generate_hubcap_timestamp() -> int:
-    """Generate timestamp in the format minute-hour-day-year (e.g. 4518242026)."""
+    """Timestamp in YYYYMMDDHHMMSS form (e.g. 20261107174500), the same as ASSella writes.
+
+    The old minute-hour-day-year form had no month, so a key from Oct 26 looked
+    newer than one from Nov 7 and the wrong key won the sync.
+    """
     now = time.localtime()
-    # mm (0-59), hh (0-23), dd (1-31), yyyy (4-digit)
-    return int(f"{now.tm_min:02d}{now.tm_hour:02d}{now.tm_mday:02d}{now.tm_year:04d}")
+    return int(
+        f"{now.tm_year:04d}{now.tm_mon:02d}{now.tm_mday:02d}"
+        f"{now.tm_hour:02d}{now.tm_min:02d}{now.tm_sec:02d}"
+    )
 
 
 def _timestamp_to_sort_key(ts: int) -> int:
-    """Convert timestamp to a chronologically sortable integer YYYYMMDDHHMM or epoch."""
+    """Chronologically sortable value; identical to ASSella's ordering.
+
+      - YYYYMMDDHHMMSS (current form): as-is, always newer than the old forms.
+      - Old mmhhddyyyy form (no month): year/day/hour/minute, sorts below every
+        current-form timestamp.
+      - Anything else (Unix epoch): as-is.
+    """
+    try:
+        ts = int(ts or 0)
+    except (TypeError, ValueError):
+        return 0
     if ts <= 0:
         return 0
-    s = str(ts).strip()
-    if len(s) in (9, 10):
-        s_padded = s.zfill(10)
-        if any(s_padded.endswith(str(y)) for y in range(2020, 2040)):
-            try:
-                minute = int(s_padded[0:2])
-                hour = int(s_padded[2:4])
-                day = int(s_padded[4:6])
-                year = int(s_padded[6:10])
-                return (year * 100000000) + (day * 1000000) + (hour * 10000) + minute
-            except ValueError:
-                pass
-    elif len(s) == 14:  # Legacy YYYYMMDDHHMMSS format support
+    if ts >= 20200101000000:
+        return ts
+    s = str(ts)
+    if len(s) in (9, 10) and any(s.endswith(str(y)) for y in range(2020, 2040)):
         try:
-            return int(s[:12])
+            p = s.zfill(10)
+            return int(p[6:10]) * 100000000 + int(p[4:6]) * 1000000 + int(p[2:4]) * 10000 + int(p[0:2])
         except ValueError:
             pass
     return ts
@@ -281,74 +289,150 @@ def sync_spacebunny_key(conf_path: Path, api_key: str, timestamp: int | None = N
 # Bidirectional Hubcap Key Synchronization Bridge
 # ---------------------------------------------------------------------------
 
-def sync_hubcap_key_bidirectional(settings, conf_path: Path | None, assella_home: Path | None) -> tuple[str, bool, str]:
-    """Synchronize Hubcap API key bidirectionally between Uran settings, spacebunny.conf.lua, and ASSella.
+def katamari_conf_path(spacebunny_conf_path: Path | None) -> Path | None:
+    """katamari.conf.lua sits next to spacebunny.conf.lua (the SLSsteam config dir)."""
+    if spacebunny_conf_path is None:
+        return None
+    return spacebunny_conf_path.parent / "katamari.conf.lua"
 
-    Returns:
-      (active_key, was_synced, reason)
+
+def _hubcap_block(text: str) -> tuple[int, int] | None:
+    """(start, end) of the hubcap = { ... } table, braces matched."""
+    m = re.search(r"^\s*hubcap\s*=\s*\{", text, re.MULTILINE)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return start, i + 1
+    return None
+
+
+def read_katamari_hubcap_key(path: Path | None) -> tuple[str, int]:
+    """(api_key, api_key_timestamp) from katamari.conf.lua's hubcap section."""
+    if path is None or not path.is_file():
+        return "", 0
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "", 0
+    span = _hubcap_block(text)
+    if not span:
+        return "", 0
+    block = text[span[0]:span[1]]
+    key, ts = "", 0
+    m = re.search(r"^\s*api_key\s*=\s*([^,\n\r]+)", block, re.MULTILINE)
+    if m:
+        key = _parse_string(m.group(1)) or ""
+    m = re.search(r"^\s*api_key_timestamp\s*=\s*([^,\n\r]+)", block, re.MULTILINE)
+    if m:
+        ts = _parse_int(m.group(1)) or 0
+    return key.strip(), ts
+
+
+def write_katamari_hubcap_key(path: Path | None, api_key: str, timestamp: int) -> bool:
+    """Change only hubcap.api_key / api_key_timestamp in an existing katamari.conf.lua.
+
+    ASSella owns the file; this touches nothing else and never creates it.
+    """
+    if path is None or not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        span = _hubcap_block(text)
+        if not span:
+            return False
+        block = text[span[0]:span[1]]
+        for name, value in (("api_key", f'"{escape_lua_string(api_key)}"'),
+                            ("api_key_timestamp", str(int(timestamp or 0)))):
+            pat = re.compile(r"^(\s*" + name + r"\s*=\s*)([^,\n\r]+)(,?)", re.MULTILINE)
+            if pat.search(block):
+                block = pat.sub(lambda m: m.group(1) + value + m.group(3), block, count=1)
+            else:
+                cut = block.rfind("}")
+                block = block[:cut] + f"\t\t{name} = {value},\n\t" + block[cut:]
+        new_text = text[:span[0]] + block + text[span[1]:]
+        if new_text != text:
+            with open(path, "w", encoding="utf-8") as handle:  # in place: keeps inode and mode
+                handle.write(new_text)
+        return True
+    except Exception as exc:
+        logger.error("Failed writing Hubcap key to %s: %s", path, exc)
+        return False
+
+
+def sync_hubcap_key_bidirectional(settings, conf_path: Path | None, assella_home: Path | None) -> tuple[str, bool, str]:
+    """Share one Hubcap API key between this companion, ASSella and the AT0-M plugins.
+
+    Places that can hold the key: this companion's settings, ASSella's config,
+    katamari.conf.lua (what the Lua plugins read) and the legacy
+    spacebunny.conf.lua. The key with the newest timestamp wins and is copied
+    to every place that exists and holds a different key. Nothing is created.
+
+    Returns (active_key, was_synced, reason).
     """
     from . import paths
 
-    local_key = str(settings.stored_hubcap_key() or "").strip()
-    try:
-        raw_val = settings.get("manifest_api_key_timestamp", 0)
-        local_ts = int(str(raw_val).strip() or 0)
-    except (ValueError, TypeError):
-        local_ts = 0
+    def _int(v) -> int:
+        try:
+            return int(str(v).strip() or 0)
+        except (TypeError, ValueError):
+            return 0
 
-    # Also check ASSella INI if present
-    assella_key = ""
-    assella_ts = 0
+    sources: list[tuple[str, str, int]] = []  # (where, key, ts); order breaks ties
+
+    katamari = katamari_conf_path(conf_path)
+    if katamari is not None and katamari.is_file():
+        k, t = read_katamari_hubcap_key(katamari)
+        sources.append(("katamari.conf.lua", k, t))
+
+    assella_conf = None
     if assella_home:
         for p in paths.accela_conf_candidates(assella_home):
             if p.is_file():
-                k = paths.read_ini_value(p, "morrenus_api_key")
-                if k:
-                    assella_key = k
-                    try:
-                        assella_ts = int(paths.read_ini_value(p, "morrenus_api_key_timestamp") or 0)
-                    except (ValueError, TypeError):
-                        assella_ts = 0
-                    break
+                assella_conf = p
+                sources.append(("ASSella", (paths.read_ini_value(p, "morrenus_api_key") or "").strip(),
+                                _int(paths.read_ini_value(p, "morrenus_api_key_timestamp"))))
+                break
 
-    # If local setting has no key but ASSella INI does, adopt ASSella's
-    if not local_key and assella_key:
-        local_key = assella_key
-        local_ts = assella_ts or generate_hubcap_timestamp()
-        settings.set("manifest_api_key", local_key)
-        settings.set("manifest_api_key_timestamp", local_ts)
+    local_key = str(settings.stored_hubcap_key() or "").strip()
+    sources.append(("companion", local_key, _int(settings.get("manifest_api_key_timestamp", 0))))
 
-    # If spacebunny.conf.lua is not accessible, return local key
-    if conf_path is None or not conf_path.is_file():
-        return local_key, False, "spacebunny.conf.lua not present"
+    if conf_path is not None and conf_path.is_file():
+        hub = read_spacebunny_conf(conf_path).get("hubcap", {})
+        sources.append(("spacebunny.conf.lua", str(hub.get("api_key", "")).strip(),
+                        _int(hub.get("api_key_timestamp", 0))))
 
-    sb_cfg = read_spacebunny_conf(conf_path)
-    hub = sb_cfg.get("hubcap", {})
-    lua_key = str(hub.get("api_key", "")).strip()
-    lua_ts = int(hub.get("api_key_timestamp", 0) or 0)
+    valid = [s for s in sources if is_valid_hubcap_key(s[1])]
+    if not valid:
+        return local_key, False, "No Hubcap key anywhere"
+    best = max(_timestamp_to_sort_key(s[2]) for s in valid)
+    where, key, ts = next(s for s in valid if _timestamp_to_sort_key(s[2]) == best)
 
-    lua_sort = _timestamp_to_sort_key(lua_ts)
-    local_sort = _timestamp_to_sort_key(local_ts)
+    updated = []
+    for name, k, _t in sources:
+        if k == key:
+            continue
+        ok = False
+        if name == "companion":
+            settings.set("manifest_api_key", key)
+            settings.set("manifest_api_key_timestamp", ts)
+            ok = True
+        elif name == "ASSella" and assella_home:
+            ok, _msg = paths.write_accela_api_key(key, assella_home, timestamp=ts)
+        elif name == "katamari.conf.lua":
+            ok = write_katamari_hubcap_key(katamari, key, ts)
+        elif name == "spacebunny.conf.lua":
+            ok = sync_spacebunny_key(conf_path, key, ts)
+        if ok:
+            updated.append(name)
 
-    # 1. Lua is newer and has a valid key -> sync to Uran settings and ASSella
-    if lua_sort > local_sort and is_valid_hubcap_key(lua_key):
-        settings.set("manifest_api_key", lua_key)
-        settings.set("manifest_api_key_timestamp", lua_ts)
-        if assella_home:
-            paths.write_accela_api_key(lua_key, assella_home, timestamp=lua_ts)
-        logger.info("Synced newer Hubcap API key from Lua (ts: %s) to Uran", lua_ts)
-        return lua_key, True, "Synced newer key from spacebunny.conf.lua bridge"
-
-    # 2. Local is newer (or Lua has no key) and local key is valid -> sync to spacebunny.conf.lua
-    elif (local_sort > lua_sort or (local_sort > 0 and lua_sort == 0) or (not lua_key and local_key)) and is_valid_hubcap_key(local_key):
-        sync_spacebunny_key(conf_path, local_key, local_ts or generate_hubcap_timestamp())
-        logger.info("Synced newer Hubcap API key from Uran (ts: %s) to Lua", local_ts)
-        return local_key, True, "Synced key to spacebunny.conf.lua bridge"
-
-    # 3. If Lua has a key but local doesn't have any timestamp -> initial adoption
-    elif is_valid_hubcap_key(lua_key) and not local_key:
-        settings.set("manifest_api_key", lua_key)
-        settings.set("manifest_api_key_timestamp", lua_ts or generate_hubcap_timestamp())
-        return lua_key, True, "Adopted key from spacebunny.conf.lua"
-
-    return local_key or lua_key, False, "Already in sync"
+    if updated:
+        logger.info("Hubcap key from %s (ts %s) copied to %s", where, ts, ", ".join(updated))
+        return key, True, f"Synced key from {where} to {', '.join(updated)}"
+    return key, False, "Already in sync"
