@@ -74,7 +74,7 @@ def test_ping_endpoint():
     code, resp, _ = dispatch_request(mock_services, "GET", "/ping", b"", {})
     assert code == 200, f"Expected 200, got {code}"
     assert resp.get("service") == "epsilon", f"Expected service=epsilon, got {resp}"
-    assert resp.get("version") == "0.7.5", f"Expected version=0.7.5, got {resp}"
+    assert resp.get("version") == "0.7.9", f"Expected version=0.7.9, got {resp}"
     assert resp.get("sls_active") is True, f"Expected sls_active=True, got {resp}"
     assert resp.get("has_hubcap_key") is True, f"Expected has_hubcap_key=True, got {resp}"
     print("ok  test_ping_endpoint")
