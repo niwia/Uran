@@ -42,11 +42,7 @@ import { setStorePatchEnabled } from "../StorePatch";
 import { formatExpiry } from "../components/format";
 import { showQrKeyModal } from "../components/QrKeyModal";
 
-interface SettingsTabProps {
-  onSetupStatusChange?: (setupComplete: boolean) => void;
-}
-
-export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange }) => {
+export const SettingsTab: React.FC = () => {
   // General settings
   const [steamStoreEnabled, setSteamStoreEnabled] = useState(true);
   const [addDelistedDlcs, setAddDelistedDlcs] = useState(true);
@@ -102,21 +98,16 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
       const cached = fresh ? refreshOnce : once;
       const [h, k, s] = await Promise.all([
         cached("health", getHealthStatus).catch(() => null),
-        getHubcapKeyStatus().catch(() => null),
+        cached("hubcap_key_status", getHubcapKeyStatus).catch(() => null),
         cached("hubcap_stats", getHubcapUserStats).catch(() => ({ ok: false })),
       ]);
       if (h) setHealth(h);
       if (k) setKeyStatus(k);
       if (s) setStats(s);
-
-      const isSlsReady = h?.sls?.status !== "no_local";
-      const hasPlugins = (h?.plugins?.plugins?.length ?? 0) > 0 && (h?.plugins?.missing?.length ?? 0) === 0;
-      const hasKey = Boolean(k?.masked);
-      onSetupStatusChange?.(isSlsReady && hasPlugins && hasKey);
     } catch {
       // ignore
     }
-  }, [onSetupStatusChange]);
+  }, []);
 
   useEffect(() => {
     loadHealthAndKey();
@@ -248,15 +239,24 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
     }
   };
 
-  // Setup checks
-  const isSlsInstalled = health?.sls?.status !== "no_local";
+  // Setup checks. SLSsteam counts as ready when its binary is present and, if
+  // we can see a running Steam, it is actually loaded into it.
+  const slsBinaryMissing = health?.sls?.status === "no_local";
+  const slsInactive = Boolean(health?.process?.steam_running) && health?.process?.sls_active === false;
+  const isSlsReady = !slsBinaryMissing && !slsInactive;
   const pluginsList = health?.plugins?.plugins ?? [];
-  const missingPlugins = health?.plugins?.missing ?? [];
-  const hasPlugins = pluginsList.length > 0 && missingPlugins.length === 0;
+  const hasPlugins = pluginsList.length > 0;
   const hasKey = Boolean(keyStatus?.masked);
-  const setupIncomplete = !isSlsInstalled || !hasPlugins || !hasKey;
+  const setupIncomplete = !isSlsReady || !hasPlugins || !hasKey;
 
   const pluginsText = hasPlugins ? pluginsList.join(", ") : "None detected";
+  const slsText = slsBinaryMissing
+    ? "Not installed / not found"
+    : slsInactive
+    ? "Installed, not loaded into Steam"
+    : health?.sls?.status === "outdated"
+    ? "Installed & active (outdated binary)"
+    : "Installed & active";
 
   return (
     <>
@@ -266,13 +266,16 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
             <div className="uran-alert-banner">
               <div style={{ fontWeight: 700, marginBottom: "4px" }}>Setup Incomplete</div>
               <div style={{ fontSize: "12px", lineHeight: 1.4 }}>
-                {!isSlsInstalled && <div>• SLSsteam is not detected on this system.</div>}
+                {!isSlsReady && (
+                  <div>
+                    • {slsBinaryMissing
+                      ? "SLSsteam is not detected on this system."
+                      : "SLSsteam is installed but not loaded into Steam."}
+                  </div>
+                )}
                 {!hasPlugins && (
                   <div>
-                    • {pluginsList.length === 0
-                      ? "No SLSsteam plugins found."
-                      : `Missing SLSsteam plugins: ${missingPlugins.join(", ")}.`}{" "}
-                    Install them with ASSella (Settings → AT0-M).
+                    • No SLSsteam plugins found. Install them with ASSella (Settings → AT0-M).
                   </div>
                 )}
                 {!hasKey && <div>• Hubcap API key is not configured.</div>}
@@ -286,13 +289,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({ onSetupStatusChange })
         <PanelSectionRow>
           <Field
             label="SLSsteam"
-            description={
-              health?.sls?.status === "no_local"
-                ? "Not installed / not found"
-                : health?.sls?.status === "outdated"
-                ? "Outdated binary"
-                : "Installed & active"
-            }
+            description={slsText}
           />
         </PanelSectionRow>
         <PanelSectionRow>

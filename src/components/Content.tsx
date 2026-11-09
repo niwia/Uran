@@ -17,7 +17,6 @@ const tabIcons = {
 
 export const Content: React.FC = () => {
   const [tab, setTab] = useState("Search");
-  const [setupComplete, setSetupComplete] = useState(true);
   const [contentFocused, setContentFocused] = useState(false);
   const [games, setGames] = useState<AtomGame[]>([]);
   const [runningAppId, setRunningAppId] = useState<string | null>(null);
@@ -97,7 +96,7 @@ export const Content: React.FC = () => {
     {
       id: "Settings",
       title: tabIcons.settings,
-      content: tabContent(<SettingsTab onSetupStatusChange={setSetupComplete} />),
+      content: tabContent(<SettingsTab />),
     },
   ];
 

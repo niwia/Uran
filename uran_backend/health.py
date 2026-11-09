@@ -15,12 +15,12 @@ from pathlib import Path
 
 from .context import Context
 from .http import requests
-from . import paths
+from . import guards, paths
 
 logger = logging.getLogger("Uran")
 
-# The required plugin set lives in assella_shared.plugin_manifest (same list
-# as ASSella). Uran only checks it; ASSella installs the plugins.
+# The plugins are named and installed by ASSella; Uran only reports which .lua
+# files are present.
 SLS_PLUGIN_SUFFIX = ".lua"
 
 SLS_RELEASES_URL = "https://api.github.com/repos/AceSLS/SLSsteam/releases/latest"
@@ -95,8 +95,9 @@ class Health:
         """List the active SLSsteam Lua plugins found on disk.
 
         Informational only: returns the actual `.lua` file names present in
-        the plugins dirs (e.g. versioned builds like
-        `download-1.4.0-spacetest.lua`), not a hardcoded required set.
+        the plugins dir (e.g. versioned builds like
+        `download-1.4.0-spacetest.lua`). ASSella installs and versions these
+        plugins, so Uran reports what is there and never names a required set.
         """
         names: set[str] = set()
         searched: list[str] = []
@@ -110,15 +111,10 @@ class Health:
                         names.add(entry.name)
             except OSError as exc:
                 logger.debug("Plugin dir scan failed for %s: %s", directory, exc)
-        from assella_shared.plugin_manifest import missing_plugins, required_plugins
-
-        missing = missing_plugins(names)
         return {
             "ok": True,
             "plugins_enabled": self._plugins_flag(),
             "plugins": sorted(names),
-            "required": list(required_plugins()),
-            "missing": missing,
             "searched": searched,
         }
 
@@ -295,4 +291,11 @@ class Health:
             sls = self.check_sls_version()
         except Exception as exc:  # noqa: BLE001
             sls = {"status": "error", "release_tag": None, "error": str(exc)}
-        return {"ok": True, "plugins": plugins, "sls": sls}
+        # Whether SLSsteam is loaded into a running Steam right now, from
+        # /proc (same check the add guard uses). The binary check above only
+        # says the file exists on disk.
+        process = {
+            "steam_running": guards.is_steam_running(),
+            "sls_active": guards.is_sls_active(),
+        }
+        return {"ok": True, "plugins": plugins, "sls": sls, "process": process}

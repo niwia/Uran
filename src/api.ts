@@ -431,8 +431,6 @@ export type HealthPlugins = {
   ok: boolean;
   plugins_enabled: boolean;
   plugins: string[];
-  required?: string[];
-  missing?: string[];
   searched?: string[];
 };
 export type HealthSls = {
@@ -441,10 +439,15 @@ export type HealthSls = {
   local_mtime?: number | null;
   error?: string | null;
 };
+export type HealthProcess = {
+  steam_running: boolean;
+  sls_active: boolean;
+};
 export type HealthStatus = {
   ok: boolean;
   plugins: HealthPlugins;
   sls: HealthSls;
+  process?: HealthProcess;
 };
 export type ConfigCheck = {
   ok: boolean;

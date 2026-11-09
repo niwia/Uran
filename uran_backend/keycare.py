@@ -135,21 +135,30 @@ class Keycare:
 
     # -- key helpers ---------------------------------------------------------
     def key_status(self) -> dict:
-        """Report where the Hubcap key came from, for the settings UI."""
+        """Report where the Hubcap key came from, for the settings UI.
+
+        `current()` runs the newest-wins sync across companion settings,
+        katamari.conf.lua, ASSella's ACCELA.conf and spacebunny.conf.lua, so
+        this reports the key inject would actually use.
+        """
+        key = self.ctx.hubcap_key.current()
         stored = self.ctx.settings.stored_hubcap_key()
         detected, source = self.ctx.hubcap_key.detected_in_assella()
-        if stored:
-            origin, masked = "plugin override", stored
-        elif detected:
-            origin, masked = f"ACCELA ({source})", detected
+        if not key:
+            origin, source = "not found", ""
+        elif detected and key == detected:
+            origin = f"ACCELA ({source})"
+        elif key == stored:
+            origin = "plugin override"
         else:
-            origin, masked = "not found", ""
+            origin = "SLSsteam plugins config"
+            source = ""
         return {
-            "ok": bool(stored or detected),
+            "ok": bool(key),
             "source": origin,
             "configured_path": source,
-            "masked": (masked[:8] + "..." + masked[-4:]) if len(masked) > 14 else masked,
-            "is_override": bool(stored),
+            "masked": (key[:8] + "..." + key[-4:]) if len(key) > 14 else key,
+            "is_override": bool(stored and key == stored),
             "base_url": hubcap.HUBCAP_BASE_URL,
         }
 
