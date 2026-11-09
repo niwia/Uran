@@ -77,6 +77,7 @@ export const SettingsTab: React.FC = () => {
 
   // Advanced & Diagnostics
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showWelcomeScreen, setShowWelcomeScreen] = useState(false);
   const [globalSlsOnline, setGlobalSlsOnlineState] = useState(false);
   const [gatewayMode, setGatewayMode] = useState<GatewayMode>("auto");
   const [routeProbe, setRouteProbe] = useState<RouteProbe | null>(null);
@@ -248,6 +249,7 @@ export const SettingsTab: React.FC = () => {
   const hasPlugins = pluginsList.length > 0;
   const hasKey = Boolean(keyStatus?.masked);
   const setupIncomplete = !isSlsReady || !hasPlugins || !hasKey;
+  const displaySetupNotice = setupIncomplete || showWelcomeScreen;
 
   const pluginsText = hasPlugins ? pluginsList.join(", ") : "None detected";
   const slsText = slsBinaryMissing
@@ -260,25 +262,31 @@ export const SettingsTab: React.FC = () => {
 
   return (
     <>
-      {setupIncomplete && (
+      {displaySetupNotice && (
         <PanelSection title="Setup Notice">
           <PanelSectionRow>
             <div className="uran-alert-banner">
-              <div style={{ fontWeight: 700, marginBottom: "4px" }}>Setup Incomplete</div>
+              <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                Setup Incomplete {showWelcomeScreen && !setupIncomplete ? "(Preview Mode)" : ""}
+              </div>
               <div style={{ fontSize: "12px", lineHeight: 1.4 }}>
-                {!isSlsReady && (
+                {(!isSlsReady || (showWelcomeScreen && isSlsReady)) && (
                   <div>
                     • {slsBinaryMissing
                       ? "SLSsteam is not detected on this system."
-                      : "SLSsteam is installed but not loaded into Steam."}
+                      : slsInactive
+                      ? "SLSsteam is installed but not loaded into Steam."
+                      : "SLSsteam is not detected on this system."}
                   </div>
                 )}
-                {!hasPlugins && (
+                {(!hasPlugins || (showWelcomeScreen && hasPlugins)) && (
                   <div>
                     • No SLSsteam plugins found. Install them with ASSella (Settings → AT0-M).
                   </div>
                 )}
-                {!hasKey && <div>• Hubcap API key is not configured.</div>}
+                {(!hasKey || (showWelcomeScreen && hasKey)) && (
+                  <div>• Hubcap API key is not configured.</div>
+                )}
               </div>
             </div>
           </PanelSectionRow>
@@ -510,6 +518,22 @@ export const SettingsTab: React.FC = () => {
             )}
           </>
         )}
+      </PanelSection>
+
+      <PanelSection title="Preview & Testing">
+        <PanelSectionRow>
+          <ToggleField
+            label="Show welcome screen"
+            description="Preview the setup notice banner shown to first-time users"
+            checked={showWelcomeScreen}
+            onChange={(val) => {
+              setShowWelcomeScreen(val);
+              if (val) {
+                notify("Uran", "Welcome / Setup notice is now visible at the top of Settings");
+              }
+            }}
+          />
+        </PanelSectionRow>
       </PanelSection>
     </>
   );
