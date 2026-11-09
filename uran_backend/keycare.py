@@ -44,9 +44,8 @@ _lock = threading.Lock()
 class Keycare:
     """Owns the key-capture server and Hubcap key resolution."""
 
-    def __init__(self, ctx: Context, plugin_deployer=None):
+    def __init__(self, ctx: Context):
         self.ctx = ctx
-        self.plugin_deployer = plugin_deployer
 
     # -- server lifecycle ----------------------------------------------------
     def stop(self) -> dict:

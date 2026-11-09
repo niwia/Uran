@@ -31,12 +31,18 @@ import {
   testHubcapRoutes,
   checkForUpdates,
   getPluginInfo,
+  getPluginsStatus,
+  installPlugin,
+  setPluginEnabled,
+  installEssentialPlugins,
+  refreshPluginManifest,
   GATEWAY_LABELS,
   type HealthStatus,
   type ConfigCheck,
   type UpdateInfo,
   type GatewayMode,
   type RouteProbe,
+  type PluginsStatus,
 } from "../api";
 import { setStorePatchEnabled } from "../StorePatch";
 import { formatExpiry } from "../components/format";
@@ -50,6 +56,8 @@ export const SettingsTab: React.FC = () => {
 
   // Health & Environment
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [managedPlugins, setManagedPlugins] = useState<PluginsStatus | null>(null);
+  const [pluginBusy, setPluginBusy] = useState(false);
 
   // Hubcap Key & User stats
   const [keyStatus, setKeyStatus] = useState<{
@@ -110,8 +118,25 @@ export const SettingsTab: React.FC = () => {
     }
   }, []);
 
+  const loadPlugins = useCallback(async (refresh = false) => {
+    setManagedPlugins(refresh ? await refreshPluginManifest() : await getPluginsStatus());
+  }, []);
+  const runPluginAction = async (action: () => Promise<unknown>) => {
+    setPluginBusy(true);
+    try {
+      await action();
+      await loadPlugins(true);
+      await loadHealthAndKey(true);
+    } catch (error) {
+      notify("Plugin operation failed", String(error));
+    } finally {
+      setPluginBusy(false);
+    }
+  };
+
   useEffect(() => {
     loadHealthAndKey();
+    void loadPlugins();
 
     getSetting("steam_store_enabled", true)
       .then((v) => setSteamStoreEnabled(Boolean(v)))
@@ -281,7 +306,7 @@ export const SettingsTab: React.FC = () => {
                 )}
                 {(!hasPlugins || (showWelcomeScreen && hasPlugins)) && (
                   <div>
-                    • No SLSsteam plugins found. Install them with ASSella (Settings → AT0-M).
+                    • No SLSsteam plugins found. Install essential plugins below.
                   </div>
                 )}
                 {(!hasKey || (showWelcomeScreen && hasKey)) && (
@@ -306,6 +331,27 @@ export const SettingsTab: React.FC = () => {
             description={pluginsText}
           />
         </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="SLSsteam Plugins">
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={pluginBusy} onClick={() => void runPluginAction(installEssentialPlugins)}>
+            Install essential plugins
+          </ButtonItem>
+        </PanelSectionRow>
+        {managedPlugins?.error && <PanelSectionRow><Field label="Manifest" description={managedPlugins.error} /></PanelSectionRow>}
+        {(managedPlugins?.plugins ?? []).map((plugin) => (
+          <PanelSectionRow key={plugin.filename}>
+            <ButtonItem layout="below" disabled={pluginBusy || !plugin.deployable} onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}>
+              {plugin.name} · v{plugin.version} · {plugin.status.replaceAll("_", " ")}
+            </ButtonItem>
+            {plugin.installed && !plugin.required && (
+              <ButtonItem layout="below" disabled={pluginBusy} onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}>
+                {plugin.enabled ? "Disable" : "Enable"} {plugin.name}
+              </ButtonItem>
+            )}
+          </PanelSectionRow>
+        ))}
       </PanelSection>
 
       <PanelSection title="Hubcap API Key">

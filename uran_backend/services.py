@@ -16,6 +16,7 @@ from .sls_config import SlsConfig
 from .steam_store import StoreDebugger
 from .steammeta import SteamMeta
 from .uninstall import AtomUninstallService
+from .plugins import PluginManager
 
 logger = logging.getLogger("Uran")
 
@@ -23,14 +24,13 @@ logger = logging.getLogger("Uran")
 class _ServiceBag:
     """The services GuardService needs, without a circular import."""
 
-    def __init__(self, ctx, sls, steam, library, manifests, integrations, plugin_deployer=None):
+    def __init__(self, ctx, sls, steam, library, manifests, integrations):
         self.ctx = ctx
         self.sls = sls
         self.steam = steam
         self.library = library
         self.manifests = manifests
         self.integrations = integrations
-        self.plugin_deployer = plugin_deployer
 
 
 def _load_decky():
@@ -58,13 +58,13 @@ def build(decky_module=None):
     steam = SteamMeta(ctx, library)
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
-    plugin_deployer = None  # plugin installation is ASSella's job; Uran only checks
+    plugins = PluginManager(ctx)
 
     # Guards reach across services, so they are constructed after them.
-    guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations, plugin_deployer))
+    guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations))
 
     injector = Injector(ctx, sls, steam, library, manifests, guards)
-    keycare = Keycare(ctx, plugin_deployer)
+    keycare = Keycare(ctx)
     store_debugger = StoreDebugger(requests, logger)
     atom = AtomLibrary(ctx, sls, steam, library, manifests, integrations)
     uninstaller = AtomUninstallService(ctx, sls, steam, library, integrations, guards)
@@ -87,5 +87,5 @@ def build(decky_module=None):
         atom=atom,
         uninstaller=uninstaller,
         health=health,
-        plugin_deployer=plugin_deployer,
+        plugins=plugins,
     )

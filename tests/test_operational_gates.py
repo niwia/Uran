@@ -80,13 +80,17 @@ def run():
         check("reason is no_sls_config", res["reason"] == "no_sls_config")
         check("error mentions SLSsteam must be running", "running to generate it" in res["error"])
 
-    # 4. Uran only checks plugins; the required set comes from assella_shared.
-    from assella_shared.plugin_manifest import missing_plugins, MANIFEST_ENABLED
-    check("signed manifest reader is switched off", MANIFEST_ENABLED is False)
-    check("all present -> nothing missing", missing_plugins(
-        ["spacebunny.lua", "styx.lua", "lobster.lua", "katamari.lua", "lettuce.lua"]) == [])
-    check("legacy bypass.lua counts as lettuce", "lettuce.lua" not in missing_plugins(["bypass.lua"]))
-    check("missing interceptor reported", "spacebunny.lua" in missing_plugins(["styx.lua"]))
+    # 4. The bundled manifest is signed and supplies its required set offline.
+    from assella_shared.plugin_manifest import ManifestStore, verify_signature
+    bundled = Path(__file__).resolve().parent.parent / "plugins"
+    body = (bundled / "plugins_manifest.json").read_bytes()
+    signature = (bundled / "plugins_manifest.json.sig").read_bytes()
+    check("bundled manifest signature verifies", verify_signature(body, signature))
+    manifest = ManifestStore(Path(tempfile.gettempdir()) / "uran-test-cache", bundled).load_local()
+    check("offline manifest loads", manifest is not None)
+    check("required plugins reflect the signed manifest", set(manifest.required_plugins()) == {
+        "spacebunny.lua", "styx.lua", "lobster.lua"})
+    check("retired katamari is not deployable", manifest.policy("katamari.lua") == "unavailable")
 
     print("\nall operational gates checks pass")
 

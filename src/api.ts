@@ -455,8 +455,19 @@ export type ConfigCheck = {
   summary: string;
   details: string[];
 };
+export type ManagedPlugin = {
+  filename: string; name: string; version: string; status: string;
+  installed: boolean; enabled: boolean; required: boolean;
+  deployable: boolean; category: string;
+};
+export type PluginsStatus = { ok: boolean; serial?: number; source?: string; error?: string; plugins: ManagedPlugin[] };
 
 export const getHealthStatus = callable<[], HealthStatus>("get_health_status");
+export const getPluginsStatus = callable<[refresh?: boolean], PluginsStatus>("plugins_status");
+export const installPlugin = callable<[filename: string], { ok: boolean; error?: string }>("plugin_install");
+export const setPluginEnabled = callable<[filename: string, enabled: boolean], { ok: boolean; error?: string }>("plugin_set_enabled");
+export const installEssentialPlugins = callable<[], { ok: boolean; error?: string }>("plugin_install_essentials");
+export const refreshPluginManifest = callable<[], PluginsStatus>("plugin_manifest_refresh");
 export const checkConfigStatus = callable<
   [online: boolean],
   ConfigCheck
@@ -497,4 +508,3 @@ export const saveSpaceBunnyConfig = callable<
   [config: { standalone: boolean; hubcap: Partial<SpaceBunnyHubcapConfig> }],
   SpaceBunnyResponse
 >("save_spacebunny_config");
-

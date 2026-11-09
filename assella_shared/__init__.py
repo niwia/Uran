@@ -7,7 +7,8 @@ time, no Qt, no Decky API, so each tool can vendor this folder as-is:
 * manifest_lua    - Hubcap .lua bundle parsing (addappid / setManifestid)
 * depot_tags      - depot / DLC name helpers
 * plugin_manifest - SLSsteam plugin set and the signed plugins manifest
-                    (manifest fetching is present but switched off)
+* plugin_install   - verified plugin download and safe filesystem deployment
+* ed25519          - Ed25519 signature verification with a stdlib fallback
 
 Keep this folder free of tool-specific imports; a tool adapts it, never the
 other way round.

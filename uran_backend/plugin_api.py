@@ -35,7 +35,7 @@ class Services:
 
     def __init__(self, ctx, sls, steam, library, manifests, integrations,
                  injector, guards, keycare, store_debugger, atom, uninstaller,
-                 health=None, plugin_deployer=None):
+                 health=None, plugins=None):
         self.ctx = ctx
         self.sls = sls
         self.steam = steam
@@ -49,7 +49,7 @@ class Services:
         self.atom = atom
         self.uninstaller = uninstaller
         self.health = health
-        self.plugin_deployer = plugin_deployer
+        self.plugins = plugins
 
 
 class Plugin:
@@ -314,6 +314,31 @@ class Plugin:
     async def check_config_status(self, online: bool = True) -> dict:
         return await asyncio.to_thread(self.s.health.check_config, online)
 
+    # -- SLSsteam plugin management -----------------------------------------
+    async def plugins_status(self, refresh: bool = False) -> dict:
+        try:
+            return await asyncio.to_thread(self.s.plugins.status, refresh)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "plugins": []}
+
+    async def plugin_install(self, filename: str) -> dict:
+        return await asyncio.to_thread(self.s.plugins.install, filename)
+
+    async def plugin_update(self, filename: str) -> dict:
+        return await asyncio.to_thread(self.s.plugins.install, filename)
+
+    async def plugin_set_enabled(self, filename: str, enabled: bool) -> dict:
+        return await asyncio.to_thread(self.s.plugins.set_enabled, filename, enabled)
+
+    async def plugin_remove(self, filename: str) -> dict:
+        return await asyncio.to_thread(self.s.plugins.remove, filename)
+
+    async def plugin_install_essentials(self) -> dict:
+        return await asyncio.to_thread(self.s.plugins.install_essentials)
+
+    async def plugin_manifest_refresh(self) -> dict:
+        return await asyncio.to_thread(self.s.plugins.status, True)
+
     async def set_slsonline(self, app_id: str, enabled: bool, fake_appid: str = "480") -> dict:
         if self.s.integrations.global_slsonline_enabled():
             return {"ok": False, "error": "Global SLS Online is active for all games"}
@@ -401,4 +426,3 @@ class Plugin:
         if ok:
             return {"ok": True, "config": sls_lua_config.read_spacebunny_conf(sb_path)}
         return {"ok": False, "error": "Failed to write spacebunny.conf.lua"}
-

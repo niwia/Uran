@@ -40,6 +40,7 @@ DIRS_TO_PACK = [
     "assets",
     "uran_backend",
     "assella_shared",
+    "plugins",
 ]
 
 
