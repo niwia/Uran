@@ -62,7 +62,9 @@ def validate_yaml(content: str, log) -> bool:
 
         yaml.safe_load(content)
     except ImportError:
-        pass  # PyYAML unavailable; the duplicate scan below still runs
+        if not _fallback_yaml_syntax_valid(content):
+            log.error("Refusing to write config with invalid YAML syntax (PyYAML is unavailable)")
+            return False
     except Exception as exc:  # noqa: BLE001
         log.error("Refusing to write invalid YAML to config: %s", exc)
         return False
@@ -78,6 +80,74 @@ def validate_yaml(content: str, log) -> bool:
         log.error("Refusing to write config with duplicate top-level keys: %s", dupes)
         return False
     return True
+
+
+def _fallback_yaml_syntax_valid(content: str) -> bool:
+    """Validate the mapping/list YAML subset used by SLSsteam configs.
+
+    Decky does not ship PyYAML. This conservative fallback catches malformed
+    structure, indentation tabs, unterminated quotes, and unbalanced flow
+    collections without rejecting ordinary block collections or scalars.
+    """
+    top_key = re.compile(r"^(?:[A-Za-z0-9_.-]+|'(?:[^']|'')+'|\"[^\"]+\")\s*:(?:\s|$)")
+    child_key = re.compile(r"^(?:-\s+)?(?:[A-Za-z0-9_.-]+|'(?:[^']|'')+'|\"[^\"]+\")\s*:(?:\s|$)")
+    block_scalar = re.compile(r"^(?:[^:#]+):\s*[|>][+-]?(?:[1-9])?\s*(?:#.*)?$")
+    stack: list[str] = []
+    quote: str | None = None
+    has_root_mapping = False
+    block_indent: int | None = None
+
+    for raw in content.splitlines():
+        leading = len(raw) - len(raw.lstrip(" "))
+        if "\t" in raw[:leading] or (leading < len(raw) and raw[leading] == "\t"):
+            return False
+        text = raw[leading:]
+        if not text.strip() or text.startswith("#"):
+            continue
+        if block_indent is not None:
+            if leading > block_indent:
+                continue
+            block_indent = None
+
+        if not stack and quote is None:
+            if leading == 0:
+                if text in {"---", "..."}:
+                    continue
+                if not top_key.match(text):
+                    return False
+                has_root_mapping = True
+            elif not has_root_mapping:
+                return False
+            elif text != "-" and not text.startswith("- ") and not child_key.match(text):
+                return False
+
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if quote:
+                if quote == '"' and char == "\\":
+                    index += 2
+                    continue
+                if char == quote:
+                    if quote == "'" and index + 1 < len(text) and text[index + 1] == "'":
+                        index += 2
+                        continue
+                    quote = None
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == "#" and (index == 0 or text[index - 1].isspace()):
+                break
+            elif char in "[{":
+                stack.append("]" if char == "[" else "}")
+            elif char in "]}":
+                if not stack or stack.pop() != char:
+                    return False
+            index += 1
+
+        if block_scalar.match(text):
+            block_indent = leading
+
+    return has_root_mapping and not stack and quote is None
 
 
 def signal_api(command: str = "RELOAD", log=None) -> bool:

@@ -1,10 +1,11 @@
-"""A plugin install must work on a setup that has no plugins yet.
+"""Plugin actions must respect SLS config ownership and readiness.
 
-Regression guard for the deadlock where installing plugins was gated behind a
-check that itself required a plugin to already be present.
+Installing may enable Plugins in an existing valid config, but Uran must not
+create SLSsteam's config.yaml on behalf of SLSsteam.
 """
 
 import sys
+import threading
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,15 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from uran_backend.plugins import PluginManager
-
-
-class FakeSls:
-    def __init__(self):
-        self.written = []
-
-    def write(self, content):
-        self.written.append(content)
-        return True
+from uran_backend.sls_config import SlsConfig
 
 
 def manager(home: Path, config: Path | None):
@@ -30,25 +23,29 @@ def manager(home: Path, config: Path | None):
         runtime_dir=home / "runtime",
         plugin_dir=Path(__file__).resolve().parent.parent,
         sls_config=lambda: config,
+        sls_lock=threading.RLock(),
         read_setting=lambda key, default=None: list(state["disabled"]),
         write_setting=lambda key, value: state.__setitem__("disabled", list(value)),
     )
-    return PluginManager(ctx, FakeSls()), ctx, state
+    return PluginManager(ctx, SlsConfig(ctx)), ctx, state
 
 
 def run():
     root = Path(__file__).resolve().parent.parent
     plugins = root / "plugins"
 
-    # 1. No config.yaml and no plugins: installing must not be blocked.
+    # 1. No config.yaml: install fails before creating plugin/config files.
     with tempfile.TemporaryDirectory() as temp:
         home = Path(temp)
         mgr, _, _ = manager(home, None)
         target = home / ".config" / "SLSsteam" / "plugins"
-        result = mgr.install("styx.lua")
-        assert result["ok"], result
-        assert (target / "styx.lua").is_file(), "plugin not written to the default dir"
-        assert mgr.sls.written == [], "nothing to enable without a config"
+        try:
+            mgr.install("styx.lua")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("install should require SLSsteam config.yaml")
+        assert not (target / "styx.lua").exists(), "plugin was written without config"
 
     # 2. Config with Plugins: no: install flips it to yes and keeps other sections.
     with tempfile.TemporaryDirectory() as temp:
@@ -58,8 +55,7 @@ def run():
         config.write_text("Plugins: no\nDecryptionKeys:\n  '1': abc\n", encoding="utf-8")
         mgr, ctx, state = manager(home, config)
         mgr.install_essentials()
-        assert len(mgr.sls.written) == 1, mgr.sls.written
-        updated = mgr.sls.written[0]
+        updated = config.read_text(encoding="utf-8")
         assert "Plugins: yes" in updated, updated
         assert updated.count("DecryptionKeys:") == 1, "section duplicated"
         installed = sorted(p.name for p in (config.parent / "plugins").glob("*.lua"))
@@ -81,7 +77,10 @@ def run():
     # 4. A disabled plugin still reports installed/enabled truthfully.
     with tempfile.TemporaryDirectory() as temp:
         home = Path(temp)
-        mgr, ctx, state = manager(home, None)
+        config = home / ".config" / "SLSsteam" / "config.yaml"
+        config.parent.mkdir(parents=True)
+        config.write_text("Plugins: yes\n", encoding="utf-8")
+        mgr, ctx, state = manager(home, config)
         mgr.install("lettuce.lua")
         mgr.set_enabled("lettuce.lua", False)
         row = next(r for r in mgr.status()["plugins"] if r["filename"] == "lettuce.lua")

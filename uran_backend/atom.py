@@ -323,6 +323,7 @@ class AtomLibrary:
 
         global_online = self.integrations.global_slsonline_enabled()
         fake = self.integrations.get_fake_appid(aid)
+        sls_config = self.integrations.sls.readiness()
         eos = self.integrations.eos_status(game_dir) if install.get("installed") else "none"
 
         depots_detail, dlcs_detail, dlcs_injected, keys_detail = self.inspect(aid, record, allow_network)
@@ -340,6 +341,8 @@ class AtomLibrary:
             "dlc_only": bool(record.get("dlc_only")),
             "slsonline": bool(fake) or global_online,
             "global_slsonline": global_online,
+            "sls_config_ready": sls_config["ok"],
+            "sls_config_error": sls_config["error"],
             "fake_appid": fake,
             "netsock": self.integrations.netsock_active(aid),
             "eos": eos,

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .context import Context
 from .http import requests
+from . import paths
 from .sls_config import (
     SlsConfig,
     ensure_plugins_enabled,
@@ -57,6 +58,10 @@ class Integrations:
         self.sls = sls
         self.steam = steam
 
+    def _config_error(self) -> str | None:
+        readiness = self.sls.readiness()
+        return None if readiness["ok"] else readiness["error"]
+
     # -- SLSonline (FakeAppIds) ----------------------------------------------
     def get_fake_appid(self, app_id: str) -> str:
         """Read the FakeAppIds target for an AppID ("" when not mapped)."""
@@ -84,8 +89,9 @@ class Integrations:
         Comment suffix matches ASSella: "<name> -> Spacewar" for 480, else
         "<name> -> SLSonline". Removal when fake_appid is "".
         """
-        if self.ctx.sls_config() is None:
-            return {"ok": False, "error": "SLSsteam config not found"}
+        error = self._config_error()
+        if error:
+            return {"ok": False, "error": error}
         app_id = sanitize_id(app_id)
         if not app_id:
             return {"ok": False, "error": "Invalid AppID"}
@@ -115,13 +121,15 @@ class Integrations:
             if enabled
             else self.set_fake_appid("0", "")
         )
-        signal_api("RELOAD", logger)
-        return {"ok": result.get("ok", False), "enabled": enabled}
+        if result.get("ok"):
+            signal_api("RELOAD", logger)
+        return {**result, "enabled": enabled}
 
     def list_fake_app_ids(self) -> dict:
         cfg = self.ctx.sls_config()
-        if not cfg or not cfg.exists():
-            return {"ok": True, "ids": []}
+        error = self._config_error()
+        if error:
+            return {"ok": False, "error": error, "ids": []}
         ids: list[str] = []
         in_section = False
         for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -140,6 +148,9 @@ class Integrations:
         return {"ok": True, "ids": ids}
 
     def add_fake_app_id(self, app_id: str) -> dict:
+        error = self._config_error()
+        if error:
+            return {"ok": False, "error": error}
         with self.sls.edit() as editor:
             inserted = editor.add_fake_app_id(app_id, "480")
         return {
@@ -148,6 +159,9 @@ class Integrations:
         }
 
     def remove_fake_app_id(self, app_id: str) -> dict:
+        error = self._config_error()
+        if error:
+            return {"ok": False, "error": error}
         with self.sls.edit() as editor:
             removed = editor.apply(
                 *remove_in_memory(editor.content, "FakeAppIds", app_id, is_list=False)
@@ -238,8 +252,9 @@ class Integrations:
 
     def set_netsock(self, app_id: str, enabled: bool) -> dict:
         """Toggle the NetSock LaunchOptions entry."""
-        if self.ctx.sls_config() is None:
-            return {"ok": False, "error": "SLSsteam config not found"}
+        error = self._config_error()
+        if error:
+            return {"ok": False, "error": error}
         app_id = sanitize_id(app_id)
         if not app_id:
             return {"ok": False, "error": "Invalid AppID"}

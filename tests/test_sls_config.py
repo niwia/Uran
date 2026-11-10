@@ -7,13 +7,17 @@ filesystem and no Decky.
 """
 
 import sys
+import tempfile
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import logging
 
 from uran_backend import sls_config as sc
+from assella_shared.sls_yaml import _fallback_yaml_syntax_valid
 
 log = logging.getLogger("t")
 fails = []
@@ -123,6 +127,54 @@ check("remove_dlc_block missing -> None", sc.remove_dlc_block(BASE, "424242"), N
 check("validate_yaml rejects duplicate keys",
       sc.validate_yaml("A: 1\nA: 2\n", log), False)
 check("validate_yaml accepts normal config", sc.validate_yaml(BASE, log), True)
+check("fallback YAML validator accepts normal config", _fallback_yaml_syntax_valid(BASE), True)
+check("fallback YAML validator rejects unclosed flow list", _fallback_yaml_syntax_valid("Plugins: [\n"), False)
+check("fallback YAML validator rejects missing mapping colon", _fallback_yaml_syntax_valid("Plugins yes\n"), False)
+check("fallback YAML validator rejects indentation tabs", _fallback_yaml_syntax_valid("Plugins: yes\n\t- foo\n"), False)
+
+# --- centralized config readiness --------------------------------------
+with tempfile.TemporaryDirectory() as temp_dir:
+    config = Path(temp_dir) / "config.yaml"
+    ctx = SimpleNamespace(
+        home=Path(temp_dir),
+        sls_config=lambda: config if config.exists() else None,
+        sls_lock=threading.RLock(),
+    )
+    sls = sc.SlsConfig(ctx)
+    check("missing config is distinct", sls.readiness()["status"], "missing")
+    config.write_text(BASE, encoding="utf-8")
+    check("existing valid config is ready", sls.readiness()["status"], "ready")
+    config.write_bytes(b"Plugins: \xff\n")
+    check("invalid UTF-8 is invalid", sls.readiness()["status"], "invalid")
+    editor = sls.edit()
+    editor.__enter__()
+    check("editor refuses invalid config", editor.committed_successfully, False)
+    check("write refuses invalid current config", sls.write(BASE), False)
+
+    config.write_text(BASE, encoding="utf-8")
+    backups = sls.backups_dir()
+    restore_content = BASE.replace("Plugins: no", "Plugins: yes")
+    (backups / "valid.yaml").write_text(restore_content, encoding="utf-8")
+    restored = sls.restore_backup("valid.yaml")
+    check("valid backup restores successfully", restored.get("success"), True)
+    check("restored config content verified", config.read_text(encoding="utf-8"), restore_content)
+
+    original = config.read_text(encoding="utf-8")
+    (backups / "invalid.yaml").write_text("A: 1\nA: 2\n", encoding="utf-8")
+    invalid_restore = sls.restore_backup("invalid.yaml")
+    check("invalid backup is rejected", "error" in invalid_restore, True)
+    check("invalid backup leaves config unchanged", config.read_text(encoding="utf-8"), original)
+    check("backup traversal is rejected", "error" in sls.restore_backup("../outside.yaml"), True)
+
+    missing_config = Path(temp_dir) / "missing.yaml"
+    missing_ctx = SimpleNamespace(
+        home=Path(temp_dir),
+        sls_config=lambda: missing_config,
+        sls_lock=threading.RLock(),
+    )
+    missing_sls = sc.SlsConfig(missing_ctx)
+    check("restore does not create missing config", "error" in missing_sls.restore_backup("valid.yaml"), True)
+    check("missing config remains absent", missing_config.exists(), False)
 
 # --- replace_section_block ordering ------------------------------------
 out = sc.replace_section_block(BASE, "AdditionalDepots", ["  - 900", "  - 100", "  - 500"])

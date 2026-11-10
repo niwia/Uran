@@ -340,20 +340,29 @@ class Plugin:
         return await asyncio.to_thread(self.s.plugins.status, True)
 
     async def set_slsonline(self, app_id: str, enabled: bool, fake_appid: str = "480") -> dict:
-        if self.s.integrations.global_slsonline_enabled():
+        integrations = self.s.integrations
+        readiness = integrations.sls.readiness()
+        if not readiness["ok"]:
+            return {"ok": False, "error": readiness["error"]}
+        if integrations.global_slsonline_enabled():
             return {"ok": False, "error": "Global SLS Online is active for all games"}
         if enabled:
-            return self.s.integrations.set_fake_appid(app_id, fake_appid or "480")
-        self.s.integrations.set_fake_appid(app_id, "")
-        self.s.integrations.set_netsock(app_id, False)
+            return integrations.set_fake_appid(app_id, fake_appid or "480")
+        result = integrations.set_fake_appid(app_id, "")
+        if not result.get("ok"):
+            return result
+        netsock_result = integrations.set_netsock(app_id, False)
+        if not netsock_result.get("ok"):
+            return {**netsock_result, "partial": True, "fake_appid_removed": True}
         return {"ok": True, "fake_appid": ""}
 
     async def is_global_slsonline_enabled(self) -> dict:
-        config = self.s.integrations.ctx.sls_config()
+        integrations = self.s.integrations
+        readiness = integrations.sls.readiness()
         return {
-            "ok": True,
-            "enabled": self.s.integrations.global_slsonline_enabled(),
-            "config_path": str(config) if config and config.is_file() else "",
+            **readiness,
+            "enabled": integrations.global_slsonline_enabled() if readiness["ok"] else False,
+            "config_path": readiness["path"] or "",
         }
 
     async def set_global_slsonline(self, enabled: bool) -> dict:
@@ -366,11 +375,16 @@ class Plugin:
         return await asyncio.to_thread(self.s.integrations.set_eos_proxy, app_id, enabled)
 
     async def set_eos_netsock(self, app_id: str, enabled: bool) -> dict:
+        readiness = self.s.integrations.sls.readiness()
+        if not readiness["ok"]:
+            return {"ok": False, "error": readiness["error"]}
         eos = await asyncio.to_thread(self.s.integrations.set_eos_proxy, app_id, enabled) if enabled else {"ok": True}
-        net = await asyncio.to_thread(self.s.integrations.set_netsock, app_id, enabled)
         if not eos.get("ok"):
             return eos
-        return net if not net.get("ok") else {"ok": True, "eos": True, "netsock": enabled}
+        net = await asyncio.to_thread(self.s.integrations.set_netsock, app_id, enabled)
+        if not net.get("ok"):
+            return {**net, "partial": bool(eos.get("ok")), "eos": eos, "netsock": net}
+        return {"ok": True, "eos": eos, "netsock": net}
 
     async def unregister_plugin_game(self, app_id: str) -> dict:
         return {"ok": self.s.library.unregister(app_id)}

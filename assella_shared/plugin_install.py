@@ -17,7 +17,7 @@ def sha256(path: Path) -> str:
 
 
 def download_plugin(name: str, manifest, cache_dir: Path) -> Path:
-    """Fetch a plugin, verifying its signed-manifest hash; fall back to bundle."""
+    """Fetch a plugin, trying R2/cloud sources first; fall back to bundle if offline."""
     meta = manifest.meta(name)
     if not meta or not manifest.is_deployable(name):
         raise ValueError("plugin is not deployable")
@@ -28,28 +28,38 @@ def download_plugin(name: str, manifest, cache_dir: Path) -> Path:
     if cached.is_file() and sha256(cached) == expected:
         return cached
 
-    if manifest.base_url:
-        url = f"{manifest.base_url.rstrip('/')}/{name}"
+    # 1. Primary: Download from R2 / published cloud sources
+    from .plugin_manifest import PLUGIN_SOURCES
+
+    sources = []
+    if getattr(manifest, "base_url", None):
+        sources = [manifest.base_url]
+    elif getattr(manifest, "use_network", True):
+        sources = list(PLUGIN_SOURCES)
+
+    for base in sources:
+        url = f"{base.rstrip('/')}/{name}"
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "Uran/plugin-manager"})
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urllib.request.urlopen(request, timeout=15) as response:
                 body = response.read(MAX_PLUGIN_BYTES + 1)
             if len(body) > MAX_PLUGIN_BYTES:
-                raise ValueError("plugin exceeds maximum size")
+                continue
             if hashlib.sha256(body).hexdigest() != expected:
-                raise ValueError("download SHA-256 does not match signed manifest")
+                continue
             temporary = cached.with_name(cached.name + ".tmp")
             temporary.write_bytes(body)
             os.replace(temporary, cached)
             return cached
         except Exception:
-            pass
+            continue
 
+    # 2. Offline fallback: use the bundled copy if its hash matches
     bundled_dir = getattr(manifest, "bundled_dir", None)
     bundled = Path(bundled_dir) / name if bundled_dir else None
     if bundled and bundled.is_file() and sha256(bundled) == expected:
         return bundled
-    raise OSError(f"Could not obtain verified plugin {name}")
+    raise OSError(f"Could not obtain verified plugin {name} from cloud or local fallback")
 
 
 def _backup(path: Path, suffix: str = ".bak") -> Path:

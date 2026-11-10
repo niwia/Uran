@@ -49,26 +49,25 @@ class PluginManager:
         self.ctx.write_setting("disabled_plugins", sorted(disabled))
 
     def _require_enabled(self):
-        """Turn on SLSsteam's plugin loader before anything is installed.
+        """Enable SLSsteam's plugin loader in its existing valid config."""
+        cfg = self.sls.config_path
+        readiness = self.sls.readiness(cfg)
+        if not readiness["ok"]:
+            raise RuntimeError(readiness["error"])
 
-        This deliberately does not reuse ``GuardService.check_sls_environment``:
-        that gate rejects a setup with no plugins yet, which is exactly the
-        state an install is meant to fix. Absent config.yaml is not an error
-        either - plugins are written to the default directory and picked up
-        once SLSsteam creates its config.
-        """
-        cfg = self.ctx.sls_config()
-        if cfg is None or not cfg.is_file():
-            return
-        try:
-            content = cfg.read_text(encoding="utf-8", errors="replace")
-            updated = ensure_required_sections(content)
-            if updated != content and self.sls.write(updated):
-                # SlsConfig writes back in place; keep this idempotent for the
-                # rest of the batch, since deploy only re-reads on the next call.
-                cfg.write_text(updated, encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 - never block an install on this
-            logger.warning("Could not enable plugins in config.yaml: %s", exc)
+        content = cfg.read_text(encoding="utf-8")
+        updated = ensure_required_sections(content)
+        if updated != content:
+            if not self.sls.write(updated):
+                raise RuntimeError("Could not enable SLSsteam plugins in config.yaml")
+            readiness = self.sls.readiness(cfg)
+            if not readiness["ok"] or ensure_required_sections(cfg.read_text(encoding="utf-8")) != cfg.read_text(encoding="utf-8"):
+                raise RuntimeError("Could not verify SLSsteam plugin settings in config.yaml")
+
+    def _require_config(self):
+        readiness = self.sls.readiness()
+        if not readiness["ok"]:
+            raise RuntimeError(readiness["error"])
 
     # -- read ----------------------------------------------------------------
     def status(self, refresh=False):
@@ -107,7 +106,13 @@ class PluginManager:
                 "category": meta.get("category", ""),
                 "disabled_reason": str(meta.get("disabled_reason") or ""),
             })
-        return {"ok": True, "serial": manifest.serial, "source": manifest.source, "plugins": rows}
+        return {
+            "ok": True,
+            "serial": manifest.serial,
+            "source": manifest.source,
+            "plugins": rows,
+            "sls_config": self.sls.readiness(),
+        }
 
     # -- write ---------------------------------------------------------------
     def install(self, name):
@@ -128,6 +133,7 @@ class PluginManager:
         manifest = self._local_manifest()
         self._named(manifest, name)
         if enabled:
+            self._require_enabled()
             disabled = self._disabled()
             if name in disabled:
                 disabled.discard(name)
@@ -137,6 +143,7 @@ class PluginManager:
             return {"ok": True, "filename": name, "enabled": True}
         if manifest.policy(name) == "required":
             raise ValueError("Required plugins cannot be disabled")
+        self._require_config()
         disabled = self._disabled()
         disabled.add(name)
         self._write_disabled(disabled)
@@ -148,6 +155,7 @@ class PluginManager:
         self._named(manifest, name)
         if manifest.policy(name) == "required":
             raise ValueError("Required plugins cannot be removed")
+        self._require_config()
         return plugin_install.undeploy_plugin(name, self._dirs())
 
     def install_essentials(self):

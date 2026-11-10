@@ -6,6 +6,7 @@ Dependency-free like the rest of the suite: no network, no Decky.
 
 import sys
 import tempfile
+import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,6 +17,7 @@ from uran_backend.health import (  # noqa: E402
     local_config_issues,
     top_level_keys,
 )
+from uran_backend.sls_config import validate_yaml  # noqa: E402
 
 
 class _Settings:
@@ -35,6 +37,21 @@ class _StubSls:
 
     def read(self):
         return self._content
+
+    def readiness(self, config_path=None):
+        cfg = config_path or self.config_path
+        if cfg is None or not cfg.exists():
+            return {"ok": False, "status": "missing", "path": str(cfg) if cfg else None,
+                    "error": "SLSsteam config not found"}
+        try:
+            content = cfg.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            return {"ok": False, "status": "invalid", "path": str(cfg), "error": str(exc)}
+        except OSError as exc:
+            return {"ok": False, "status": "unreadable", "path": str(cfg), "error": str(exc)}
+        if not validate_yaml(content, logging.getLogger("test")):
+            return {"ok": False, "status": "invalid", "path": str(cfg), "error": "invalid YAML"}
+        return {"ok": True, "status": "ready", "path": str(cfg), "error": ""}
 
 
 def check(name, cond):

@@ -102,6 +102,7 @@ class Health:
         """
         names: set[str] = set()
         searched: list[str] = []
+        config = self.sls.readiness()
         for directory in self.plugins_dirs():
             searched.append(str(directory))
             try:
@@ -114,17 +115,21 @@ class Health:
                 logger.debug("Plugin dir scan failed for %s: %s", directory, exc)
         return {
             "ok": True,
-            "plugins_enabled": self._plugins_flag(),
+            "plugins_enabled": self._plugins_flag() if config["ok"] else None,
+            "sls_config": config,
             "plugins": sorted(names),
             "searched": searched,
         }
 
-    def _plugins_flag(self) -> bool:
+    def _plugins_flag(self) -> bool | None:
+        readiness = self.sls.readiness()
+        if not readiness["ok"]:
+            return None
         try:
-            content = self.sls.read()
+            content = Path(readiness["path"]).read_text(encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not read config for Plugins flag: %s", exc)
-            return False
+            return None
         match = re.search(
             r"^[ \t]*['\"]?Plugins['\"]?[ \t]*:[ \t]*([^#\r\n]*)",
             content,
@@ -222,22 +227,17 @@ class Health:
     # -- config check (read-only) ------------------------------------------
     def check_config(self, online: bool = True) -> dict:
         cfg = self.sls.config_path
-        if cfg is None or not cfg.exists():
+        readiness = self.sls.readiness(cfg)
+        if not readiness["ok"]:
+            missing = readiness["status"] == "missing"
             return {
                 "ok": False,
-                "needs_attention": False,
-                "summary": "SLSsteam config.yaml not found",
-                "details": [f"Config not found (looked for {cfg})" if cfg else "No SLSsteam config location detected"],
+                "needs_attention": not missing,
+                "summary": readiness["error"],
+                "details": [readiness["error"]],
+                "config_status": readiness["status"],
             }
-        try:
-            text = cfg.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            return {
-                "ok": False,
-                "needs_attention": True,
-                "summary": f"Could not read config: {exc}",
-                "details": [str(exc)],
-            }
+        text = cfg.read_text(encoding="utf-8")
 
         details = local_config_issues(text)
         template_note = ""
@@ -277,17 +277,20 @@ class Health:
                 "needs_attention": True,
                 "summary": f"{len(details)} issue(s) found in config.yaml",
                 "details": details,
+                "config_status": readiness["status"],
             }
         return {
             "ok": True,
             "needs_attention": False,
             "summary": "Config looks healthy.",
             "details": [],
+            "config_status": readiness["status"],
         }
 
     # -- combined ----------------------------------------------------------
     def status(self) -> dict:
         plugins = self.check_plugins()
+        sls_config = plugins["sls_config"]
         try:
             sls = self.check_sls_version()
         except Exception as exc:  # noqa: BLE001
@@ -299,4 +302,4 @@ class Health:
             "steam_running": guards.is_steam_running(),
             "sls_active": guards.is_sls_active(),
         }
-        return {"ok": True, "plugins": plugins, "sls": sls, "process": process}
+        return {"ok": True, "plugins": plugins, "sls_config": sls_config, "sls": sls, "process": process}

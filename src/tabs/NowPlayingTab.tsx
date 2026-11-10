@@ -160,9 +160,9 @@ export const NowPlayingTab: React.FC<NowPlayingTabProps> = ({ game, onRefresh })
         <PanelSectionRow>
           <ToggleField
             label="SLS Online (0: 480)"
-            description="Use AppID 480 for Steam networking"
+            description={detail?.sls_config_ready ? "Use AppID 480 for Steam networking" : detail?.sls_config_error || "SLSsteam config unavailable"}
             checked={detail?.slsonline ?? false}
-            disabled={loading || busyAction === "slsonline" || detail?.global_slsonline}
+            disabled={loading || busyAction === "slsonline" || !detail?.sls_config_ready || detail?.global_slsonline}
             onChange={handleToggleSlsOnline}
           />
         </PanelSectionRow>
@@ -170,7 +170,7 @@ export const NowPlayingTab: React.FC<NowPlayingTabProps> = ({ game, onRefresh })
           <ToggleField
             label="NetSock Intercept"
             checked={detail?.netsock ?? false}
-            disabled={loading || busyAction === "netsock"}
+            disabled={loading || busyAction === "netsock" || !detail?.sls_config_ready}
             onChange={handleToggleNetsock}
           />
         </PanelSectionRow>

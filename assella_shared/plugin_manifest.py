@@ -45,6 +45,13 @@ POLICY_DEFAULT_ON = "default_on"      # installed unless the user turned it off
 POLICY_OPTIONAL = "optional"          # installed only when already present
 POLICY_UNAVAILABLE = "unavailable"    # held back or retired: never installed
 
+# Used as safety fallback if a manifest is completely empty or missing
+FALLBACK_REQUIRED_PLUGINS = (
+    "spacebunny.lua",
+    "styx.lua",
+    "lobster.lua",
+)
+
 
 def verify_signature(manifest_bytes: bytes, signature: bytes) -> bool:
     """Ed25519 check of a manifest body against every known public key."""
@@ -175,7 +182,8 @@ class Manifest:
         return False
 
     def required_plugins(self) -> list:
-        return [name for name in self.names if self.policy(name) == POLICY_REQUIRED]
+        names = [name for name in self.names if self.policy(name) == POLICY_REQUIRED]
+        return names if names else list(FALLBACK_REQUIRED_PLUGINS)
 
     def interceptor_names(self) -> list:
         return [
@@ -237,7 +245,7 @@ class ManifestStore:
         if not _valid_manifest_shape(data):
             logger.warning("Ignoring malformed %s manifest %s", source, path)
             return None
-        manifest = Manifest(data, source)
+        manifest = Manifest(data, source, PLUGIN_SOURCES[0] if source == "cache" else None)
         manifest.bundled_dir = self.bundled_dir
         return manifest
 

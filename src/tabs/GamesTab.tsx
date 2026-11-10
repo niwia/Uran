@@ -232,9 +232,9 @@ const GameAccordionItem: React.FC<GameAccordionItemProps> = ({
               <PanelSectionRow>
                 <ToggleField
                   label="SLSonline"
-                  description={detail?.global_slsonline ? "On for all games in Settings" : "Play online as Spacewar (480)"}
+                  description={!detail?.sls_config_ready ? detail?.sls_config_error || "SLSsteam config unavailable" : detail?.global_slsonline ? "On for all games in Settings" : "Play online as Spacewar (480)"}
                   checked={detail?.slsonline ?? false}
-                  disabled={busyAction === "slsonline" || detail?.global_slsonline}
+                  disabled={busyAction === "slsonline" || !detail?.sls_config_ready || detail?.global_slsonline}
                   onChange={handleToggleSlsOnline}
                 />
               </PanelSectionRow>
@@ -242,7 +242,7 @@ const GameAccordionItem: React.FC<GameAccordionItemProps> = ({
                 <ToggleField
                   label="NetSock"
                   checked={detail?.netsock ?? false}
-                  disabled={busyAction === "netsock"}
+                  disabled={busyAction === "netsock" || !detail?.sls_config_ready}
                   onChange={handleToggleNetsock}
                 />
               </PanelSectionRow>

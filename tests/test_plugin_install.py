@@ -34,6 +34,7 @@ def run():
 
         class FakeManifest:
             base_url = None
+            use_network = False
             bundled_dir = bundled
             retired = {}
 
@@ -55,6 +56,45 @@ def run():
 
         result = undeploy_plugin("sample.lua", [target])
         assert result["ok"] and (target / "sample.lua.removed.bak").read_bytes() == payload
+
+        # Test download from remote source when not present in bundled dir
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import threading
+
+        remote_payload = b"return { remote = true }\n"
+        remote_digest = hashlib.sha256(remote_payload).hexdigest()
+
+        class MockHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(remote_payload)))
+                self.end_headers()
+                self.wfile.write(remote_payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), MockHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.handle_request)
+        thread.start()
+
+        class RemoteManifest:
+            base_url = f"http://127.0.0.1:{port}"
+            use_network = True
+            bundled_dir = root / "empty_bundle"
+            retired = {}
+
+            def meta(self, name):
+                return {"sha256": remote_digest, "category": "companion"}
+
+            def is_deployable(self, name):
+                return True
+
+        res = deploy_plugin("remote.lua", [target], cache, RemoteManifest())
+        assert res["ok"] and (target / "remote.lua").read_bytes() == remote_payload
+        server.server_close()
+        thread.join()
     print("all plugin install checks pass")
 
 

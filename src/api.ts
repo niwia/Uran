@@ -103,6 +103,8 @@ export type AtomKeyInfo = {
 export type AtomDetail = AtomGame & {
   slsonline: boolean;
   global_slsonline?: boolean;
+  sls_config_ready: boolean;
+  sls_config_error: string;
   fake_appid: string;
   netsock: boolean;
   eos: string;
@@ -429,9 +431,16 @@ export function refreshOnce<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // -- Health (read-only) -------------------------------------------------------
 export type HealthPlugins = {
   ok: boolean;
-  plugins_enabled: boolean;
+  plugins_enabled: boolean | null;
+  sls_config: SlsConfigReadiness;
   plugins: string[];
   searched?: string[];
+};
+export type SlsConfigReadiness = {
+  ok: boolean;
+  status: "missing" | "invalid" | "unreadable" | "ready";
+  path: string | null;
+  error: string;
 };
 export type HealthSls = {
   status: "up_to_date" | "outdated" | "no_local" | "error" | string;
@@ -446,6 +455,7 @@ export type HealthProcess = {
 export type HealthStatus = {
   ok: boolean;
   plugins: HealthPlugins;
+  sls_config: SlsConfigReadiness;
   sls: HealthSls;
   process?: HealthProcess;
 };

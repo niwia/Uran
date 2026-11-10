@@ -61,6 +61,30 @@ class SlsConfig:
     def config_path(self) -> Path | None:
         return self.ctx.sls_config()
 
+    def readiness(self, config_path: Path | None = None) -> dict:
+        """Describe whether an existing SLS config is safe to consume or edit.
+
+        Missing configuration is not an invitation for Uran to create it: SLSsteam
+        owns the file and creates its canonical template.
+        """
+        cfg = config_path or self.config_path
+        if cfg is None:
+            return {"ok": False, "status": "missing", "path": None, "error": "SLSsteam config not found"}
+        try:
+            if not cfg.exists():
+                return {"ok": False, "status": "missing", "path": str(cfg), "error": "SLSsteam config not found"}
+            if not cfg.is_file():
+                return {"ok": False, "status": "invalid", "path": str(cfg), "error": "SLSsteam config is not a regular file"}
+            content = cfg.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            return {"ok": False, "status": "invalid", "path": str(cfg), "error": f"SLSsteam config is not valid UTF-8: {exc}"}
+        except OSError as exc:
+            return {"ok": False, "status": "unreadable", "path": str(cfg), "error": f"Could not read SLSsteam config: {exc}"}
+
+        if not validate_yaml(content, self.log):
+            return {"ok": False, "status": "invalid", "path": str(cfg), "error": "SLSsteam config contains invalid YAML"}
+        return {"ok": True, "status": "ready", "path": str(cfg), "error": ""}
+
     # -- backups -------------------------------------------------------------
     def backups_dir(self) -> Path:
         sls = self.config_path
@@ -99,15 +123,25 @@ class SlsConfig:
 
     def restore_backup(self, backup_name: str) -> dict:
         cfg = self.config_path
-        if not cfg:
-            return {"error": "SLSsteam config not found"}
+        readiness = self.readiness(cfg)
+        if not readiness["ok"]:
+            return {"error": readiness["error"]}
+        if Path(backup_name).name != backup_name or not backup_name.endswith(".yaml"):
+            return {"error": "Invalid SLS config backup name"}
         source = self.backups_dir() / backup_name
         if not source.exists():
             return {"error": f"Backup {backup_name} not found"}
         try:
-            self.create_backup("pre_restore")
-            with self.ctx.sls_lock:
-                shutil.copy2(source, cfg)
+            content = source.read_text(encoding="utf-8")
+            if not validate_yaml(content, self.log):
+                return {"error": f"Backup {backup_name} contains invalid YAML"}
+            backup_result = self.create_backup("pre_restore")
+            if backup_result.startswith("Error:") or backup_result == "SLSsteam config not found":
+                return {"error": f"Could not create pre-restore backup: {backup_result}"}
+            if not self.write(content, notify=False):
+                return {"error": "Could not restore SLS config backup"}
+            if not self.readiness(cfg)["ok"] or self.read() != content:
+                return {"error": "Could not verify restored SLS config"}
             signal_api("RELOAD", self.log)
             return {"success": True, "verified": True}
         except Exception as exc:  # noqa: BLE001
@@ -117,10 +151,12 @@ class SlsConfig:
     def write(self, content: str, notify: bool = True) -> bool:
         """Atomically write config.yaml in place, preserving the inode."""
         cfg = self.config_path
-        if cfg is None or not cfg.exists():
+        readiness = self.readiness(cfg)
+        if not readiness["ok"]:
             self.log.error(
-                "Refusing to write %s: file does not exist. SLSsteam must generate config.yaml first.",
+                "Refusing to write %s: %s",
                 cfg,
+                readiness["error"],
             )
             return False
         if not validate_yaml(content, self.log):
@@ -178,12 +214,13 @@ class _SlsConfigEditor:
 
     def __enter__(self) -> "_SlsConfigEditor":
         cfg = self.config_path or self.sls.config_path
-        if cfg is None or not cfg.exists():
+        readiness = self.sls.readiness(cfg)
+        if not readiness["ok"]:
             self.content = ""
             self.has_changes = False
             self.committed_successfully = False
             return self
-        self.content = cfg.read_text(encoding="utf-8", errors="replace")
+        self.content = cfg.read_text(encoding="utf-8")
         self.has_changes = False
         self.committed_successfully = True
         return self

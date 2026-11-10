@@ -275,10 +275,12 @@ export const SettingsTab: React.FC = () => {
   const slsBinaryMissing = health?.sls?.status === "no_local";
   const slsInactive = Boolean(health?.process?.steam_running) && health?.process?.sls_active === false;
   const isSlsReady = !slsBinaryMissing && !slsInactive;
+  const slsConfigReady = Boolean(health?.sls_config?.ok);
+  const slsConfigError = health?.sls_config?.error || "SLSsteam config is unavailable";
   const pluginsList = health?.plugins?.plugins ?? [];
-  const hasPlugins = pluginsList.length > 0;
+  const hasPlugins = slsConfigReady && pluginsList.length > 0;
   const hasKey = Boolean(keyStatus?.masked);
-  const setupIncomplete = !isSlsReady || !hasPlugins || !hasKey;
+  const setupIncomplete = !isSlsReady || !slsConfigReady || !hasPlugins || !hasKey;
   const displaySetupNotice = setupIncomplete || showWelcomeScreen;
 
   const pluginsText = hasPlugins ? pluginsList.join(", ") : "None detected";
@@ -309,10 +311,9 @@ export const SettingsTab: React.FC = () => {
                       : "SLSsteam is not detected on this system."}
                   </div>
                 )}
+                {!slsConfigReady && <div>• {slsConfigError}</div>}
                 {(!hasPlugins || (showWelcomeScreen && hasPlugins)) && (
-                  <div>
-                    • No SLSsteam plugins found. Install essential plugins below.
-                  </div>
+                  slsConfigReady && <div>• No SLSsteam plugins found. Install essential plugins below.</div>
                 )}
                 {(!hasKey || (showWelcomeScreen && hasKey)) && (
                   <div>• Hubcap API key is not configured.</div>
@@ -340,7 +341,7 @@ export const SettingsTab: React.FC = () => {
 
       <PanelSection title="SLSsteam Plugins">
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={pluginBusy} onClick={() => void runPluginAction(installEssentialPlugins)}>
+          <ButtonItem layout="below" disabled={pluginBusy || !slsConfigReady} onClick={() => void runPluginAction(installEssentialPlugins)}>
             Install essential plugins
           </ButtonItem>
         </PanelSectionRow>
@@ -356,7 +357,7 @@ export const SettingsTab: React.FC = () => {
             />
             <ButtonItem
               layout="below"
-              disabled={pluginBusy || !plugin.deployable}
+              disabled={pluginBusy || !slsConfigReady || !plugin.deployable}
               onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}
             >
               {plugin.status === "update_available" ? "Update" : plugin.status === "installed" ? "Reinstall" : "Install"}
@@ -364,7 +365,7 @@ export const SettingsTab: React.FC = () => {
             {plugin.installed && !plugin.required && (
               <ButtonItem
                 layout="below"
-                disabled={pluginBusy}
+                disabled={pluginBusy || !slsConfigReady}
                 onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}
               >
                 {plugin.enabled ? "Disable" : "Enable"}
@@ -497,8 +498,9 @@ export const SettingsTab: React.FC = () => {
             <PanelSectionRow>
               <ToggleField
                 label="Global SLS Online"
-                description="Redirect all multiplayer to App ID 480 (Spacewar)"
+                description={slsConfigReady ? "Redirect all multiplayer to App ID 480 (Spacewar)" : slsConfigError}
                 checked={globalSlsOnline}
+                disabled={!slsConfigReady}
                 onChange={handleToggleGlobalSlsOnline}
               />
             </PanelSectionRow>
