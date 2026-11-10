@@ -157,8 +157,8 @@ class Manifest:
         return self._entries.get(name)
 
     def is_deployable(self, name: str) -> bool:
-        meta = self._entries.get(name) or {}
-        return bool(meta.get("deployable", True))
+        meta = self._entries.get(name)
+        return bool(meta and meta.get("deployable", True))
 
     def policy(self, name: str) -> str:
         meta = self._entries.get(name)
@@ -183,7 +183,9 @@ class Manifest:
 
     def required_plugins(self) -> list:
         names = [name for name in self.names if self.policy(name) == POLICY_REQUIRED]
-        return names if names else list(FALLBACK_REQUIRED_PLUGINS)
+        if names:
+            return names
+        return [name for name in FALLBACK_REQUIRED_PLUGINS if self.is_deployable(name)]
 
     def interceptor_names(self) -> list:
         return [

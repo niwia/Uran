@@ -90,6 +90,32 @@ def run():
         row = next(r for r in mgr.status()["plugins"] if r["filename"] == "lettuce.lua")
         assert row["installed"] and row["enabled"] and row["status"] == "installed", row
 
+    # 5. Empty-policy manifest: no required: true entries only suggests deployable plugins.
+    from assella_shared.plugin_manifest import Manifest
+
+    empty_policy_data = {
+        "manifest_version": 2,
+        "serial": 20261110000000,
+        "plugins": {
+            "styx.lua": {
+                "name": "Styx",
+                "sha256": "3527b1525b2a7850ae9dfa7654bc243587b568b340e32e62d819eacca9fca2f7",
+                "required": False,  # no plugin has required: True
+                "deployable": True,
+            },
+            "custom.lua": {
+                "name": "Custom",
+                "sha256": "0" * 64,
+                "required": False,
+                "deployable": False,
+            },
+        },
+    }
+    m = Manifest(empty_policy_data, "cache")
+    # spacebunny and lobster are not in this manifest, so required_plugins must only return styx.lua
+    req = m.required_plugins()
+    assert req == ["styx.lua"], f"Expected ['styx.lua'], got {req}"
+
     assert plugins.is_dir()
     print("all plugin manager checks pass")
 

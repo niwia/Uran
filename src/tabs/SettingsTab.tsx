@@ -94,7 +94,7 @@ export const SettingsTab: React.FC = () => {
   const [configCheck, setConfigCheck] = useState<ConfigCheck | null>(null);
   const [pluginInfo, setPluginInfo] = useState<{ name: string; version: string }>({
     name: "Uran",
-    version: "0.7.9",
+    version: "0.8.0",
   });
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
