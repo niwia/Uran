@@ -1,19 +1,22 @@
 """Uran's adapter around the tool-neutral signed plugin manifest/install layer."""
 
+import logging
 from pathlib import Path
 
 from assella_shared import plugin_install
 from assella_shared.plugin_manifest import ManifestStore
+from assella_shared.sls_yaml import ensure_required_sections
 
 from . import paths
 
+logger = logging.getLogger("Uran")
+
 
 class PluginManager:
-    def __init__(self, ctx, guards=None):
+    def __init__(self, ctx, sls):
         self.ctx = ctx
-        self.guards = guards
+        self.sls = sls
         self.store = ManifestStore(ctx.runtime_dir / "plugins", ctx.plugin_dir / "plugins")
-
     # -- internals -----------------------------------------------------------
     def _manifest(self, refresh=False):
         manifest = self.store.load(force=refresh)
@@ -22,7 +25,10 @@ class PluginManager:
         return manifest
 
     def _local_manifest(self):
+        """The verified manifest on disk, falling back to one fetch on first run."""
         manifest = self.store.load_local()
+        if manifest is None:
+            manifest = self.store.load()
         if manifest is None:
             raise RuntimeError("No verified plugin manifest is available")
         return manifest
@@ -43,12 +49,26 @@ class PluginManager:
         self.ctx.write_setting("disabled_plugins", sorted(disabled))
 
     def _require_enabled(self):
-        """Install only where SLSsteam can load plugins; mirror Add's checks and fixes."""
-        if self.guards is None:
+        """Turn on SLSsteam's plugin loader before anything is installed.
+
+        This deliberately does not reuse ``GuardService.check_sls_environment``:
+        that gate rejects a setup with no plugins yet, which is exactly the
+        state an install is meant to fix. Absent config.yaml is not an error
+        either - plugins are written to the default directory and picked up
+        once SLSsteam creates its config.
+        """
+        cfg = self.ctx.sls_config()
+        if cfg is None or not cfg.is_file():
             return
-        gate = self.guards.check_sls_environment()
-        if not gate.get("ok"):
-            raise RuntimeError(gate.get("error") or "SLSsteam is not ready for plugins")
+        try:
+            content = cfg.read_text(encoding="utf-8", errors="replace")
+            updated = ensure_required_sections(content)
+            if updated != content and self.sls.write(updated):
+                # SlsConfig writes back in place; keep this idempotent for the
+                # rest of the batch, since deploy only re-reads on the next call.
+                cfg.write_text(updated, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - never block an install on this
+            logger.warning("Could not enable plugins in config.yaml: %s", exc)
 
     # -- read ----------------------------------------------------------------
     def status(self, refresh=False):
