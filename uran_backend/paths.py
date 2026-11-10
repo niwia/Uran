@@ -128,9 +128,17 @@ def spacebunny_conf(user_home_path: Path) -> Path | None:
 
 
 def sls_plugins_dirs(user_home_path: Path) -> list[Path]:
-    """Resolve only the plugin directory belonging to the detected Steam install."""
+    """Resolve only the plugin directory belonging to the detected Steam install.
+
+    Falls back to the default location before SLSsteam has written config.yaml,
+    so a fresh setup can be given plugins and later pick them up.
+    """
     config = sls_config(user_home_path)
-    return [config.parent / "plugins"] if config is not None else []
+    if config is not None:
+        return [config.parent / "plugins"]
+    if is_flatpak_steam(user_home_path):
+        return [flatpak_steam_root(user_home_path) / ".config" / "SLSsteam" / "plugins"]
+    return [user_home_path / ".config" / "SLSsteam" / "plugins"]
 
 
 def sls_data_dir(user_home_path: Path) -> Path:

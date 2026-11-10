@@ -121,6 +121,11 @@ export const SettingsTab: React.FC = () => {
   const loadPlugins = useCallback(async (refresh = false) => {
     setManagedPlugins(refresh ? await refreshPluginManifest() : await getPluginsStatus());
   }, []);
+  const loadPluginsBackground = useCallback(() => {
+    // Local manifest first so Settings paints immediately, then the network copy.
+    void getPluginsStatus().then(setManagedPlugins).catch(() => undefined);
+    void refreshPluginManifest().then(setManagedPlugins).catch(() => undefined);
+  }, []);
   const runPluginAction = async (action: () => Promise<unknown>) => {
     setPluginBusy(true);
     try {
@@ -136,7 +141,7 @@ export const SettingsTab: React.FC = () => {
 
   useEffect(() => {
     loadHealthAndKey();
-    void loadPlugins();
+    loadPluginsBackground();
 
     getSetting("steam_store_enabled", true)
       .then((v) => setSteamStoreEnabled(Boolean(v)))
@@ -342,12 +347,27 @@ export const SettingsTab: React.FC = () => {
         {managedPlugins?.error && <PanelSectionRow><Field label="Manifest" description={managedPlugins.error} /></PanelSectionRow>}
         {(managedPlugins?.plugins ?? []).map((plugin) => (
           <PanelSectionRow key={plugin.filename}>
-            <ButtonItem layout="below" disabled={pluginBusy || !plugin.deployable} onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}>
-              {plugin.name} · v{plugin.version} · {plugin.status.replaceAll("_", " ")}
+            <Field
+              label={`${plugin.name} · v${plugin.version}`}
+              description={
+                plugin.disabled_reason
+                  || (plugin.status === "off" ? "Disabled in Uran" : plugin.status.replaceAll("_", " "))
+              }
+            />
+            <ButtonItem
+              layout="below"
+              disabled={pluginBusy || !plugin.deployable}
+              onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}
+            >
+              {plugin.status === "update_available" ? "Update" : plugin.status === "installed" ? "Reinstall" : "Install"}
             </ButtonItem>
             {plugin.installed && !plugin.required && (
-              <ButtonItem layout="below" disabled={pluginBusy} onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}>
-                {plugin.enabled ? "Disable" : "Enable"} {plugin.name}
+              <ButtonItem
+                layout="below"
+                disabled={pluginBusy}
+                onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}
+              >
+                {plugin.enabled ? "Disable" : "Enable"}
               </ButtonItem>
             )}
           </PanelSectionRow>

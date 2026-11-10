@@ -458,7 +458,7 @@ export type ConfigCheck = {
 export type ManagedPlugin = {
   filename: string; name: string; version: string; status: string;
   installed: boolean; enabled: boolean; required: boolean;
-  deployable: boolean; category: string;
+  deployable: boolean; category: string; disabled_reason: string;
 };
 export type PluginsStatus = { ok: boolean; serial?: number; source?: string; error?: string; plugins: ManagedPlugin[] };
 

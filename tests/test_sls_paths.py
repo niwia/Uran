@@ -93,6 +93,14 @@ def run() -> None:
 
     with tempfile.TemporaryDirectory() as temp:
         home = Path(temp)
+        # SLSsteam has never written config.yaml: plugins still have a home.
+        check(
+            "plugins fall back to the default location before SLSsteam runs",
+            paths.sls_plugins_dirs(home) == [home / ".config" / "SLSsteam" / "plugins"],
+        )
+
+    with tempfile.TemporaryDirectory() as temp:
+        home = Path(temp)
         stale_native_config = home / ".config" / "SLSsteam" / "config.yaml"
         stale_native_config.parent.mkdir(parents=True)
         stale_native_config.touch()

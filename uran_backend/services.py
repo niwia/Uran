@@ -59,9 +59,11 @@ def build(decky_module=None):
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
     plugins = PluginManager(ctx)
+    plugins.guards = None  # guards are built below; plugins must not close over them
 
     # Guards reach across services, so they are constructed after them.
     guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations))
+    plugins.guards = guards
 
     injector = Injector(ctx, sls, steam, library, manifests, guards)
     keycare = Keycare(ctx)

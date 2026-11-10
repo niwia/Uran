@@ -96,8 +96,9 @@ class Health:
 
         Informational only: returns the actual `.lua` file names present in
         the plugins dir (e.g. versioned builds like
-        `download-1.4.0-spacetest.lua`). ASSella installs and versions these
-        plugins, so Uran reports what is there and never names a required set.
+        `download-1.4.0-spacetest.lua`). Plugin installs and versions come from
+        the signed manifest, so Uran reports what is there and never names a
+        required set.
         """
         names: set[str] = set()
         searched: list[str] = []
