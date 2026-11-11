@@ -57,7 +57,9 @@ export const SettingsTab: React.FC = () => {
   // Health & Environment
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [managedPlugins, setManagedPlugins] = useState<PluginsStatus | null>(null);
+  const [setupChecksComplete, setSetupChecksComplete] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
+  const [checkingPlugins, setCheckingPlugins] = useState(false);
 
   // Hubcap Key & User stats
   const [keyStatus, setKeyStatus] = useState<{
@@ -105,32 +107,76 @@ export const SettingsTab: React.FC = () => {
   const loadHealthAndKey = useCallback(async (fresh: boolean = false) => {
     try {
       const cached = fresh ? refreshOnce : once;
-      const [h, k, s] = await Promise.all([
+      const [h, k] = await Promise.all([
         cached("health", getHealthStatus).catch(() => null),
         cached("hubcap_key_status", getHubcapKeyStatus).catch(() => null),
-        cached("hubcap_stats", getHubcapUserStats).catch(() => ({ ok: false })),
       ]);
       if (h) setHealth(h);
       if (k) setKeyStatus(k);
-      if (s) setStats(s);
+      void cached("hubcap_stats", getHubcapUserStats)
+        .then(setStats)
+        .catch(() => setStats({ ok: false }));
     } catch {
       // ignore
     }
   }, []);
 
-  const loadPlugins = useCallback(async (refresh = false) => {
-    setManagedPlugins(refresh ? await refreshPluginManifest() : await getPluginsStatus());
+  const loadPlugins = useCallback(async (refresh: false | "session" | "force" = false) => {
+    const shouldRefresh = refresh !== false;
+    if (shouldRefresh) setCheckingPlugins(true);
+    try {
+      let status: PluginsStatus;
+      try {
+        if (refresh === "force") {
+          status = await refreshOnce("plugin_manifest_refresh", refreshPluginManifest);
+        } else if (refresh === "session") {
+          status = await once("plugin_manifest_refresh", refreshPluginManifest);
+        } else {
+          status = await getPluginsStatus();
+          // Keep the session memo in sync with post-action disk state so
+          // revisiting Settings doesn't revert to stale pre-action plugin status.
+          if (status.ok) {
+            void refreshOnce("plugin_manifest_refresh", () => Promise.resolve(status));
+          }
+        }
+      } catch (error) {
+        status = { ok: false, error: String(error), plugins: [] };
+      }
+
+      if (status.ok || !shouldRefresh) {
+        setManagedPlugins(status);
+        return status;
+      }
+
+      // A failed upstream request may still leave a previously verified local
+      // manifest usable. Prefer it over an empty error state, but label it stale.
+      try {
+        const local = await getPluginsStatus();
+        if (local.ok) {
+          const reason = status.error || "The upstream manifest could not be refreshed.";
+          const fallback = { ...local, error: `Upstream refresh failed; showing the ${local.source || "local"} manifest. ${reason}` };
+          setManagedPlugins(fallback);
+          return fallback;
+        }
+      } catch {
+        // Keep the upstream error below if there is no usable local copy.
+      }
+      setManagedPlugins(status);
+      return status;
+    } finally {
+      if (shouldRefresh) setCheckingPlugins(false);
+    }
   }, []);
   const loadPluginsBackground = useCallback(() => {
-    // Local manifest first so Settings paints immediately, then the network copy.
-    void getPluginsStatus().then(setManagedPlugins).catch(() => undefined);
-    void refreshPluginManifest().then(setManagedPlugins).catch(() => undefined);
-  }, []);
+    // Refresh upstream once per Decky session; explicit Check Again always
+    // bypasses this memo. The backend falls back to verified local manifests.
+    return loadPlugins("session");
+  }, [loadPlugins]);
   const runPluginAction = async (action: () => Promise<unknown>) => {
     setPluginBusy(true);
     try {
       await action();
-      await loadPlugins(true);
+      await loadPlugins(false);
       await loadHealthAndKey(true);
     } catch (error) {
       notify("Plugin operation failed", String(error));
@@ -140,8 +186,10 @@ export const SettingsTab: React.FC = () => {
   };
 
   useEffect(() => {
-    loadHealthAndKey();
-    loadPluginsBackground();
+    let mounted = true;
+    void Promise.all([loadHealthAndKey(), loadPluginsBackground()]).finally(() => {
+      if (mounted) setSetupChecksComplete(true);
+    });
 
     getSetting("steam_store_enabled", true)
       .then((v) => setSteamStoreEnabled(Boolean(v)))
@@ -163,7 +211,11 @@ export const SettingsTab: React.FC = () => {
     getPluginInfo()
       .then((info) => info && setPluginInfo(info))
       .catch(() => {});
-  }, [loadHealthAndKey]);
+
+    return () => {
+      mounted = false;
+    };
+  }, [loadHealthAndKey, loadPluginsBackground]);
 
   // Key save handler
   const handleSaveKey = async () => {
@@ -270,112 +322,219 @@ export const SettingsTab: React.FC = () => {
     }
   };
 
-  // Setup checks. SLSsteam counts as ready when its binary is present and, if
-  // we can see a running Steam, it is actually loaded into it.
+  const handleCheckPluginUpdates = async () => {
+    const status = await loadPlugins("force");
+    if (!status?.ok) {
+      notify("SLSsteam Plugins", status?.error || "Could not refresh the plugin manifest");
+      return;
+    }
+    if (status.source !== "remote" || status.error) {
+      notify(
+        "SLSsteam Plugins",
+        status.error || `Upstream unavailable; showing the verified ${status.source || "local"} manifest.`,
+      );
+      return;
+    }
+    const updates = status.plugins.filter((plugin) => plugin.status === "update_available").length;
+    notify(
+      "SLSsteam Plugins",
+      updates ? `${updates} plugin update${updates === 1 ? "" : "s"} available.` : "All managed plugins are up to date.",
+    );
+  };
+
+  // Plugin controls are only useful once the SLS binary/config/loader and at
+  // least one plugin are present. Keep the setup action visible until then.
   const slsBinaryMissing = health?.sls?.status === "no_local";
-  const slsInactive = Boolean(health?.process?.steam_running) && health?.process?.sls_active === false;
-  const isSlsReady = !slsBinaryMissing && !slsInactive;
+  const slsDetected = Boolean(health && (
+    (!slsBinaryMissing && health.sls.status !== "error" && health.sls.status !== "checking")
+    || health.sls.local_mtime != null
+    || health.process?.sls_active
+  ));
+  const slsRunningInactive = Boolean(health?.process?.steam_running) && health?.process?.sls_active === false;
+  const slsReady = slsDetected && !slsRunningInactive;
   const slsConfigReady = Boolean(health?.sls_config?.ok);
   const slsConfigError = health?.sls_config?.error || "SLSsteam config is unavailable";
   const pluginsList = health?.plugins?.plugins ?? [];
-  const hasPlugins = slsConfigReady && pluginsList.length > 0;
+  const hasPluginFiles = pluginsList.length > 0;
+  const pluginsEnabled = health?.plugins?.plugins_enabled === true;
+  const requiredPlugins = managedPlugins?.plugins.filter((plugin) => plugin.required) ?? [];
+  const essentialsCurrent = requiredPlugins.length > 0 && requiredPlugins.every(
+    (plugin) => plugin.deployable && plugin.installed && plugin.enabled && plugin.status === "installed",
+  );
+  const pluginControlsReady = slsReady && slsConfigReady && pluginsEnabled && hasPluginFiles && Boolean(managedPlugins?.ok);
   const hasKey = Boolean(keyStatus?.masked);
-  const setupIncomplete = !isSlsReady || !slsConfigReady || !hasPlugins || !hasKey;
-  const displaySetupNotice = setupIncomplete || showWelcomeScreen;
+  const needsPluginSetupAction = !essentialsCurrent || !pluginsEnabled || !hasPluginFiles;
+  const setupIncomplete = !slsReady || !slsConfigReady || needsPluginSetupAction || !hasKey;
+  const displaySetupNotice = setupChecksComplete && (setupIncomplete || showWelcomeScreen);
+  const essentialButtonDisabled = pluginBusy || checkingPlugins || !slsReady || !slsConfigReady
+    || !managedPlugins?.ok || !requiredPlugins.length || !needsPluginSetupAction;
 
-  const pluginsText = hasPlugins ? pluginsList.join(", ") : "None detected";
-  const slsText = slsBinaryMissing
+  const pluginsText = !slsConfigReady
+    ? "Unknown (SLSsteam config unavailable)"
+    : !hasPluginFiles
+    ? "No Lua plugins detected"
+    : pluginsList.join(", ");
+  const slsText = !health
+    ? "Checking SLSsteam..."
+    : slsBinaryMissing
     ? "Not installed / not found"
-    : slsInactive
-    ? "Installed, not loaded into Steam"
+    : slsRunningInactive
+    ? "Installed, but not loaded into running Steam"
+    : health.sls.status === "error"
+    ? slsDetected ? "Installed; release check unavailable" : "Could not verify SLSsteam"
     : health?.sls?.status === "outdated"
     ? "Installed & active (outdated binary)"
-    : "Installed & active";
+    : health.process?.steam_running
+    ? "Installed & active"
+    : "Installed (Steam is not running)";
+  const manifestSource = managedPlugins?.source === "remote"
+    ? "Upstream signed manifest"
+    : managedPlugins?.source === "cache"
+    ? "Verified cached manifest (may be stale)"
+    : managedPlugins?.source === "bundled"
+    ? "Bundled manifest (offline fallback)"
+    : managedPlugins?.source || "Manifest source unavailable";
 
   return (
     <>
       {displaySetupNotice && (
-        <PanelSection title="Setup Notice">
+        <PanelSection title="Welcome / Setup">
           <PanelSectionRow>
             <div className="uran-alert-banner">
               <div style={{ fontWeight: 700, marginBottom: "4px" }}>
-                Setup Incomplete {showWelcomeScreen && !setupIncomplete ? "(Preview Mode)" : ""}
+                {setupIncomplete ? "Finish setting up Uran" : "Setup preview"}
               </div>
               <div style={{ fontSize: "12px", lineHeight: 1.4 }}>
-                {(!isSlsReady || (showWelcomeScreen && isSlsReady)) && (
-                  <div>
-                    • {slsBinaryMissing
-                      ? "SLSsteam is not detected on this system."
-                      : slsInactive
-                      ? "SLSsteam is installed but not loaded into Steam."
-                      : "SLSsteam is not detected on this system."}
-                  </div>
-                )}
+                {!slsDetected && <div>• SLSsteam is not detected on this system.</div>}
+                {slsRunningInactive && <div>• SLSsteam is installed but not loaded into running Steam.</div>}
                 {!slsConfigReady && <div>• {slsConfigError}</div>}
-                {(!hasPlugins || (showWelcomeScreen && hasPlugins)) && (
-                  slsConfigReady && <div>• No SLSsteam plugins found. Install essential plugins below.</div>
+                {slsConfigReady && !pluginsEnabled && <div>• SLSsteam plugin loading is off. Install essentials to enable it.</div>}
+                {slsConfigReady && pluginsEnabled && !hasPluginFiles && <div>• No SLSsteam Lua plugins are installed yet.</div>}
+                {managedPlugins && !essentialsCurrent && <div>• Essential plugins are missing or need an update.</div>}
+                {!setupIncomplete && <div>• All setup checks pass.</div>}
+                {!managedPlugins && <div>• Checking the signed plugin manifest…</div>}
+                {managedPlugins?.ok && managedPlugins.source !== "remote" && (
+                  <div>• Using the verified {managedPlugins.source || "local"} manifest; it may be stale.</div>
                 )}
-                {(!hasKey || (showWelcomeScreen && hasKey)) && (
-                  <div>• Hubcap API key is not configured.</div>
-                )}
+                {managedPlugins?.error && <div>• {managedPlugins.error}</div>}
+                {!hasKey && <div>• Hubcap API key is not configured.</div>}
               </div>
             </div>
           </PanelSectionRow>
+          {setupIncomplete && needsPluginSetupAction && (
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={essentialButtonDisabled}
+                onClick={() => void runPluginAction(installEssentialPlugins)}
+              >
+                {essentialsCurrent
+                  ? "Enable SLSsteam plugin loader"
+                  : "Install essential plugins"}
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
         </PanelSection>
       )}
 
-      <PanelSection title="Environment & Status">
-        <PanelSectionRow>
-          <Field
-            label="SLSsteam"
-            description={slsText}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <Field
-            label="Active SLS Plugins"
-            description={pluginsText}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
       <PanelSection title="SLSsteam Plugins">
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={pluginBusy || !slsConfigReady} onClick={() => void runPluginAction(installEssentialPlugins)}>
-            Install essential plugins
-          </ButtonItem>
+          <Field label="SLSsteam" description={slsText} />
         </PanelSectionRow>
-        {managedPlugins?.error && <PanelSectionRow><Field label="Manifest" description={managedPlugins.error} /></PanelSectionRow>}
-        {(managedPlugins?.plugins ?? []).map((plugin) => (
-          <PanelSectionRow key={plugin.filename}>
+        <PanelSectionRow>
+          <Field label="Active SLS Plugins" description={pluginsText} />
+        </PanelSectionRow>
+
+        {!pluginControlsReady && (
+          <PanelSectionRow>
             <Field
-              label={`${plugin.name} · v${plugin.version}`}
+              label="Plugin controls hidden until ready"
               description={
-                plugin.disabled_reason
-                  || (plugin.status === "off" ? "Disabled in Uran" : plugin.status.replaceAll("_", " "))
+                !slsDetected ? "SLSsteam must be detected first."
+                : slsRunningInactive ? "SLSsteam is installed, but not loaded into running Steam."
+                : !slsConfigReady ? slsConfigError
+                : !pluginsEnabled ? "Plugin loading is off; installing a plugin through Uran enables it automatically."
+                : !hasPluginFiles ? "Install an essential plugin to make the plugin controls available."
+                : checkingPlugins || !managedPlugins ? "Checking signed plugin manifest..."
+                : !managedPlugins.ok ? "Could not load a verified plugin manifest. Check again to retry."
+                : "Plugin controls are unavailable."
               }
             />
+          </PanelSectionRow>
+        )}
+
+        {!pluginControlsReady && slsReady && slsConfigReady && (
+          <PanelSectionRow>
             <ButtonItem
               layout="below"
-              disabled={pluginBusy || !slsConfigReady || !plugin.deployable}
-              onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}
+              disabled={checkingPlugins}
+              onClick={() => void handleCheckPluginUpdates()}
             >
-              {plugin.status === "update_available" ? "Update" : plugin.status === "installed" ? "Reinstall" : "Install"}
+              {checkingPlugins ? "Checking plugin manifest..." : "Check again for plugin updates"}
             </ButtonItem>
-            {plugin.installed && !plugin.required && (
+          </PanelSectionRow>
+        )}
+
+        {pluginControlsReady && (
+          <>
+            <PanelSectionRow>
+              <Field
+                label="Plugin manifest"
+                description={`${manifestSource}${managedPlugins?.serial ? ` · serial ${managedPlugins.serial}` : ""}`}
+              />
+            </PanelSectionRow>
+            {managedPlugins?.error && (
+              <PanelSectionRow>
+                <Field label="Refresh notice" description={managedPlugins.error} />
+              </PanelSectionRow>
+            )}
+            {(managedPlugins?.plugins ?? []).map((plugin) => (
+              <React.Fragment key={plugin.filename}>
+                <PanelSectionRow>
+                  <Field
+                    label={`${plugin.name} · v${plugin.version}${plugin.required ? " · Essential" : ""}`}
+                    description={
+                      plugin.disabled_reason
+                        || (plugin.status === "off" ? "Disabled in Uran" : plugin.status.replaceAll("_", " "))
+                    }
+                  />
+                </PanelSectionRow>
+                <PanelSectionRow>
+                  <ButtonItem
+                    layout="below"
+                    disabled={pluginBusy || checkingPlugins || !plugin.deployable}
+                    onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}
+                  >
+                    {plugin.status === "update_available" ? `Update ${plugin.name}` : plugin.status === "installed" ? `Reinstall ${plugin.name}` : `Install ${plugin.name}`}
+                  </ButtonItem>
+                </PanelSectionRow>
+                {plugin.installed && !plugin.required && (
+                  <PanelSectionRow>
+                    <ButtonItem
+                      layout="below"
+                      disabled={pluginBusy || checkingPlugins}
+                      onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}
+                    >
+                      {plugin.enabled ? `Disable ${plugin.name}` : `Enable ${plugin.name}`}
+                    </ButtonItem>
+                  </PanelSectionRow>
+                )}
+              </React.Fragment>
+            ))}
+            <PanelSectionRow>
               <ButtonItem
                 layout="below"
-                disabled={pluginBusy || !slsConfigReady}
-                onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}
+                disabled={pluginBusy || checkingPlugins}
+                onClick={() => void handleCheckPluginUpdates()}
               >
-                {plugin.enabled ? "Disable" : "Enable"}
+                {checkingPlugins ? "Checking for plugin updates..." : "Check again for plugin updates"}
               </ButtonItem>
-            )}
-          </PanelSectionRow>
-        ))}
+            </PanelSectionRow>
+          </>
+        )}
       </PanelSection>
 
-      <PanelSection title="Hubcap API Key">
+      <PanelSection title="Hubcap Account & Network">
         <PanelSectionRow>
           <Field
             label="API Key"
@@ -450,9 +609,21 @@ export const SettingsTab: React.FC = () => {
             </PanelSectionRow>
           </>
         )}
+        <PanelSectionRow>
+          <DropdownItem
+            label="Gateway Route"
+            rgOptions={[
+              { data: "auto", label: "Auto (Fastest)" },
+              { data: "direct", label: "Direct Connection" },
+              { data: "proxy", label: "Cloudflare Worker Proxy" },
+            ]}
+            selectedOption={gatewayMode}
+            onChange={handleGatewayChange}
+          />
+        </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="DLC & Store Settings">
+      <PanelSection title="Preferences">
         <PanelSectionRow>
           <ToggleField
             label="Auto-add Delisted DLCs"
@@ -469,9 +640,6 @@ export const SettingsTab: React.FC = () => {
             onChange={handleToggleSteamStore}
           />
         </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="Notifications">
         <PanelSectionRow>
           <DropdownItem
             label="Notification Mode"
@@ -482,19 +650,23 @@ export const SettingsTab: React.FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection
-        title={
-          <div
-            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", width: "100%" }}
-            onClick={() => setShowAdvanced((a) => !a)}
-          >
-            <span>Advanced & Diagnostics</span>
-            <span style={{ fontSize: "12px", opacity: 0.8 }}>{showAdvanced ? "Hide" : "Show"}</span>
-          </div>
-        }
-      >
+      <PanelSection title="Advanced & About">
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => setShowAdvanced((current) => !current)}>
+            {showAdvanced ? "Hide advanced settings" : "Show advanced settings"}
+          </ButtonItem>
+        </PanelSectionRow>
         {showAdvanced && (
           <>
+            <PanelSectionRow>
+              <ToggleField
+                label="Show welcome screen"
+                description="Preview the setup notice shown when requirements are incomplete"
+                checked={showWelcomeScreen}
+                onChange={setShowWelcomeScreen}
+              />
+            </PanelSectionRow>
+
             <PanelSectionRow>
               <ToggleField
                 label="Global SLS Online"
@@ -502,19 +674,6 @@ export const SettingsTab: React.FC = () => {
                 checked={globalSlsOnline}
                 disabled={!slsConfigReady}
                 onChange={handleToggleGlobalSlsOnline}
-              />
-            </PanelSectionRow>
-
-            <PanelSectionRow>
-              <DropdownItem
-                label="Gateway Route"
-                rgOptions={[
-                  { data: "auto", label: "Auto (Fastest)" },
-                  { data: "direct", label: "Direct Connection" },
-                  { data: "proxy", label: "Cloudflare Worker Proxy" },
-                ]}
-                selectedOption={gatewayMode}
-                onChange={handleGatewayChange}
               />
             </PanelSectionRow>
 
@@ -588,21 +747,6 @@ export const SettingsTab: React.FC = () => {
         )}
       </PanelSection>
 
-      <PanelSection title="Preview & Testing">
-        <PanelSectionRow>
-          <ToggleField
-            label="Show welcome screen"
-            description="Preview the setup notice banner shown to first-time users"
-            checked={showWelcomeScreen}
-            onChange={(val) => {
-              setShowWelcomeScreen(val);
-              if (val) {
-                notify("Uran", "Welcome / Setup notice is now visible at the top of Settings");
-              }
-            }}
-          />
-        </PanelSectionRow>
-      </PanelSection>
     </>
   );
 };

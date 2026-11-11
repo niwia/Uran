@@ -73,6 +73,7 @@ class PluginManager:
     def status(self, refresh=False):
         """Report plugin state. Never hits the network unless ``refresh`` is set."""
         manifest = self._manifest(refresh) if refresh else self._local_manifest()
+        required_plugins = set(manifest.required_plugins())
         installed = {}
         for directory in self._dirs():
             if Path(directory).is_dir():
@@ -101,7 +102,7 @@ class PluginManager:
                 # plugin the user expects to be running counts as uninstalled.
                 "installed": bool(path) or off,
                 "enabled": not off,
-                "required": manifest.policy(name) == "required",
+                "required": name in required_plugins,
                 "deployable": manifest.is_deployable(name),
                 "category": meta.get("category", ""),
                 "disabled_reason": str(meta.get("disabled_reason") or ""),
@@ -141,7 +142,7 @@ class PluginManager:
             if not any((Path(d) / name).is_file() for d in self._dirs()):
                 return self.install(name)
             return {"ok": True, "filename": name, "enabled": True}
-        if manifest.policy(name) == "required":
+        if name in set(manifest.required_plugins()):
             raise ValueError("Required plugins cannot be disabled")
         self._require_config()
         disabled = self._disabled()
@@ -153,7 +154,7 @@ class PluginManager:
     def remove(self, name):
         manifest = self._local_manifest()
         self._named(manifest, name)
-        if manifest.policy(name) == "required":
+        if name in set(manifest.required_plugins()):
             raise ValueError("Required plugins cannot be removed")
         self._require_config()
         return plugin_install.undeploy_plugin(name, self._dirs())

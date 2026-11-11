@@ -116,6 +116,21 @@ def run():
     req = m.required_plugins()
     assert req == ["styx.lua"], f"Expected ['styx.lua'], got {req}"
 
+    # The UI and destructive actions must honor the same fallback-required set.
+    with tempfile.TemporaryDirectory() as temp:
+        home = Path(temp)
+        mgr, _, _ = manager(home, None)
+        mgr.store = SimpleNamespace(load_local=lambda: m, load=lambda: m)
+        styx_row = next(row for row in mgr.status()["plugins"] if row["filename"] == "styx.lua")
+        assert styx_row["required"], styx_row
+        for action in (lambda: mgr.remove("styx.lua"), lambda: mgr.set_enabled("styx.lua", False)):
+            try:
+                action()
+            except ValueError as exc:
+                assert "Required plugins" in str(exc), exc
+            else:
+                raise AssertionError("fallback-required plugin should be protected")
+
     assert plugins.is_dir()
     print("all plugin manager checks pass")
 
