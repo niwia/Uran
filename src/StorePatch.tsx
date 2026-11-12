@@ -212,8 +212,10 @@ function buildInjectScript(): string {
         }
       }
 
-      function makeButton(text, tag, clickLabel, disabled, isWishlistStyle) {
+      function makeButton(text, tag, clickLabel, disabled, isWishlistStyle, styleOpts) {
         var S = getState();
+        var btnHeight = (styleOpts && styleOpts.heightPx) ? styleOpts.heightPx : 36;
+        var btnRadius = (styleOpts && styleOpts.borderRadius) ? styleOpts.borderRadius : '2px';
         var b = document.createElement('button');
         b.type = 'button';
         b.className = isWishlistStyle
@@ -243,7 +245,7 @@ function buildInjectScript(): string {
             'padding:0 16px;' +
             'background:transparent;' +
             'color:' + TEXT_COLOR + ';' +
-            'border-radius:2px;' +
+            'border-radius:' + btnRadius + ';' +
             'font-family:"Motiva Sans", Arial, sans-serif;' +
             'font-size:14px;' +
             'font-weight:500;' +
@@ -253,13 +255,13 @@ function buildInjectScript(): string {
 
           b.style.cssText =
             'width:100%;' +
-            'height:36px;' +
+            'height:' + btnHeight + 'px;' +
             'display:flex;' +
             'align-items:center;' +
             'justify-content:center;' +
             'background:' + BASE_BLUE_BG + ';' +
             'border:none;' +
-            'border-radius:2px;' +
+            'border-radius:' + btnRadius + ';' +
             'padding:1px;' +
             'box-sizing:border-box;' +
             'cursor:' + (disabled ? 'default;' : 'pointer;') +
@@ -409,7 +411,7 @@ function buildInjectScript(): string {
         return true;
       }
 
-      function createButtonWrapper(isWishlistStyle) {
+      function createButtonWrapper(isWishlistStyle, styleOpts) {
         var S = getState();
         var w = document.createElement('div');
         w.id = 'Uran-btns';
@@ -417,13 +419,23 @@ function buildInjectScript(): string {
         w.setAttribute('data-assella-inner', '1');
         if (isWishlistStyle) {
           w.className = 'Panel Focusable';
-          w.style.cssText = 'width:100%; display:flex; flex-direction:column; gap:4px;';
+          var extra = (styleOpts && styleOpts.wrapperStyle) ? styleOpts.wrapperStyle : '';
+          w.style.cssText = 'width:100%; grid-column:1 / -1; display:flex; flex-direction:column; gap:4px; box-sizing:border-box;' + extra;
         } else {
           w.className = 'queue_control_button queue_btn_uran';
           w.style.cssText = 'flex-grow:0;';
         }
-        w.appendChild(makeButton(S.label, S.actionTag, S.clickLabel, S.locked, isWishlistStyle));
+        w.appendChild(makeButton(S.label, S.actionTag, S.clickLabel, S.locked, isWishlistStyle, styleOpts));
         return w;
+      }
+
+      function visibleChildCount(el) {
+        if (!el || !el.children) return 0;
+        var count = 0;
+        for (var c = 0; c < el.children.length; c++) {
+          if (el.children[c].offsetHeight > 0 || el.children[c].offsetWidth > 0) count++;
+        }
+        return count;
       }
 
       /* ------------------------------------------------------------------ */
@@ -435,6 +447,7 @@ function buildInjectScript(): string {
         for (var i = 0; i < allBtns.length; i++) {
           var b = allBtns[i];
           if (b.id === 'Uran-btns' || (b.closest && b.closest('#Uran-btns'))) continue;
+          if (b.closest && b.closest('#global_header, .supernav_container, [role="navigation"]')) continue;
           if (b.offsetHeight === 0) continue;
           var t = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
           if (t.indexOf('wishlist') !== -1) {
@@ -444,19 +457,67 @@ function buildInjectScript(): string {
         }
         if (!wishBtn) return false;
 
-        var colItem = wishBtn.closest ? wishBtn.closest('._2YzOLNBx6TonKU0Zmp20l4') : null;
-        var isGameModeWishlist = !!colItem;
-        if (!colItem) {
-          colItem = wishBtn.closest ? wishBtn.closest('#add_to_wishlist_area, .queue_control_button') : null;
-          if (!colItem) colItem = wishBtn.parentElement;
+        var gmCol = wishBtn.closest ? wishBtn.closest('._2YzOLNBx6TonKU0Zmp20l4') : null;
+        var legacyCol = wishBtn.closest ? wishBtn.closest('#add_to_wishlist_area, .queue_control_button') : null;
+        var colItem = gmCol || legacyCol || wishBtn.parentElement;
+
+        // Modern Game Mode / React storefront may wrap the wishlist button in
+        // single-child containers whose parent holds [Wishlist, Follow/Ignore].
+        if (!gmCol && !legacyCol) {
+          var hops = 0;
+          while (
+            colItem &&
+            colItem.parentElement &&
+            colItem.parentElement !== document.body &&
+            colItem.parentElement.clientHeight <= 240 &&
+            visibleChildCount(colItem.parentElement) <= 1 &&
+            hops < 4
+          ) {
+            colItem = colItem.parentElement;
+            hops++;
+          }
         }
         if (!colItem || !colItem.parentElement) return false;
 
         var colContainer = colItem.parentElement;
+        var containerWidth = colContainer.clientWidth || 0;
+        var wishRect = wishBtn.getBoundingClientRect ? wishBtn.getBoundingClientRect() : null;
+        var wishWidth = wishRect ? wishRect.width : wishBtn.offsetWidth;
+        var isFullWidth = containerWidth > 0 && wishWidth >= containerWidth * 0.65;
+        var isGameModeWishlist = Boolean(gmCol || !legacyCol || isFullWidth);
         var S = getState();
 
         if (isGameModeWishlist) {
-          var w = createButtonWrapper(true);
+          var cs = window.getComputedStyle(colContainer);
+          var rowGap = parseFloat(cs.rowGap || cs.gap || '0') || 0;
+          var isFlex = cs.display.indexOf('flex') !== -1;
+          var isGrid = cs.display.indexOf('grid') !== -1;
+          var isFlexOrGrid = isFlex || isGrid;
+          var wrapperStyle = '';
+          if (isFlex && cs.flexDirection.indexOf('row') === 0 && cs.flexWrap !== 'nowrap') {
+            wrapperStyle += 'flex:0 0 100%;';
+          } else {
+            wrapperStyle += 'flex-shrink:0;';
+          }
+          if (!isFlexOrGrid || rowGap < 2) {
+            var prevMb = parseFloat(window.getComputedStyle(colItem).marginBottom || '0') || 0;
+            var nextEl = colItem.nextElementSibling;
+            var nextMt = nextEl ? (parseFloat(window.getComputedStyle(nextEl).marginTop || '0') || 0) : 0;
+            var mt = prevMb < 2 ? 4 : 0;
+            var mb = (isFlexOrGrid && nextMt >= 2) ? 0 : (nextMt >= 2 ? Math.max(0, 4 - nextMt) : 4);
+            wrapperStyle += 'margin-top:' + mt + 'px; margin-bottom:' + mb + 'px;';
+          }
+
+          var wishHeight = wishRect ? Math.round(wishRect.height) : 36;
+          var heightPx = (wishHeight >= 30 && wishHeight <= 52) ? wishHeight : 36;
+          var wishRadius = window.getComputedStyle(wishBtn).borderRadius || '2px';
+          if (wishRadius === '0px') wishRadius = '2px';
+
+          var w = createButtonWrapper(true, {
+            heightPx: heightPx,
+            borderRadius: wishRadius,
+            wrapperStyle: wrapperStyle
+          });
           var btn = w.querySelector('button');
           if (colItem.nextSibling) {
             colContainer.insertBefore(w, colItem.nextSibling);
@@ -467,14 +528,7 @@ function buildInjectScript(): string {
           log('injected Game Mode wishlist-style button for ' + S.appId);
           return true;
         } else {
-          var w = document.createElement('div');
-          w.id = 'Uran-btns';
-          w.className = 'queue_control_button queue_btn_uran';
-          w.setAttribute('data-assella-appid', S.appId);
-          w.setAttribute('data-assella-inner', '1');
-          w.style.cssText = 'flex-grow:0;';
-          var btn = makeButton(S.label, S.actionTag, S.clickLabel, S.locked, false);
-          w.appendChild(btn);
+          var w = createButtonWrapper(false);
           if (colItem.nextSibling) {
             colContainer.insertBefore(w, colItem.nextSibling);
           } else {
