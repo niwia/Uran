@@ -26,6 +26,8 @@ PLUGIN_DIR = "Uran"
 # Never ship these: build noise and the frontend source map.
 EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".map")
 EXCLUDE_DIRS = {"__pycache__", "node_modules", ".git", "defaults"}
+# Parked plugin-deployment modules: keep out of release zip while disabled in Uran.
+EXCLUDE_FILES = {"plugins.py", "plugin_install.py", "plugin_manifest.py", "ed25519.py"}
 
 FILES_TO_PACK = [
     "plugin.json",
@@ -40,7 +42,8 @@ DIRS_TO_PACK = [
     "assets",
     "uran_backend",
     "assella_shared",
-    "plugins",
+    # Parked while plugin deployment is disabled in Uran:
+    # "plugins",
 ]
 
 
@@ -76,7 +79,7 @@ def make_zip() -> None:
                     d for d in subdirs if d not in EXCLUDE_DIRS and not d.startswith(".")
                 ]
                 for file in sorted(files):
-                    if file.endswith(EXCLUDE_SUFFIXES):
+                    if file.endswith(EXCLUDE_SUFFIXES) or file in EXCLUDE_FILES:
                         continue
                     file_path = Path(root) / file
                     arcname = f"{PLUGIN_DIR}/{file_path.relative_to(HERE)}"

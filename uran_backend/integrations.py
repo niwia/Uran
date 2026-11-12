@@ -19,7 +19,6 @@ from .http import requests
 from . import paths
 from .sls_config import (
     SlsConfig,
-    ensure_plugins_enabled,
     parse_list_section,
     parse_key_section,
     remove_in_memory,

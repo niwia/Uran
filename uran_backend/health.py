@@ -5,6 +5,7 @@ diagnostics. Nothing here writes to disk — the config check reports issues
 only; repair lives in ASSella for now.
 """
 
+import copy
 import logging
 import os
 import re
@@ -86,6 +87,8 @@ class Health:
         self.sls = sls
         self._ver_cache: dict = {}
         self._ver_lock = threading.Lock()
+        self._status_cache: dict | None = None
+        self._status_lock = threading.Lock()
 
     # -- plugins -----------------------------------------------------------
     def plugins_dirs(self) -> list[Path]:
@@ -288,11 +291,17 @@ class Health:
         }
 
     # -- combined ----------------------------------------------------------
-    def status(self) -> dict:
+    def status(self, force_refresh: bool = False) -> dict:
+        """Return combined read-only health status, cached for the session."""
+        if not force_refresh:
+            with self._status_lock:
+                if self._status_cache is not None:
+                    return copy.deepcopy(self._status_cache)
+
         plugins = self.check_plugins()
         sls_config = plugins["sls_config"]
         try:
-            sls = self.check_sls_version()
+            sls = self.check_sls_version(force_refresh=force_refresh)
         except Exception as exc:  # noqa: BLE001
             sls = {"status": "error", "release_tag": None, "error": str(exc)}
         # Whether SLSsteam is loaded into a running Steam right now, from
@@ -302,4 +311,13 @@ class Health:
             "steam_running": guards.is_steam_running(),
             "sls_active": guards.is_sls_active(),
         }
-        return {"ok": True, "plugins": plugins, "sls_config": sls_config, "sls": sls, "process": process}
+        result = {
+            "ok": True,
+            "plugins": plugins,
+            "sls_config": sls_config,
+            "sls": sls,
+            "process": process,
+        }
+        with self._status_lock:
+            self._status_cache = copy.deepcopy(result)
+        return result

@@ -18,7 +18,6 @@ from .manifests import Manifests
 from .paths import SHARED_COMMENT, SHARED_REDISTS
 from .sls_config import (
     SlsConfig,
-    ensure_plugins_enabled,
     ensure_smart_tickets,
     parse_app_token_section,
     parse_key_section,
@@ -177,16 +176,16 @@ class Injector:
 
         This is the ASSella model: the config is a *projection* of what the user
         selected, rewritten whole each time, so turning a DLC off removes
-        exactly what turning it on added. One atomic pass:
+        exactly what turning it on added. One atomic pass (preserving existing
+        Plugins flags rather than mutating them):
 
-          1. Plugins: yes
-          2. AdditionalApps:   base AppID + every ENABLED DLC AppID; our own
+          1. AdditionalApps:   base AppID + every ENABLED DLC AppID; our own
                                now-disabled DLC entries are removed.
-          3. AdditionalDepots: base + enabled-DLC depots that have a key (or are
+          2. AdditionalDepots: base + enabled-DLC depots that have a key (or are
                                shared redists). Never an AppID; never a depot
                                owned by a disabled DLC.
-          4. DecryptionKeys:   keys for exactly those depots + the root AppKey.
-          5. SmartTickets: 0x1 (+ optional ManifestIds pins).
+          3. DecryptionKeys:   keys for exactly those depots + the root AppKey.
+          4. SmartTickets: 0x1 (+ optional ManifestIds pins).
 
         Ownership rides in the comment as ``{game} ... ({app_id})`` so a later
         projection or uninstall can rewrite or remove exactly our lines.
@@ -258,9 +257,12 @@ class Injector:
                 if d != aid and (d in SHARED_REDISTS or d in keyed)
             }
 
+        readiness = self.sls.readiness(cfg)
+        if not readiness["ok"]:
+            return {"ok": False, "error": readiness["error"]}
+
         game_name = sanitize_comment(name) or f"App {aid}"
-        content = cfg.read_text(encoding="utf-8", errors="ignore") if cfg.exists() else "Plugins: yes\nAdditionalApps:\n"
-        content = ensure_plugins_enabled(content)
+        content = cfg.read_text(encoding="utf-8")
 
         def tag(did: str) -> str:
             owner = owner_of.get(did, "")

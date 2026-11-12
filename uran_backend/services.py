@@ -16,7 +16,8 @@ from .sls_config import SlsConfig
 from .steam_store import StoreDebugger
 from .steammeta import SteamMeta
 from .uninstall import AtomUninstallService
-from .plugins import PluginManager
+# Parked: plugin deployment is disabled in Uran for now (checks only; ASSella/manual manages plugins).
+# from .plugins import PluginManager
 
 logger = logging.getLogger("Uran")
 
@@ -58,7 +59,9 @@ def build(decky_module=None):
     steam = SteamMeta(ctx, library)
     manifests = Manifests(ctx, sls, steam, library)
     integrations = Integrations(ctx, sls, steam)
-    plugins = PluginManager(ctx, sls)
+    # Parked: plugin deployment is disabled in Uran for now.
+    # plugins = PluginManager(ctx, sls)
+    plugins = None
 
     # Guards reach across services, so they are constructed after them.
     guards = GuardService(_ServiceBag(ctx, sls, steam, library, manifests, integrations))

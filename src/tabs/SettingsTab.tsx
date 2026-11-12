@@ -24,6 +24,7 @@ import {
   validateHubcapKey,
   getHealthStatus,
   once,
+  peekOnce,
   refreshOnce,
   checkConfigStatus,
   isGlobalSlsOnlineEnabled,
@@ -31,18 +32,12 @@ import {
   testHubcapRoutes,
   checkForUpdates,
   getPluginInfo,
-  getPluginsStatus,
-  installPlugin,
-  setPluginEnabled,
-  installEssentialPlugins,
-  refreshPluginManifest,
   GATEWAY_LABELS,
   type HealthStatus,
   type ConfigCheck,
   type UpdateInfo,
   type GatewayMode,
   type RouteProbe,
-  type PluginsStatus,
 } from "../api";
 import { setStorePatchEnabled } from "../StorePatch";
 import { formatExpiry } from "../components/format";
@@ -55,22 +50,20 @@ export const SettingsTab: React.FC = () => {
   const [notificationMode, setNotificationModeState] = useState<"auto" | "steam" | "desktop" | "none">("auto");
 
   // Health & Environment
-  const [health, setHealth] = useState<HealthStatus | null>(null);
-  const [managedPlugins, setManagedPlugins] = useState<PluginsStatus | null>(null);
-  const [setupChecksComplete, setSetupChecksComplete] = useState(false);
-  const [pluginBusy, setPluginBusy] = useState(false);
-  const [checkingPlugins, setCheckingPlugins] = useState(false);
+  const [health, setHealth] = useState<HealthStatus | null>(() => peekOnce<HealthStatus>("health") ?? null);
+  const [setupChecksComplete, setSetupChecksComplete] = useState(() => peekOnce<HealthStatus>("health") !== undefined);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
 
   // Hubcap Key & User stats
-  const [keyStatus, setKeyStatus] = useState<{
+  type KeyStatusState = {
     ok: boolean;
     source: string;
     configured_path: string;
     masked: string;
     is_override: boolean;
     timestamp?: number;
-  } | null>(null);
-  const [stats, setStats] = useState<{
+  };
+  type HubcapStatsState = {
     ok: boolean;
     username?: string;
     daily_usage?: number;
@@ -78,7 +71,13 @@ export const SettingsTab: React.FC = () => {
     requests_remaining?: number | null;
     expires_at?: string;
     error?: string;
-  }>({ ok: false });
+  };
+  const [keyStatus, setKeyStatus] = useState<KeyStatusState | null>(
+    () => peekOnce<KeyStatusState>("hubcap_key_status") ?? null,
+  );
+  const [stats, setStats] = useState<HubcapStatsState>(
+    () => peekOnce<HubcapStatsState>("hubcap_stats") ?? { ok: false },
+  );
 
   // Key manual input
   const [manualKey, setManualKey] = useState("");
@@ -96,7 +95,7 @@ export const SettingsTab: React.FC = () => {
   const [configCheck, setConfigCheck] = useState<ConfigCheck | null>(null);
   const [pluginInfo, setPluginInfo] = useState<{ name: string; version: string }>({
     name: "Uran",
-    version: "0.8.0",
+    version: "0.8.1",
   });
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -108,7 +107,7 @@ export const SettingsTab: React.FC = () => {
     try {
       const cached = fresh ? refreshOnce : once;
       const [h, k] = await Promise.all([
-        cached("health", getHealthStatus).catch(() => null),
+        cached("health", () => getHealthStatus(fresh)).catch(() => null),
         cached("hubcap_key_status", getHubcapKeyStatus).catch(() => null),
       ]);
       if (h) setHealth(h);
@@ -121,75 +120,33 @@ export const SettingsTab: React.FC = () => {
     }
   }, []);
 
-  const loadPlugins = useCallback(async (refresh: false | "session" | "force" = false) => {
-    const shouldRefresh = refresh !== false;
-    if (shouldRefresh) setCheckingPlugins(true);
+  const handleRefreshStatus = async () => {
+    setRefreshingStatus(true);
     try {
-      let status: PluginsStatus;
-      try {
-        if (refresh === "force") {
-          status = await refreshOnce("plugin_manifest_refresh", refreshPluginManifest);
-        } else if (refresh === "session") {
-          status = await once("plugin_manifest_refresh", refreshPluginManifest);
-        } else {
-          status = await getPluginsStatus();
-          // Keep the session memo in sync with post-action disk state so
-          // revisiting Settings doesn't revert to stale pre-action plugin status.
-          if (status.ok) {
-            void refreshOnce("plugin_manifest_refresh", () => Promise.resolve(status));
-          }
-        }
-      } catch (error) {
-        status = { ok: false, error: String(error), plugins: [] };
-      }
-
-      if (status.ok || !shouldRefresh) {
-        setManagedPlugins(status);
-        return status;
-      }
-
-      // A failed upstream request may still leave a previously verified local
-      // manifest usable. Prefer it over an empty error state, but label it stale.
-      try {
-        const local = await getPluginsStatus();
-        if (local.ok) {
-          const reason = status.error || "The upstream manifest could not be refreshed.";
-          const fallback = { ...local, error: `Upstream refresh failed; showing the ${local.source || "local"} manifest. ${reason}` };
-          setManagedPlugins(fallback);
-          return fallback;
-        }
-      } catch {
-        // Keep the upstream error below if there is no usable local copy.
-      }
-      setManagedPlugins(status);
-      return status;
-    } finally {
-      if (shouldRefresh) setCheckingPlugins(false);
-    }
-  }, []);
-  const loadPluginsBackground = useCallback(() => {
-    // Refresh upstream once per Decky session; explicit Check Again always
-    // bypasses this memo. The backend falls back to verified local manifests.
-    return loadPlugins("session");
-  }, [loadPlugins]);
-  const runPluginAction = async (action: () => Promise<unknown>) => {
-    setPluginBusy(true);
-    try {
-      await action();
-      await loadPlugins(false);
       await loadHealthAndKey(true);
-    } catch (error) {
-      notify("Plugin operation failed", String(error));
     } finally {
-      setPluginBusy(false);
+      setRefreshingStatus(false);
     }
   };
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([loadHealthAndKey(), loadPluginsBackground()]).finally(() => {
-      if (mounted) setSetupChecksComplete(true);
-    });
+    const hasCachedHealth = peekOnce<HealthStatus>("health") !== undefined;
+    const hasCachedKey = peekOnce<KeyStatusState>("hubcap_key_status") !== undefined;
+    const hasCachedStats = peekOnce<HubcapStatsState>("hubcap_stats") !== undefined;
+    if (!hasCachedHealth || !hasCachedKey) {
+      void loadHealthAndKey().finally(() => {
+        if (mounted) setSetupChecksComplete(true);
+      });
+    } else if (!hasCachedStats) {
+      void once("hubcap_stats", getHubcapUserStats)
+        .then((s) => {
+          if (mounted) setStats(s);
+        })
+        .catch(() => {
+          if (mounted) setStats({ ok: false });
+        });
+    }
 
     getSetting("steam_store_enabled", true)
       .then((v) => setSteamStoreEnabled(Boolean(v)))
@@ -215,7 +172,7 @@ export const SettingsTab: React.FC = () => {
     return () => {
       mounted = false;
     };
-  }, [loadHealthAndKey, loadPluginsBackground]);
+  }, [loadHealthAndKey]);
 
   // Key save handler
   const handleSaveKey = async () => {
@@ -322,28 +279,6 @@ export const SettingsTab: React.FC = () => {
     }
   };
 
-  const handleCheckPluginUpdates = async () => {
-    const status = await loadPlugins("force");
-    if (!status?.ok) {
-      notify("SLSsteam Plugins", status?.error || "Could not refresh the plugin manifest");
-      return;
-    }
-    if (status.source !== "remote" || status.error) {
-      notify(
-        "SLSsteam Plugins",
-        status.error || `Upstream unavailable; showing the verified ${status.source || "local"} manifest.`,
-      );
-      return;
-    }
-    const updates = status.plugins.filter((plugin) => plugin.status === "update_available").length;
-    notify(
-      "SLSsteam Plugins",
-      updates ? `${updates} plugin update${updates === 1 ? "" : "s"} available.` : "All managed plugins are up to date.",
-    );
-  };
-
-  // Plugin controls are only useful once the SLS binary/config/loader and at
-  // least one plugin are present. Keep the setup action visible until then.
   const slsBinaryMissing = health?.sls?.status === "no_local";
   const slsDetected = Boolean(health && (
     (!slsBinaryMissing && health.sls.status !== "error" && health.sls.status !== "checking")
@@ -357,23 +292,18 @@ export const SettingsTab: React.FC = () => {
   const pluginsList = health?.plugins?.plugins ?? [];
   const hasPluginFiles = pluginsList.length > 0;
   const pluginsEnabled = health?.plugins?.plugins_enabled === true;
-  const requiredPlugins = managedPlugins?.plugins.filter((plugin) => plugin.required) ?? [];
-  const essentialsCurrent = requiredPlugins.length > 0 && requiredPlugins.every(
-    (plugin) => plugin.deployable && plugin.installed && plugin.enabled && plugin.status === "installed",
-  );
-  const pluginControlsReady = slsReady && slsConfigReady && pluginsEnabled && hasPluginFiles && Boolean(managedPlugins?.ok);
   const hasKey = Boolean(keyStatus?.masked);
-  const needsPluginSetupAction = !essentialsCurrent || !pluginsEnabled || !hasPluginFiles;
-  const setupIncomplete = !slsReady || !slsConfigReady || needsPluginSetupAction || !hasKey;
+  const setupIncomplete = !slsReady || !slsConfigReady || !pluginsEnabled || !hasPluginFiles || !hasKey;
   const displaySetupNotice = setupChecksComplete && (setupIncomplete || showWelcomeScreen);
-  const essentialButtonDisabled = pluginBusy || checkingPlugins || !slsReady || !slsConfigReady
-    || !managedPlugins?.ok || !requiredPlugins.length || !needsPluginSetupAction;
 
-  const pluginsText = !slsConfigReady
-    ? "Unknown (SLSsteam config unavailable)"
-    : !hasPluginFiles
-    ? "No Lua plugins detected"
-    : pluginsList.join(", ");
+  const pluginsText = hasPluginFiles ? pluginsList.join(", ") : "No Lua plugins detected";
+  const slsConfigText = !health
+    ? "Checking SLSsteam config..."
+    : !slsConfigReady
+    ? slsConfigError
+    : pluginsEnabled
+    ? "Ready (Plugins: yes)"
+    : "Plugins: no (disabled in config.yaml)";
   const slsText = !health
     ? "Checking SLSsteam..."
     : slsBinaryMissing
@@ -387,13 +317,6 @@ export const SettingsTab: React.FC = () => {
     : health.process?.steam_running
     ? "Installed & active"
     : "Installed (Steam is not running)";
-  const manifestSource = managedPlugins?.source === "remote"
-    ? "Upstream signed manifest"
-    : managedPlugins?.source === "cache"
-    ? "Verified cached manifest (may be stale)"
-    : managedPlugins?.source === "bundled"
-    ? "Bundled manifest (offline fallback)"
-    : managedPlugins?.source || "Manifest source unavailable";
 
   return (
     <>
@@ -408,130 +331,39 @@ export const SettingsTab: React.FC = () => {
                 {!slsDetected && <div>• SLSsteam is not detected on this system.</div>}
                 {slsRunningInactive && <div>• SLSsteam is installed but not loaded into running Steam.</div>}
                 {!slsConfigReady && <div>• {slsConfigError}</div>}
-                {slsConfigReady && !pluginsEnabled && <div>• SLSsteam plugin loading is off. Install essentials to enable it.</div>}
-                {slsConfigReady && pluginsEnabled && !hasPluginFiles && <div>• No SLSsteam Lua plugins are installed yet.</div>}
-                {managedPlugins && !essentialsCurrent && <div>• Essential plugins are missing or need an update.</div>}
-                {!setupIncomplete && <div>• All setup checks pass.</div>}
-                {!managedPlugins && <div>• Checking the signed plugin manifest…</div>}
-                {managedPlugins?.ok && managedPlugins.source !== "remote" && (
-                  <div>• Using the verified {managedPlugins.source || "local"} manifest; it may be stale.</div>
+                {slsConfigReady && !pluginsEnabled && (
+                  <div>• Plugins: yes is disabled in SLSsteam config.yaml. Enable it via ASSella or manually.</div>
                 )}
-                {managedPlugins?.error && <div>• {managedPlugins.error}</div>}
+                {!hasPluginFiles && (
+                  <div>• No SLSsteam Lua plugins found. Install plugins via ASSella or manually.</div>
+                )}
                 {!hasKey && <div>• Hubcap API key is not configured.</div>}
+                {!setupIncomplete && <div>• All setup checks pass.</div>}
               </div>
             </div>
           </PanelSectionRow>
-          {setupIncomplete && needsPluginSetupAction && (
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                disabled={essentialButtonDisabled}
-                onClick={() => void runPluginAction(installEssentialPlugins)}
-              >
-                {essentialsCurrent
-                  ? "Enable SLSsteam plugin loader"
-                  : "Install essential plugins"}
-              </ButtonItem>
-            </PanelSectionRow>
-          )}
         </PanelSection>
       )}
 
-      <PanelSection title="SLSsteam Plugins">
+      <PanelSection title="SLSsteam & Plugins">
         <PanelSectionRow>
           <Field label="SLSsteam" description={slsText} />
         </PanelSectionRow>
         <PanelSectionRow>
+          <Field label="SLSsteam Config" description={slsConfigText} />
+        </PanelSectionRow>
+        <PanelSectionRow>
           <Field label="Active SLS Plugins" description={pluginsText} />
         </PanelSectionRow>
-
-        {!pluginControlsReady && (
-          <PanelSectionRow>
-            <Field
-              label="Plugin controls hidden until ready"
-              description={
-                !slsDetected ? "SLSsteam must be detected first."
-                : slsRunningInactive ? "SLSsteam is installed, but not loaded into running Steam."
-                : !slsConfigReady ? slsConfigError
-                : !pluginsEnabled ? "Plugin loading is off; installing a plugin through Uran enables it automatically."
-                : !hasPluginFiles ? "Install an essential plugin to make the plugin controls available."
-                : checkingPlugins || !managedPlugins ? "Checking signed plugin manifest..."
-                : !managedPlugins.ok ? "Could not load a verified plugin manifest. Check again to retry."
-                : "Plugin controls are unavailable."
-              }
-            />
-          </PanelSectionRow>
-        )}
-
-        {!pluginControlsReady && slsReady && slsConfigReady && (
-          <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              disabled={checkingPlugins}
-              onClick={() => void handleCheckPluginUpdates()}
-            >
-              {checkingPlugins ? "Checking plugin manifest..." : "Check again for plugin updates"}
-            </ButtonItem>
-          </PanelSectionRow>
-        )}
-
-        {pluginControlsReady && (
-          <>
-            <PanelSectionRow>
-              <Field
-                label="Plugin manifest"
-                description={`${manifestSource}${managedPlugins?.serial ? ` · serial ${managedPlugins.serial}` : ""}`}
-              />
-            </PanelSectionRow>
-            {managedPlugins?.error && (
-              <PanelSectionRow>
-                <Field label="Refresh notice" description={managedPlugins.error} />
-              </PanelSectionRow>
-            )}
-            {(managedPlugins?.plugins ?? []).map((plugin) => (
-              <React.Fragment key={plugin.filename}>
-                <PanelSectionRow>
-                  <Field
-                    label={`${plugin.name} · v${plugin.version}${plugin.required ? " · Essential" : ""}`}
-                    description={
-                      plugin.disabled_reason
-                        || (plugin.status === "off" ? "Disabled in Uran" : plugin.status.replaceAll("_", " "))
-                    }
-                  />
-                </PanelSectionRow>
-                <PanelSectionRow>
-                  <ButtonItem
-                    layout="below"
-                    disabled={pluginBusy || checkingPlugins || !plugin.deployable}
-                    onClick={() => void runPluginAction(() => installPlugin(plugin.filename))}
-                  >
-                    {plugin.status === "update_available" ? `Update ${plugin.name}` : plugin.status === "installed" ? `Reinstall ${plugin.name}` : `Install ${plugin.name}`}
-                  </ButtonItem>
-                </PanelSectionRow>
-                {plugin.installed && !plugin.required && (
-                  <PanelSectionRow>
-                    <ButtonItem
-                      layout="below"
-                      disabled={pluginBusy || checkingPlugins}
-                      onClick={() => void runPluginAction(() => setPluginEnabled(plugin.filename, !plugin.enabled))}
-                    >
-                      {plugin.enabled ? `Disable ${plugin.name}` : `Enable ${plugin.name}`}
-                    </ButtonItem>
-                  </PanelSectionRow>
-                )}
-              </React.Fragment>
-            ))}
-            <PanelSectionRow>
-              <ButtonItem
-                layout="below"
-                disabled={pluginBusy || checkingPlugins}
-                onClick={() => void handleCheckPluginUpdates()}
-              >
-                {checkingPlugins ? "Checking for plugin updates..." : "Check again for plugin updates"}
-              </ButtonItem>
-            </PanelSectionRow>
-          </>
-        )}
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={refreshingStatus}
+            onClick={() => void handleRefreshStatus()}
+          >
+            {refreshingStatus ? "Checking status..." : "Refresh Status"}
+          </ButtonItem>
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Hubcap Account & Network">

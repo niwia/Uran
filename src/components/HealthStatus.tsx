@@ -1,15 +1,16 @@
 import React from "react";
 import { PanelSectionRow } from "@decky/ui";
-import { getHealthStatus, once, HealthStatus as Health } from "../api";
+import { getHealthStatus, once, peekOnce, HealthStatus as Health } from "../api";
 
 /** Compact read-only health line, shared by the Search and Settings tabs. */
 export const HealthStatusRow: React.FC = () => {
-  const [health, setHealth] = React.useState<Health | null>(null);
+  const [health, setHealth] = React.useState<Health | null>(() => peekOnce<Health>("health") ?? null);
 
   React.useEffect(() => {
+    if (peekOnce<Health>("health") !== undefined) return;
     let alive = true;
     // Session-once: both tabs share one fetch, first visible mount wins.
-    void once("health", getHealthStatus)
+    void once("health", () => getHealthStatus(false))
       .then((h) => {
         if (alive && h) setHealth(h);
       })
@@ -30,7 +31,12 @@ export const HealthStatusRow: React.FC = () => {
     : names.length > 0
       ? `Plugins (${names.length}): ${names.join(", ")}${plugins.plugins_enabled ? "" : " (disabled in config)"}`
       : "Plugins: none found";
-  const pluginColor = names.length > 0 ? "#7ee2a8" : "#ff9a9a";
+  const pluginColor =
+    names.length === 0
+      ? "#ff9a9a"
+      : plugins?.plugins_enabled
+        ? "#7ee2a8"
+        : "#f0c674";
 
   let slsText = "SLS: unknown";
   let slsColor = "#9aa4b2";

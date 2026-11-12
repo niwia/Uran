@@ -128,6 +128,36 @@ def main():
         res = Health(_StubCtx(Path(tmp)), _StubSls()).check_sls_version()
         check("no binary -> no_local", res["status"] == "no_local")
 
+    # -- combined Health.status caches per session until force_refresh --------
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        cfg_dir = home / ".config" / "SLSsteam"
+        plug_dir = cfg_dir / "plugins"
+        plug_dir.mkdir(parents=True)
+        cfg = cfg_dir / "config.yaml"
+        cfg.write_text("Plugins: yes\n", encoding="utf-8")
+        (plug_dir / "first.lua").write_text("-- stub", encoding="utf-8")
+
+        health = Health(_StubCtx(home), _StubSls(cfg, cfg.read_text()))
+        calls = {"ver": 0}
+
+        def fake_ver(force_refresh=False):
+            calls["ver"] += 1
+            return {"status": "no_local", "release_tag": None, "error": "none"}
+
+        health.check_sls_version = fake_ver
+        first = health.status()
+        check("initial status detects first.lua", first["plugins"]["plugins"] == ["first.lua"])
+
+        (plug_dir / "second.lua").write_text("-- stub", encoding="utf-8")
+        second = health.status()
+        check("second status returns cached session result",
+              second["plugins"]["plugins"] == ["first.lua"] and calls["ver"] == 1)
+
+        refreshed = health.status(force_refresh=True)
+        check("force_refresh recomputes health status",
+              refreshed["plugins"]["plugins"] == ["first.lua", "second.lua"] and calls["ver"] == 2)
+
     print("\nall health checks pass")
 
 

@@ -407,25 +407,35 @@ export const getInjectStatus = callable<[app_id: string], InjectStatus>(
 // once per plugin session instead of once per tab visit. Failures evict so a
 // later visit retries rather than sticking a failed result forever.
 const onceCache = new Map<string, Promise<any>>();
+const onceValues = new Map<string, any>();
 
-export function once<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = onceCache.get(key);
-  if (hit) return hit as Promise<T>;
-  const p = fn();
+function trackOnce<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const p = fn().then((value) => {
+    if (onceCache.get(key) === p) onceValues.set(key, value);
+    return value;
+  });
   onceCache.set(key, p);
   p.catch(() => {
-    if (onceCache.get(key) === p) onceCache.delete(key);
+    if (onceCache.get(key) === p) {
+      onceCache.delete(key);
+      onceValues.delete(key);
+    }
   });
   return p;
 }
 
+export function peekOnce<T>(key: string): T | undefined {
+  return onceValues.has(key) ? (onceValues.get(key) as T) : undefined;
+}
+
+export function once<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const hit = onceCache.get(key);
+  if (hit) return hit as Promise<T>;
+  return trackOnce(key, fn);
+}
+
 export function refreshOnce<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const p = fn();
-  onceCache.set(key, p);
-  p.catch(() => {
-    if (onceCache.get(key) === p) onceCache.delete(key);
-  });
-  return p;
+  return trackOnce(key, fn);
 }
 
 // -- Health (read-only) -------------------------------------------------------
@@ -465,19 +475,20 @@ export type ConfigCheck = {
   summary: string;
   details: string[];
 };
-export type ManagedPlugin = {
-  filename: string; name: string; version: string; status: string;
-  installed: boolean; enabled: boolean; required: boolean;
-  deployable: boolean; category: string; disabled_reason: string;
-};
-export type PluginsStatus = { ok: boolean; serial?: number; source?: string; error?: string; plugins: ManagedPlugin[] };
+// Parked: plugin deployment is disabled in Uran for now; ASSella/manual manages plugins.
+// export type ManagedPlugin = {
+//   filename: string; name: string; version: string; status: string;
+//   installed: boolean; enabled: boolean; required: boolean;
+//   deployable: boolean; category: string; disabled_reason: string;
+// };
+// export type PluginsStatus = { ok: boolean; serial?: number; source?: string; error?: string; plugins: ManagedPlugin[] };
 
-export const getHealthStatus = callable<[], HealthStatus>("get_health_status");
-export const getPluginsStatus = callable<[refresh?: boolean], PluginsStatus>("plugins_status");
-export const installPlugin = callable<[filename: string], { ok: boolean; error?: string }>("plugin_install");
-export const setPluginEnabled = callable<[filename: string, enabled: boolean], { ok: boolean; error?: string }>("plugin_set_enabled");
-export const installEssentialPlugins = callable<[], { ok: boolean; error?: string }>("plugin_install_essentials");
-export const refreshPluginManifest = callable<[], PluginsStatus>("plugin_manifest_refresh");
+export const getHealthStatus = callable<[force_refresh?: boolean], HealthStatus>("get_health_status");
+// export const getPluginsStatus = callable<[refresh?: boolean], PluginsStatus>("plugins_status");
+// export const installPlugin = callable<[filename: string], { ok: boolean; error?: string }>("plugin_install");
+// export const setPluginEnabled = callable<[filename: string, enabled: boolean], { ok: boolean; error?: string }>("plugin_set_enabled");
+// export const installEssentialPlugins = callable<[], { ok: boolean; error?: string }>("plugin_install_essentials");
+// export const refreshPluginManifest = callable<[], PluginsStatus>("plugin_manifest_refresh");
 export const checkConfigStatus = callable<
   [online: boolean],
   ConfigCheck

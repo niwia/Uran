@@ -11,12 +11,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
+# Parked while plugin deployment is disabled in Uran.
+PARKED_TESTS = {
+    "test_plugin_install.py",
+    "test_plugin_manager.py",
+}
+
 
 def main() -> int:
-    tests = sorted(HERE.glob("test_*.py"))
+    all_tests = sorted(HERE.glob("test_*.py"))
+    tests = [test for test in all_tests if test.name not in PARKED_TESTS]
+    skipped = [test.name for test in all_tests if test.name in PARKED_TESTS]
     if not tests:
         print("no tests found")
         return 1
+
+    for name in skipped:
+        print(f"--- {name} (parked/skipped)")
 
     failed = []
     for test in tests:

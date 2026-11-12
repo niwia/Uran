@@ -95,14 +95,19 @@ def find_lua_plugins(home: Path) -> tuple[Path | None, list[str]]:
 
 
 def is_plugins_toggle_enabled(config_path: Path) -> bool:
-    """Check if 'Plugins: yes' (or true/1) is active in config.yaml."""
+    """Check if 'Plugins: yes' (or true/1/on) is active in config.yaml."""
     if not config_path or not config_path.exists():
         return False
     try:
         content = config_path.read_text(encoding="utf-8", errors="replace")
-        match = re.search(r"^([ \t]*)Plugins[ \t]*:[ \t]*([^\r\n#]+)", content, re.MULTILINE | re.IGNORECASE)
+        match = re.search(
+            r"^[ \t]*['\"]?Plugins['\"]?[ \t]*:[ \t]*([^\r\n#]+)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        )
         if match:
-            return match.group(2).strip().lower() in ("yes", "true", "1", "on")
+            val = match.group(1).strip().strip("\"'").lower()
+            return val in ("yes", "true", "1", "on")
     except Exception as e:
         logger.debug("Failed reading Plugins toggle from %s: %s", config_path, e)
     return False
@@ -115,9 +120,11 @@ class GuardService:
         self.core = core
 
     def check_sls_environment(self) -> dict:
-        """Verify that SLSsteam is installed, configured, and ready for operations."""
-        from .sls_config import ensure_plugins_enabled
+        """Verify that SLSsteam is installed, configured, and ready for operations.
 
+        Strictly read-only: checks existing config.yaml validity, active Plugins
+        flag, and presence of at least one .lua plugin without mutating config.yaml.
+        """
         core = self.core
         ctx = core.ctx
         home = ctx.home
@@ -130,6 +137,17 @@ class GuardService:
                 "error_code": "504",
                 "error": "SLSsteam config.yaml not found. SLSsteam must be running to generate it.",
             }
+
+        sls = getattr(core, "sls", None)
+        if sls is not None and hasattr(sls, "readiness"):
+            readiness = sls.readiness(cfg)
+            if not readiness.get("ok"):
+                return {
+                    "ok": False,
+                    "reason": "no_sls_config" if readiness.get("status") == "missing" else "invalid_sls_config",
+                    "error_code": "504",
+                    "error": readiness.get("error") or "SLSsteam config.yaml is invalid or unreadable.",
+                }
 
         # Check SLS binary or active process
         sls_active = is_sls_active()
@@ -156,17 +174,6 @@ class GuardService:
                 "error": "Steam is running without SLSsteam. Please restart Steam with SLSsteam.",
             }
 
-        # Ensure required section headers (Plugins: yes, AdditionalDepots, DecryptionKeys)
-        from .sls_config import ensure_required_sections
-
-        try:
-            content = cfg.read_text(encoding="utf-8", errors="replace")
-            updated = ensure_required_sections(content)
-            if updated != content:
-                core.sls.write(updated)
-        except Exception as e:
-            logger.warning("Could not auto-ensure required sections in config.yaml: %s", e)
-
         plugins_on = is_plugins_toggle_enabled(cfg)
         if not plugins_on:
             return {
@@ -176,14 +183,14 @@ class GuardService:
                 "error": "SLSsteam 'Plugins: yes' toggle is disabled in config.yaml. Enable it to run operations.",
             }
 
-        # Check presence of Lua plugin in plugins directory
+        # Check presence of any Lua plugin in plugins directory
         plugin_dir, lua_files = find_lua_plugins(home)
         if not lua_files:
             return {
                 "ok": False,
                 "reason": "no_lua_plugins",
                 "error_code": "502",
-                "error": "No Lua download plugin found in your SLSsteam plugins folder. Please add the required Lua plugin.",
+                "error": "No Lua download plugin found in your SLSsteam plugins folder. Please add a Lua plugin first.",
             }
 
         return {

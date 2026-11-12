@@ -11,7 +11,6 @@ from .hubcap import HUBCAP_BASE_URL, auth_headers, request as hubcap_request
 from .library import PluginLibrary
 from .sls_config import (
     SlsConfig,
-    ensure_plugins_enabled,
     sanitize_comment,
     sanitize_key,
     sort_ids,
@@ -219,8 +218,6 @@ class Manifests:
 
         written: dict[str, str] = {}
         with self.sls.edit() as editor:
-            editor.content = ensure_plugins_enabled(editor.content)
-            editor.has_changes = True
             for did, key in (depot_keys or {}).items():
                 # Sanitize at the write boundary: parsing keeps the root AppKey
                 # verbatim for ASSella parity, so a malformed key must be caught
