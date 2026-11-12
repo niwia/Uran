@@ -6,17 +6,19 @@ Registers Steam games into SLSsteam using ASSella's **AT0-M** (Steam native down
 
 Designed for public use: connects directly to the [Hubcap API](https://hubcapmanifest.com) and reads/writes the same files ASSella does, so both tools stay in sync.
 
+> **Disclaimer:** As of this writing, Uran cannot install, update, or manage any of the SLSsteam Lua plugins required for Uran to work (nor automatically enable `Plugins: yes` or repair `config.yaml`), as the plugin deployment backend still needs further work. Use [ASSella](https://github.com/niwia/ASSella) to deploy and update those plugins first and they will work with Uran. This will change in a future update once plugin deployment is stable. Items marked with `*` below depend on external setup or cover actions Uran cannot perform directly.
+
 ---
 
 ## Features
 
 ### Game Search & Injection
 - **Steam Store & App ID Search**: Search any Steam game by title or exact AppID.
-- **AT0-M Injection**: Registers the AppID, its depots and its decryption keys into `config.yaml` in a single atomic pass — the same way ASSella's AT0-M mode does.
+- **AT0-M Injection**\*: Registers the AppID, its depots and its decryption keys into `config.yaml` in a single atomic pass — the same way ASSella's AT0-M mode does. Requires SLSsteam Lua plugins and `Plugins: yes` to already be configured (via ASSella or manually); Uran checks their presence read-only and cannot deploy plugins or flip `Plugins: yes` itself\*.
   - Only depots that have a key (or are Steamworks shared redistributables) are registered, so Steam never fails with `DepotWithoutKey`.
   - Every entry is tagged with the game name so ASSella can attribute it during cleanup.
 - **Shared Registry**: Writes the same `plugin_library.json` record ASSella uses, so injected games appear in ASSella's AT0-M library.
-- **Steam Store Page Button**: Injected via CDP into the Steam Deck Store webview. Settings checks whether Steam's CEF debugging port is open and shows recent injection logs.
+- **Steam Store Page Button**\*: Injected via CDP into the Steam Deck Store webview (requires Steam's CEF debugging port to be open and a compatible Steam Store layout; Uran cannot inject it otherwise\*). Settings provides a toggle to enable/disable it.
 - **Instant Hot Reloading**: Emits signals to `/tmp/SLSsteam.API` (`RELOAD`) for zero-restart configuration updates.
 
 ### AT0-M Library Manager
@@ -56,8 +58,8 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 ## Requirements
 
 - SteamOS / Linux with [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)
-- [SLSsteam](https://github.com/AceSLS/SLSsteam) installed
-- (Optional) [ASSella](https://github.com/niwia/ASSella) desktop installation
+- [SLSsteam](https://github.com/AceSLS/SLSsteam) installed, with `Plugins: yes` enabled in `config.yaml` and required Lua plugins deployed\*
+- [ASSella](https://github.com/niwia/ASSella) desktop installation (currently required\* to deploy, update, and manage the SLSsteam Lua plugins that Uran needs, as Uran cannot install or manage plugins yet\*)
 - A [Hubcap API](https://hubcapmanifest.com) key
 
 ---
@@ -66,7 +68,7 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 
 1. **Search** — search games, inject into SLSsteam, view recent injects.
 2. **AT0-M** — manage your AT0-M library: per-game integrations and uninstall.
-3. **Settings** — Hubcap key, Steam Store status and logs, manifest pinning, and notifications.
+3. **Settings** — read-only SLSsteam & active Lua plugin status\* (Uran cannot install, update, or toggle plugins itself\*), Hubcap key and gateway routes, Steam Store toggle, notifications, read-only config diagnostics\* (cannot auto-repair `config.yaml`\*), and update checks\*.
 
 ---
 
@@ -80,7 +82,7 @@ npm run build
 ./devinstall.sh
 ```
 
-Use `npm ci && npm run package` to create the installable `Uran.zip`. In Settings → Steam Store, check whether CEF debugging is detected and read the recent patch logs. The button cannot be injected when Steam's debugging port is closed; Steam needs to be launched with `--cef-enable-debugging`. A detected port still cannot guarantee compatibility with Valve's current Store page layout.
+Use `npm ci && npm run package` to create the installable `Uran.zip`. The Steam Store button\* cannot be injected when Steam's CEF debugging port is closed; Steam needs to be launched with `--cef-enable-debugging`, and Valve Store layout updates may also require updates to the injector.
 
 `dist/` is not committed. GitHub Actions runs `npm run package`, which builds the
 frontend before zipping. To run or test the plugin straight from a local clone, build
@@ -100,13 +102,9 @@ verifies that `package.json` agrees with it, and CI runs that check on every bui
 
 ---
 
-## Updates
+## Updates\*
 
-Uran does not install updates itself. Settings → Check for Updates compares the
-installed version against the latest GitHub release and shows whether an update
-is available. Installing is left to Decky Loader (menu → Plugins → Uran →
-Update), which already tracks a plugin's releases — so there is no second code
-path writing to the plugin directory.
+Uran does not install plugin updates itself\* — neither for Uran itself nor for SLSsteam Lua plugins. Settings → Check for Updates compares the installed Uran version against the latest GitHub release and shows whether an update is available. Updating Uran is left to Decky Loader (menu → Plugins → Uran → Update), which already tracks a plugin's releases — so there is no second code path writing to the plugin directory. Deploying and updating SLSsteam Lua plugins must currently be done through [ASSella](https://github.com/niwia/ASSella)\*.
 
 ---
 
