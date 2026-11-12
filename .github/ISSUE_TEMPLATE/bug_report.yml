@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a bug in Uran (Search, AT0-M injection/library, Steam Store button, Hubcap routes, or Settings).
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug in Uran.
+        Note: As of v0.8.1, Uran does not install, update, or manage SLSsteam Lua plugins or automatically flip `Plugins: yes` in `config.yaml` — deploy plugins via ASSella first.
+        Please **redact your Hubcap API key** before pasting any logs or screenshots.
+
+  - type: input
+    id: uran_version
+    attributes:
+      label: Uran version
+      description: Found in Uran Settings -> Advanced & About -> Plugin Version (or Decky Loader's plugin list).
+      placeholder: "0.8.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: OS & Steam install type
+      options:
+        - SteamOS (Game Mode)
+        - SteamOS (Desktop Mode)
+        - Bazzite / ChimeraOS / Other Linux (Native Steam)
+        - Linux (Flatpak Steam)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area affected
+      options:
+        - Game Search & AT0-M Injection
+        - Steam Store Page Button (Game Mode / CEF)
+        - AT0-M Library / Integrations / Uninstall
+        - Hubcap API Key / Gateway Routes
+        - Settings / SLSsteam Health & Config Checks
+        - Steam Library Context Menu
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear summary of the bug and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can this be reproduced?
+      placeholder: |
+        1. Open...
+        2. Click...
+        3. See error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: status_output
+    attributes:
+      label: Settings -> SLSsteam & Plugins status
+      description: What do the "SLSsteam", "SLSsteam Config", and "Active SLS Plugins" lines in Settings show?
+      placeholder: |
+        SLSsteam: Installed & active
+        SLSsteam Config: Ready (Plugins: yes)
+        Active SLS Plugins: spacebunny.lua, ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (optional)
+      description: Check Decky Loader logs for Uran (e.g. `~/homebrew/logs/Uran/`). Make sure no API keys are included.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: "Required SLSsteam Lua plugins are already deployed via ASSella (or manually) and `Plugins: yes` is enabled in `config.yaml`."
+          required: true
+        - label: "I removed any Hubcap API keys or private tokens from logs and screenshots."
+          required: true

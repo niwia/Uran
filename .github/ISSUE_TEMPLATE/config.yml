@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: SLSsteam plugin deployment or config repair (ASSella)
+    url: https://github.com/niwia/ASSella/issues/new/choose
+    about: Uran does not install, update, or modify SLSsteam Lua plugins or repair config.yaml right now. Issues with deploying plugins belong in ASSella.
+  - name: Report a security vulnerability
+    url: https://github.com/niwia/Uran/security/advisories/new
+    about: Please report security vulnerabilities privately via GitHub Security Advisories instead of a public issue.
+

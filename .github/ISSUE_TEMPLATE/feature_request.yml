@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an improvement or new capability for Uran.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Search & AT0-M Injection
+        - AT0-M Library & Per-Game Integrations
+        - Steam Store Page Button / Library Menus
+        - Settings & Diagnostics
+        - ASSella Compatibility / Shared Files
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow gap or annoyance you are running into.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like Uran to handle this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)
+      description: Any Decky Loader, SteamOS, SLSsteam, or ASSella considerations to keep in mind.
+    validations:
+      required: false
+
