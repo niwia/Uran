@@ -79,6 +79,12 @@ class Plugin:
 
         # Start Epsilon embedded loopback if port 1952 is not already handled by systemd/external
         try:
+            from .console_api import ensure_console_token
+
+            # ASSella shows this token for the AT0-M web console; creating it
+            # here covers Decky-only installs with no systemd socket.
+            ensure_console_token(ctx.settings)
+
             from .epsilon_server import ensure_loopback_running
             self._epsilon_server = await ensure_loopback_running(self.s)
         except Exception as exc:

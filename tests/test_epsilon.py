@@ -11,6 +11,38 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from uran_backend.epsilon_server import dispatch_request, is_port_in_use
+from uran_backend import console_api
+
+
+class FakeSettings:
+    """Minimal stand-in for Settings: the console only needs get/set."""
+
+    def __init__(self, data=None):
+        self.data = dict(data or {})
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
+
+
+def _console_services(token="tok_test", **settings):
+    services = MagicMock()
+    fake = FakeSettings({"epsilon_console_token": token, **settings})
+    services.ctx.settings = fake
+    services.ctx.write_setting.side_effect = lambda key, value: fake.set(key, value)
+    services.ctx.hubcap_key.current.return_value = "key_123"
+    services.guards.get_added_app_ids.return_value = ["620"]
+    services.injector.status.return_value = None
+    return services
+
+
+def _console_headers(token="tok_test", client=True):
+    headers = {"Authorization": f"Bearer {token}"}
+    if client:
+        headers["X-At0m-Client"] = "1"
+    return headers
 
 
 def test_cors_preflight_allowed():
@@ -74,7 +106,10 @@ def test_ping_endpoint():
     code, resp, _ = dispatch_request(mock_services, "GET", "/ping", b"", {})
     assert code == 200, f"Expected 200, got {code}"
     assert resp.get("service") == "epsilon", f"Expected service=epsilon, got {resp}"
-    assert resp.get("version") == "0.8.1", f"Expected version=0.8.1, got {resp}"
+    expected_version = (ROOT / "epsilon" / "VERSION").read_text(encoding="utf-8").strip()
+    assert resp.get("version") == expected_version, (
+        f"Expected version={expected_version}, got {resp}"
+    )
     assert resp.get("sls_active") is True, f"Expected sls_active=True, got {resp}"
     assert resp.get("has_hubcap_key") is True, f"Expected has_hubcap_key=True, got {resp}"
     print("ok  test_ping_endpoint")
@@ -172,6 +207,216 @@ def test_port_check():
     print("ok  test_port_check")
 
 
+# ---------------------------------------------------------------- /v1 console
+
+def _reset_auth_state():
+    with console_api._fail_lock:
+        console_api._fail_state.update({"count": 0, "first": 0.0, "blocked_until": 0.0})
+
+
+def test_console_preflight_private_network():
+    mock_services = _console_services()
+    code, resp, headers = dispatch_request(
+        mock_services,
+        "OPTIONS",
+        "/v1/library",
+        b"",
+        {
+            "Origin": "https://assella.pages.dev",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Private-Network": "true",
+        },
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    assert headers.get("Access-Control-Allow-Origin") == "https://assella.pages.dev"
+    assert headers.get("Access-Control-Allow-Private-Network") == "true", headers
+    assert "Authorization" in headers.get("Access-Control-Allow-Headers", "")
+    print("ok  test_console_preflight_private_network")
+
+
+def test_console_requires_token():
+    _reset_auth_state()
+    mock_services = _console_services()
+    code, resp, headers = dispatch_request(mock_services, "GET", "/v1/library", b"", {})
+    assert code == 401, f"Expected 401 without a token, got {code}"
+    assert headers.get("WWW-Authenticate") == "Bearer"
+    assert "games" not in resp
+    print("ok  test_console_requires_token")
+
+
+def test_console_token_accepted():
+    _reset_auth_state()
+    mock_services = _console_services()
+    mock_services.ctx.plugin_dir = ROOT
+    code, resp, _ = dispatch_request(
+        mock_services, "GET", "/v1/session", b"", _console_headers()
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    assert resp.get("ok") is True
+    assert resp.get("console") is True
+    assert resp.get("library_count") == 1
+    print("ok  test_console_token_accepted")
+
+
+def test_console_rejects_wrong_token():
+    _reset_auth_state()
+    mock_services = _console_services()
+    code, resp, _ = dispatch_request(
+        mock_services, "GET", "/v1/session", b"", _console_headers(token="nope")
+    )
+    assert code == 401, f"Expected 401 for a wrong token, got {code}"
+    _reset_auth_state()
+    print("ok  test_console_rejects_wrong_token")
+
+
+def test_console_write_needs_client_header():
+    _reset_auth_state()
+    mock_services = _console_services()
+    body = json.dumps({"appid": "620"}).encode("utf-8")
+    code, resp, _ = dispatch_request(
+        mock_services, "POST", "/v1/register", body, _console_headers(client=False)
+    )
+    assert code == 403, f"Expected 403 without X-At0m-Client, got {code}"
+    mock_services.injector.inject.assert_not_called()
+    print("ok  test_console_write_needs_client_header")
+
+
+def test_console_register_uses_injector():
+    _reset_auth_state()
+    mock_services = _console_services()
+    mock_services.injector.inject.return_value = {
+        "name": "Portal 2", "depots": ["621"], "fetching": True,
+    }
+    body = json.dumps({"appid": "620"}).encode("utf-8")
+    code, resp, _ = dispatch_request(
+        mock_services, "POST", "/v1/register", body, _console_headers()
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    assert resp.get("ok") is True and resp.get("fetching") is True
+    mock_services.injector.inject.assert_called_once_with("620")
+    print("ok  test_console_register_uses_injector")
+
+
+def test_console_register_maps_errors():
+    _reset_auth_state()
+    mock_services = _console_services()
+    mock_services.injector.inject.return_value = {
+        "error": "No SLSsteam config", "blocked": "no_sls_config",
+    }
+    body = json.dumps({"appid": "620"}).encode("utf-8")
+    code, resp, _ = dispatch_request(
+        mock_services, "POST", "/v1/register", body, _console_headers()
+    )
+    assert code == 400, f"Expected 400, got {code}"
+    assert resp.get("error_code") == "504", resp
+    assert resp.get("blocked") == "no_sls_config"
+    assert resp.get("guide_url", "").endswith("#err-504")
+    print("ok  test_console_register_maps_errors")
+
+
+def test_console_library_never_leaks_keys():
+    _reset_auth_state()
+    mock_services = _console_services()
+    mock_services.atom.list_games.return_value = [{
+        "app_id": "620", "name": "Portal 2", "state": "installed",
+        "depots": ["621"], "keys": {"621": "deadbeef"}, "key_count": 1,
+        "install_path": "/home/u/.steam/steamapps/common/Portal 2",
+    }]
+    code, resp, _ = dispatch_request(
+        mock_services, "GET", "/v1/library", b"", _console_headers()
+    )
+    assert code == 200
+    game = resp["games"][0]
+    assert "keys" not in game and "install_path" not in game, game
+    assert game["key_count"] == 1
+    print("ok  test_console_library_never_leaks_keys")
+
+
+def test_console_detail_masks_keys():
+    _reset_auth_state()
+    mock_services = _console_services()
+    mock_services.atom.detail.return_value = {
+        "ok": True, "app_id": "620", "name": "Portal 2", "registered": True,
+        "keys_detail": [{
+            "id": "621", "name": "Portal 2", "key": "a" * 64,
+            "masked_key": "aaaaaaaa...aaaaaa", "is_appkey": False,
+            "in_config": True, "in_local": True,
+        }],
+        "depots_detail": [], "dlcs_detail": [],
+    }
+    code, resp, _ = dispatch_request(
+        mock_services, "GET", "/v1/app/620?network=0", b"", _console_headers()
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    key = resp["keys_detail"][0]
+    assert "key" not in key and key["masked_key"].endswith("aaaaaa"), key
+    assert resp["inject_status"] is None
+    print("ok  test_console_detail_masks_keys")
+
+
+def test_console_settings_whitelist():
+    _reset_auth_state()
+    mock_services = _console_services()
+    body = json.dumps({"manifest_api_key": "secret"}).encode("utf-8")
+    code, resp, _ = dispatch_request(
+        mock_services, "POST", "/v1/settings", body, _console_headers()
+    )
+    assert code == 400, f"Secrets must not be writable from the console, got {code}"
+
+    code, resp, _ = dispatch_request(
+        mock_services, "POST", "/v1/settings",
+        json.dumps({"hubcap_gateway": "proxy"}).encode("utf-8"), _console_headers(),
+    )
+    assert code == 200 and resp["settings"]["hubcap_gateway"] == "proxy", resp
+    mock_services.ctx.write_setting.assert_called_once_with("hubcap_gateway", "proxy")
+
+    code, _, _ = dispatch_request(
+        mock_services, "POST", "/v1/settings",
+        json.dumps({"hubcap_gateway": "nonsense"}).encode("utf-8"), _console_headers(),
+    )
+    assert code == 400, "Unknown enum value must be rejected"
+    print("ok  test_console_settings_whitelist")
+
+
+def test_dev_origin_only_reaches_console():
+    _reset_auth_state()
+    mock_services = _console_services()
+    # A loopback docs preview may reach /v1 (and still gets 401 without a token).
+    code, _, _ = dispatch_request(
+        mock_services, "GET", "/v1/library", b"", {"Origin": "http://localhost:5173"}
+    )
+    assert code == 401, f"Expected 401 from a dev origin on /v1, got {code}"
+
+    # Photar's routes keep the strict allowlist.
+    code, _, _ = dispatch_request(
+        mock_services, "POST", "/inject", b"{}", {"Origin": "http://localhost:5173"}
+    )
+    assert code == 403, f"A dev origin must not reach /inject, got {code}"
+    print("ok  test_dev_origin_only_reaches_console")
+
+
+def test_console_can_be_disabled():
+    _reset_auth_state()
+    mock_services = _console_services(epsilon_console_enabled=False)
+    code, _, _ = dispatch_request(
+        mock_services, "GET", "/v1/session", b"", _console_headers()
+    )
+    assert code == 403, f"Expected 403 when disabled, got {code}"
+    print("ok  test_console_can_be_disabled")
+
+
+def test_photar_inject_still_unauthenticated():
+    mock_services = MagicMock()
+    mock_services.injector.inject.return_value = {
+        "name": "Portal 2", "depots": ["621"], "fetching": True,
+    }
+    body = json.dumps({"appid": "620"}).encode("utf-8")
+    code, resp, _ = dispatch_request(mock_services, "POST", "/inject", body, {})
+    assert code == 200, f"Photar's route must not require the console token, got {code}"
+    assert resp.get("ok") is True
+    print("ok  test_photar_inject_still_unauthenticated")
+
+
 def main():
     test_cors_preflight_allowed()
     test_malicious_origin_rejected()
@@ -183,6 +428,19 @@ def main():
     test_inject_endpoint_already_added()
     test_refresh_and_refetch()
     test_port_check()
+    test_console_preflight_private_network()
+    test_console_requires_token()
+    test_console_token_accepted()
+    test_console_rejects_wrong_token()
+    test_console_write_needs_client_header()
+    test_console_register_uses_injector()
+    test_console_register_maps_errors()
+    test_console_library_never_leaks_keys()
+    test_console_detail_masks_keys()
+    test_console_settings_whitelist()
+    test_console_can_be_disabled()
+    test_dev_origin_only_reaches_console()
+    test_photar_inject_still_unauthenticated()
     print("\nAll Epsilon tests passed successfully!")
 
 

@@ -15,11 +15,15 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
+from . import console_api
+from .epsilon_responses import inject_response
+
 logger = logging.getLogger("Epsilon")
 
 DEFAULT_PORT = 1952
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_IDLE_TIMEOUT = 120  # Exit after 120 seconds of inactivity under systemd socket
+MAX_REQUEST_BYTES = 256 * 1024
 
 ALLOWED_HOSTS = {
     f"127.0.0.1:{DEFAULT_PORT}",
@@ -31,7 +35,19 @@ ALLOWED_HOSTS = {
 ALLOWED_ORIGINS = {
     "https://store.steampowered.com",
     "https://steamdb.info",
+    # AT0-M web console (ASSella docs site: Cloudflare Pages host and the
+    # custom domain). Photar uses GM_xmlhttpRequest, so it is unaffected.
+    "https://assella.pages.dev",
+    "https://assella.niwia.top",
 }
+
+# A local docs preview (`npm run docs:dev`) is a loopback origin. It may reach
+# the console namespace only, and the console still needs the token.
+_DEV_ORIGIN_RE = re.compile(r"^http://(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$")
+
+
+def _is_dev_origin(origin: str) -> bool:
+    return bool(origin) and bool(_DEV_ORIGIN_RE.match(origin))
 
 
 def is_port_in_use(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> bool:
@@ -71,29 +87,54 @@ def dispatch_request(
     host = norm_headers.get("host", "")
     origin = norm_headers.get("origin", "")
 
+    parsed = urllib.parse.urlparse(path)
+    route = parsed.path.rstrip("/") or "/"
+    query = urllib.parse.parse_qs(parsed.query)
+    is_console = console_api.is_console_path(route)
+
     # Security Check 1: Host header validation (Defeats DNS-rebinding attacks)
     if host and host not in ALLOWED_HOSTS:
         return 403, {"ok": False, "error": "Forbidden: invalid Host header"}, {}
 
-    # Security Check 2: Origin header validation (Defeats arbitrary web page cross-origin requests)
-    if origin and origin not in ALLOWED_ORIGINS:
+    # Security Check 2: Origin header validation (Defeats arbitrary web page cross-origin requests).
+    # A docs preview on loopback may only reach the console namespace, which
+    # still needs the token; Photar's routes keep the strict allowlist.
+    origin_allowed = origin in ALLOWED_ORIGINS or (is_console and _is_dev_origin(origin))
+    if origin and not origin_allowed:
         return 403, {"ok": False, "error": "Forbidden: unauthorized Origin"}, {}
 
     # Build safe CORS headers if caller provided a recognized Origin
     resp_headers = {}
-    if origin in ALLOWED_ORIGINS:
+    if origin_allowed:
         resp_headers["Access-Control-Allow-Origin"] = origin
         resp_headers["Vary"] = "Origin"
         resp_headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        resp_headers["Access-Control-Allow-Headers"] = "Content-Type, X-Photar-Client"
-
-    parsed = urllib.parse.urlparse(path)
-    route = parsed.path.rstrip("/") or "/"
-    query = urllib.parse.parse_qs(parsed.query)
+        resp_headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-At0m-Token, X-At0m-Client, X-Photar-Client"
+        )
+        resp_headers["Access-Control-Max-Age"] = "600"
+        # Chrome preflights public -> loopback (Private Network Access); without
+        # this the console's fetches fail before they are sent.
+        if norm_headers.get("access-control-request-private-network", "").lower() == "true":
+            resp_headers["Access-Control-Allow-Private-Network"] = "true"
+            resp_headers["Vary"] = "Origin, Access-Control-Request-Private-Network"
 
     # 1. CORS Preflight
     if method == "OPTIONS":
         return 200, {"ok": True}, resp_headers
+
+    # 1b. AT0-M web console API. Token-gated and namespaced under /v1 so every
+    # Photar route below keeps its existing behaviour. Preflight is already
+    # answered above, because browsers never send credentials on it.
+    if console_api.is_console_path(route):
+        code, payload, extra = console_api.route(
+            services, method, route, query, body_bytes, norm_headers
+        )
+        # Keep the origin-derived CORS/preflight headers; the console only adds
+        # WWW-Authenticate / Retry-After.
+        merged = dict(resp_headers)
+        merged.update(extra or {})
+        return code, payload, merged
 
     # 2. Handshake / Health Ping
     if method == "GET" and route in ("/ping", "/health"):
@@ -107,9 +148,9 @@ def dispatch_request(
             except Exception:
                 readiness = {"ready": False, "error_code": "505"}
 
-        from .updates import plugin_version
+        from .updates import epsilon_version
 
-        version = plugin_version(services.ctx)
+        version = epsilon_version(services.ctx)
         ready = bool(readiness.get("ready"))
         error_code = readiness.get("error_code")
         error_msg = readiness.get("error")
@@ -224,52 +265,8 @@ def dispatch_request(
             return 400, {"ok": False, "error": f"Invalid AppID: {raw_id}"}, resp_headers
 
         result = services.injector.inject(aid)
-        if result.get("error"):
-            # Return 400 for errors, unless it's already added which is a normal check
-            status_code = 200 if result.get("already_added") else 400
-            err_text = str(result.get("error", ""))
-            blocked = result.get("blocked")
-            err_code = "707"
-            if blocked == "no_api_key" or "401" in err_text:
-                err_code = "401"
-            elif blocked == "no_sls_config":
-                err_code = "504"
-            elif blocked in ("sls_not_installed", "sls_inactive"):
-                err_code = "501"
-            elif blocked == "plugins_disabled":
-                err_code = "503"
-            elif blocked == "no_lua_plugins":
-                err_code = "502"
-            elif "404" in err_text or "No Hubcap bundle" in err_text:
-                err_code = "404"
-            elif "429" in err_text:
-                err_code = "429"
-            elif "no keys" in err_text.lower():
-                err_code = "701"
-
-            resp_body = {
-                "ok": False,
-                "error": result["error"],
-                "error_code": err_code if not result.get("already_added") else None,
-                "already_added": result.get("already_added", False),
-                "blocked": result.get("blocked"),
-                "guide_url": f"https://assella.niwia.top/epsilon#err-{err_code}",
-            }
-            return (
-                status_code,
-                resp_body,
-                resp_headers,
-            )
-        return (
-            200,
-            {
-                "ok": True,
-                "name": result.get("name"),
-                "depots": result.get("depots", []),
-                "fetching": result.get("fetching", True),
-            },
-            resp_headers,
-        )
+        status_code, resp_body = inject_response(result)
+        return status_code, resp_body, resp_headers
 
     # 5. Refresh Game Config
     if method == "POST" and route == "/refresh":
@@ -344,6 +341,9 @@ class StandaloneHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._notify_activity()
         length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_REQUEST_BYTES:
+            self._send_response_json(413, {"ok": False, "error": "Request body too large"})
+            return
         body = self.rfile.read(length) if length > 0 else b""
         code, resp, headers = dispatch_request(
             self.services, "POST", self.path, body, dict(self.headers)
@@ -428,6 +428,10 @@ class AsyncEpsilonServer:
                     headers[k.strip().lower()] = v.strip()
 
             content_len = int(headers.get("content-length", 0))
+            if content_len > MAX_REQUEST_BYTES:
+                writer.write(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
             body = b""
             if content_len > 0:
                 body = await reader.readexactly(content_len)

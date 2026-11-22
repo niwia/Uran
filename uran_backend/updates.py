@@ -29,6 +29,28 @@ def plugin_version(ctx: Context) -> str:
         return "0.0.0"
 
 
+def epsilon_version(ctx: Context) -> str:
+    """Epsilon's own version, read from ``epsilon/VERSION``.
+
+    Uran and Epsilon ship from one repository but are released separately, so
+    the Decky plugin keeps ``plugin.json`` and the bridge has its own file.
+    Installers copy the whole ``epsilon/`` directory, so the file is present in
+    both the checkout and ``~/epsilon``. Falls back to plugin.json on old
+    installs that predate the split.
+    """
+    plugin_dir = getattr(ctx, "plugin_dir", None)
+    if plugin_dir is None:
+        return ""
+    path = plugin_dir / "epsilon" / "VERSION"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return plugin_version(ctx)
+    lines = str(raw).strip().splitlines()
+    version = lines[0].strip() if lines else ""
+    return version if re.fullmatch(r"\d+(\.\d+)*", version) else plugin_version(ctx)
+
+
 def plugin_info(ctx: Context) -> dict:
     """Name and version for the settings panel."""
     path = ctx.plugin_dir / "plugin.json"

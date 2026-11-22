@@ -35,6 +35,9 @@ FILES_TO_PACK = [
     "main.py",
     "README.md",
     "LICENSE",
+    # Epsilon's own version, so the embedded bridge reports 0.7.5 instead of
+    # falling back to the plugin manifest.
+    "epsilon/VERSION",
 ]
 
 DIRS_TO_PACK = [

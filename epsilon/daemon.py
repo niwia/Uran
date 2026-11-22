@@ -35,6 +35,8 @@ from uran_backend.epsilon_server import (  # noqa: E402
     is_port_in_use,
 )
 from uran_backend.plugin_api import default_services  # noqa: E402
+from uran_backend.console_api import ensure_console_token  # noqa: E402
+from uran_backend.updates import epsilon_version  # noqa: E402
 
 
 class IdleShutdownTimer:
@@ -109,8 +111,12 @@ def main():
         print(f"Epsilon port {args.port} active: {active}")
         sys.exit(0 if active else 1)
 
-    logger.info("Initializing Uran 0.6.3 service engine for Epsilon...")
     services = default_services()
+    logger.info("Initializing Epsilon %s on the Uran backend engine...", epsilon_version(services.ctx))
+
+    # Create the AT0-M console token once, so ASSella can display it before the
+    # web console ever connects. Photar does not use it.
+    ensure_console_token(services.ctx.settings)
 
     # Check for systemd socket activation descriptor
     inherited_sock = get_systemd_listen_fd()

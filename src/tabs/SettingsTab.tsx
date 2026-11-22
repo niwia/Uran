@@ -51,6 +51,8 @@ export const SettingsTab: React.FC = () => {
 
   // Health & Environment
   const [health, setHealth] = useState<HealthStatus | null>(() => peekOnce<HealthStatus>("health") ?? null);
+  const [consoleToken, setConsoleToken] = useState("");
+  const [revealed, setRevealed] = useState(false);
   const [setupChecksComplete, setSetupChecksComplete] = useState(() => peekOnce<HealthStatus>("health") !== undefined);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
 
@@ -160,6 +162,9 @@ export const SettingsTab: React.FC = () => {
     getSetting("hubcap_gateway", "auto")
       .then((v) => setGatewayMode(v as GatewayMode))
       .catch(() => {});
+    getSetting("epsilon_console_token", "")
+      .then((v) => setConsoleToken(String(v || "")))
+      .catch(() => {});
 
     isGlobalSlsOnlineEnabled()
       .then((v) => setGlobalSlsOnlineState(Boolean(v?.enabled)))
@@ -175,6 +180,17 @@ export const SettingsTab: React.FC = () => {
   }, [loadHealthAndKey]);
 
   // Key save handler
+  const handleCopyConsoleToken = async () => {
+    setRevealed(true);
+    try {
+      await navigator.clipboard.writeText(consoleToken);
+      notify("Epsilon", "Console token copied");
+    } catch {
+      // Game Mode's CEF build may refuse clipboard writes; the token is visible above.
+      notify("Epsilon", "Token revealed — copy it manually");
+    }
+  };
+
   const handleSaveKey = async () => {
     const raw = manualKey.trim();
     if (!raw) return;
@@ -453,6 +469,35 @@ export const SettingsTab: React.FC = () => {
             onChange={handleGatewayChange}
           />
         </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Epsilon Bridge">
+        <PanelSectionRow>
+          <Field
+            label="Web console (AT0-M)"
+            description={
+              consoleToken
+                ? "Pair a browser at assella.pages.dev/at0m with this token. It stays on this device."
+                : "The token is created the first time the Epsilon bridge starts."
+            }
+          />
+        </PanelSectionRow>
+
+        {consoleToken ? (
+          <>
+            <PanelSectionRow>
+              <Field
+                label={revealed ? consoleToken : "••••••••••••••••••••••••••••"}
+                description="Console token"
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={handleCopyConsoleToken}>
+                {revealed ? "Copy token" : "Reveal & copy"}
+              </ButtonItem>
+            </PanelSectionRow>
+          </>
+        ) : null}
       </PanelSection>
 
       <PanelSection title="Preferences">

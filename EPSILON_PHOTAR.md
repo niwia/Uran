@@ -1,13 +1,13 @@
 # Epsilon — at0-m and uran companion
 
-> **Photar** (Browser Userscript) $\leftrightarrow$ **Epsilon** (Localhost Bridge / systemd) $\leftrightarrow$ **Uran 0.6.3 Engine** $\leftrightarrow$ **SLSsteam**
+> **Photar** (Browser Userscript) $\leftrightarrow$ **Epsilon** (Localhost Bridge / systemd) $\leftrightarrow$ **Uran backend engine** $\leftrightarrow$ **SLSsteam**
 
 ---
 
 ## 1. Overview & Concept
 
 Named after the characters from *Astro Boy* / *Pluto*:
-- **Epsilon**: The photon-powered robot operating quietly in the background. It is a lightweight, local socket-activated daemon and API bridge powered by the **Uran 0.6.3 backend engine**.
+- **Epsilon**: The photon-powered robot operating quietly in the background. It is a lightweight, local socket-activated daemon and API bridge powered by the **Uran backend engine**.
 - **Photar**: The photon energy beam projecting from the web. It is a Tampermonkey userscript injecting native **"Add to at0-m"** buttons onto **Steam Store** and **SteamDB** pages.
 - *"Save me more sunlight!"* — Photar
 
@@ -45,7 +45,7 @@ Epsilon uses a **hybrid listener architecture** that ensures **0% CPU and 0 MB i
                └──────────────────────┬───────────────────────┘
                                       ▼
                         ┌───────────────────────────┐
-                        │    uran_backend (0.6.3)   │
+                        │    uran_backend (0.7.5)   │
                         │ • Atomic config.yaml lock │
                         │ • Hubcap Keys & AppTokens │
                         │ • SpaceBunny 1.5 config   │
@@ -58,7 +58,7 @@ Epsilon uses a **hybrid listener architecture** that ensures **0% CPU and 0 MB i
 1. **Works with or without Uran/Decky**: Users on pure desktop Linux (Arch, Fedora, Ubuntu, Steam Deck Desktop Mode) can run Epsilon independently via systemd.
 2. **Zero Idle Resource Consumption**: Under `systemd --user` socket activation, `daemon.py` is **not running** until you click a button in your browser. After handling requests, it automatically exits after 120 seconds of inactivity.
 3. **No Port Collisions**: When Uran loads in Decky, it checks if port `1952` is already active. If systemd is running it, Uran defers to it; if systemd is not installed, Uran automatically provides an embedded non-blocking loopback server.
-4. **Shared 0.6.3 Engine**: Both paths execute [`Injector.inject(app_id)`](file:///home/aiwin/Documents/assella-decky/uran_backend/inject.py#L563) with identical file paths, atomic write locks, SpaceBunny bridge sync, and manifest downloads.
+4. **Shared backend engine**: Both paths execute [`Injector.inject(app_id)`](file:///home/aiwin/Documents/assella-decky/uran_backend/inject.py#L563) with identical file paths, atomic write locks, SpaceBunny bridge sync, and manifest downloads.
 
 ---
 
@@ -69,7 +69,7 @@ assella-decky/
 ├── uran_backend/
 │   ├── epsilon_server.py    <-- Core HTTP dispatcher & async/sync servers
 │   ├── plugin_api.py        <-- Wired with embedded Epsilon loopback fallback
-│   └── ...                  <-- Standard 0.6.3 services (inject, sls, hubcap)
+│   └── ...                  <-- Standard backend services (inject, sls, hubcap)
 ├── epsilon/
 │   ├── daemon.py            <-- Standalone & socket-activated CLI entry point
 │   ├── epsilon.socket       <-- systemd --user socket definition (port 1952)
@@ -173,13 +173,16 @@ python3 epsilon/daemon.py --port 1952
 
 Epsilon strictly binds to `127.0.0.1:1952` and implements strict security controls:
 - **Host Header Validation**: Rejects requests whose `Host` is not `127.0.0.1:1952` or `localhost:1952` with `403 Forbidden` (defeats DNS rebinding attacks).
-- **Origin Whitelist**: Wildcard CORS is dropped. Only trusted origins (`store.steampowered.com`, `steamdb.info`) or direct local clients are accepted.
+- **Origin Whitelist**: Wildcard CORS is dropped. Only trusted origins (`store.steampowered.com`, `steamdb.info`, and ASSella's docs site `assella.pages.dev` / `assella.niwia.top`) or direct local clients are accepted.
+- **Console Token**: the `/v1` surface used by the AT0-M web console requires a per-install bearer token. CORS is not authentication — any page can POST to loopback — so the token, not the origin, is the boundary. It lives in `settings.json` as `epsilon_console_token`, is generated on first start, and is shown by ASSella (**Settings → Companions → Epsilon → Web console**)
+  and by Uran's Decky settings tab (**Epsilon Bridge**) for Game Mode users.
+- **Private Network Access**: preflights from the docs origin are answered with `Access-Control-Allow-Private-Network: true`, which Chrome requires before a public page may reach loopback.
 - **Async Execution**: Embedded loopback offloads all requests to `asyncio.to_thread` so Decky GamepadUI never stutters.
-- **Dynamic Versioning**: Single source of truth read directly from `plugin.json`.
+- **Dynamic Versioning**: Epsilon reads `epsilon/VERSION`; the Decky plugin keeps `plugin.json`. The two ship from one repository but are released separately.
 
 ### `OPTIONS *`
 - **Purpose**: CORS preflight for browser requests from trusted origins.
-- **Response**: `200 OK` with `Access-Control-Allow-Origin: <origin>` when matching the whitelist.
+- **Response**: `200 OK` with `Access-Control-Allow-Origin: <origin>` when matching the whitelist, plus `Access-Control-Allow-Private-Network` when the browser asks for it.
 
 ### `GET /ping`
 - **Purpose**: Health check & capability probe.
@@ -188,7 +191,7 @@ Epsilon strictly binds to `127.0.0.1:1952` and implements strict security contro
 {
   "ok": true,
   "service": "epsilon",
-  "version": "0.6.3",
+  "version": "0.7.5",
   "engine": "uran_backend",
   "sls_active": true,
   "has_hubcap_key": true
@@ -240,6 +243,39 @@ Epsilon strictly binds to `127.0.0.1:1952` and implements strict security contro
 ### `POST /refetch`
 - **Payload**: `{"appid": "620"}`
 - **Purpose**: Force-bypasses manifest cache and refetches fresh decryption keys and SmartTickets from Hubcap.
+
+---
+
+## 6b. AT0-M web console API (`/v1`)
+
+The `at0m` page on the docs site is a thin client: it browses and registers
+games but writes nothing itself. Everything under `/v1` needs
+`Authorization: Bearer <epsilon_console_token>`; writes also need
+`X-At0m-Client: 1`, which forces a CORS preflight.
+
+| Route | Purpose |
+| :--- | :--- |
+| `GET /v1/session` | Verify the token; report Epsilon version + library size |
+| `GET /v1/library` | Registered AT0-M games (no keys, no paths) |
+| `GET /v1/search?q=` | Steam store search performed by Epsilon |
+| `GET /v1/app/<appid>` | Depots, DLCs and key *presence* (`?network=1` fills in Steam metadata) |
+| `GET /v1/queue` | Recent injections and worker state |
+| `GET /v1/hubcap` | Which key is in use (masked) and its source |
+| `POST /v1/register` | `{"appid": "620"}` — same `Injector.inject()` path as Photar |
+| `POST /v1/unregister` | `{"appid": "620"}` — removes every config trace |
+| `POST /v1/refresh` / `POST /v1/refetch` | Re-project config / force fresh Hubcap bundle |
+| `POST /v1/hubcap` | `{"key": "..."}` — validate and sync a Hubcap key everywhere |
+| `GET` / `POST /v1/settings` | Non-secret knobs: DLC fetching, delisted DLCs, gateway, notifications |
+
+Design rules worth keeping:
+- **The client never sends keys or depots.** `register` takes an AppID only; Epsilon
+  resolves keys and manifests from the local Hubcap key, so a web page can never
+  write arbitrary `DecryptionKeys` into `config.yaml`.
+- **Responses carry no secrets.** Keys come back as `has_key` / `masked_key`,
+  the Hubcap key as a masked source, and the token is never echoed.
+- **Photar is untouched.** Legacy routes stay unauthenticated and keep their
+  exact response shape; `/v1/register` reuses the same error codes
+  (`401`, `404`, `429`, `501`–`505`, `701`, `707`).
 
 ---
 
