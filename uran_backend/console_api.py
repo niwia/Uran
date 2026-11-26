@@ -431,6 +431,22 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
     if method == "GET" and route_path == "/v1/queue":
         return 200, {"ok": True, "items": _clean_queue(services.injector.recent())}, {}
 
+    # --- updates ---------------------------------------------------------
+    if method == "GET" and route_path == "/v1/updates":
+        res = services.atom.check_all_updates(use_cache=True)
+        return 200, {"ok": True, **(res if isinstance(res, dict) else {})}, {}
+
+    if method == "POST" and route_path == "/v1/updates/check":
+        payload, err = _json_body(body) if body else ({}, "")
+        if err:
+            return 400, {"ok": False, "error": err}, {}
+        aid = _body_appid(payload) if payload.get("appid") or payload.get("app_id") else ""
+        if aid:
+            res = services.atom.check_updates(aid, use_cache=False)
+            return 200, {"ok": True, "appid": aid, "update": res}, {}
+        res = services.atom.check_all_updates(use_cache=False)
+        return 200, {"ok": True, **(res if isinstance(res, dict) else {})}, {}
+
     # --- store patch -----------------------------------------------------
     if method == "GET" and route_path == "/v1/store":
         try:
@@ -466,6 +482,33 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
             "requires": ".cef-enable-remote-debugging",
             "recent": recent,
         }, {}
+
+    if method == "POST" and route_path == "/v1/store/cef":
+        payload, err = _json_body(body)
+        if err:
+            return 400, {"ok": False, "error": err}, {}
+        enable = bool(payload.get("enabled", True))
+        steam_path = getattr(services.ctx, "steam_path", None)
+        if not steam_path:
+            return 400, {"ok": False, "error": "Steam path not found."}, {}
+        from pathlib import Path
+        sentinel_path = Path(steam_path) / ".cef-enable-remote-debugging"
+        try:
+            if enable:
+                sentinel_path.touch(exist_ok=True)
+            elif sentinel_path.exists():
+                sentinel_path.unlink()
+            return 200, {
+                "ok": True,
+                "sentinel": sentinel_path.exists(),
+                "message": (
+                    "Created .cef-enable-remote-debugging — restart Steam if running."
+                    if enable
+                    else "Removed .cef-enable-remote-debugging — restart Steam to close port."
+                ),
+            }, {}
+        except OSError as exc:
+            return 500, {"ok": False, "error": f"Failed to update CEF sentinel: {exc}"}, {}
 
     # --- hubcap ----------------------------------------------------------
     if method == "GET" and route_path == "/v1/hubcap":
@@ -517,6 +560,38 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
         result = services.injector.refetch_game(aid)
         ok = bool(result.get("ok", False))
         return (200 if ok else 400), {"ok": ok, "result": result}, {}
+
+    # --- uninstall & steam install ---------------------------------------
+    if method == "POST" and route_path == "/v1/uninstall":
+        payload, err = _json_body(body)
+        if err:
+            return 400, {"ok": False, "error": err}, {}
+        aid = _body_appid(payload)
+        if not aid:
+            return 400, {"ok": False, "error": "Invalid AppID."}, {}
+        result = services.uninstaller.uninstall(aid)
+        ok = bool(result.get("ok", False))
+        return (200 if ok else 400), {"ok": ok, **(result if isinstance(result, dict) else {})}, {}
+
+    if method == "POST" and route_path == "/v1/steam/install":
+        payload, err = _json_body(body)
+        if err:
+            return 400, {"ok": False, "error": err}, {}
+        aid = _body_appid(payload)
+        if not aid:
+            return 400, {"ok": False, "error": "Invalid AppID."}, {}
+        try:
+            lib_idx = max(0, int(payload.get("library_index", 0) or 0))
+        except (TypeError, ValueError):
+            lib_idx = 0
+        from .sls_config import signal_api
+        sent = bool(signal_api(f"install|{aid}|{lib_idx}"))
+        return (200 if sent else 503), {
+            "ok": sent,
+            "appid": aid,
+            "library_index": lib_idx,
+            "error": "" if sent else "SLSsteam API pipe unavailable — ensure Steam is running with SLSsteam.",
+        }, {}
 
     # --- settings --------------------------------------------------------
     if method == "GET" and route_path == "/v1/settings":

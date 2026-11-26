@@ -497,6 +497,18 @@
     }
 
     if (injected) {
+      if (!document.getElementById('at0m-console-link')) {
+        var consoleLink = document.createElement('a');
+        consoleLink.id = 'at0m-console-link';
+        consoleLink.href = 'https://assella.pages.dev/at0m?q=' + encodeURIComponent(appId);
+        consoleLink.target = '_blank';
+        consoleLink.rel = 'noopener noreferrer';
+        consoleLink.textContent = 'Console';
+        consoleLink.title = 'Open in AT0-M Web Console';
+        consoleLink.style.cssText =
+          'display:inline-block;margin-left:6px;font-size:11px;color:#67c1f5;text-decoration:none;opacity:0.85;vertical-align:middle;';
+        wrap.appendChild(consoleLink);
+      }
       checkStatus();
     }
   }

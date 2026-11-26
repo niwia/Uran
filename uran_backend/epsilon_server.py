@@ -50,6 +50,26 @@ def _is_dev_origin(origin: str) -> bool:
     return bool(origin) and bool(_DEV_ORIGIN_RE.match(origin))
 
 
+def _is_allowed_tunnel_host(host: str) -> bool:
+    """Allow a temporary Cloudflare Quick Tunnel host only while ASSella's tunnel is active."""
+    if not host or not host.endswith(".trycloudflare.com"):
+        return False
+    try:
+        import time
+        cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        marker = os.path.join(cfg_home, "assella-decky", "tunnel_active.json")
+        if not os.path.isfile(marker):
+            return False
+        with open(marker, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (
+            str(data.get("host") or "") == host
+            and float(data.get("expires_at") or 0) > time.time()
+        )
+    except Exception:
+        return False
+
+
 def is_port_in_use(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> bool:
     """Check if the Epsilon bridge port is already active."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -93,7 +113,7 @@ def dispatch_request(
     is_console = console_api.is_console_path(route)
 
     # Security Check 1: Host header validation (Defeats DNS-rebinding attacks)
-    if host and host not in ALLOWED_HOSTS:
+    if host and host not in ALLOWED_HOSTS and not (is_console and _is_allowed_tunnel_host(host)):
         return 403, {"ok": False, "error": "Forbidden: invalid Host header"}, {}
 
     # Security Check 2: Origin header validation (Defeats arbitrary web page cross-origin requests).
