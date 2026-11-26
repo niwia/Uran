@@ -185,8 +185,93 @@ def _note_success() -> None:
         _fail_state["first"] = 0.0
 
 
+def _paired_devices(settings) -> list[dict]:
+    raw = settings.get("paired_devices", [])
+    if not isinstance(raw, list):
+        return []
+    return [d for d in raw if isinstance(d, dict) and d.get("id") and d.get("token")]
+
+
+def _qr_svg_for(url: str) -> str:
+    import shutil
+    import subprocess
+    qr_bin = shutil.which("qrencode")
+    if not qr_bin:
+        return ""
+    try:
+        res = subprocess.run(
+            [qr_bin, "-o", "-", "-t", "SVG", "-m", "2", url],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return res.stdout if res.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _complete_pairing(services, body: bytes) -> tuple[int, dict, dict]:
+    wait = _rate_limited()
+    if wait > 0:
+        return 429, {"ok": False, "error": f"Too many failed attempts; retry in {int(wait) + 1}s."}, {"Retry-After": "60"}
+
+    payload, err = _json_body(body)
+    if err:
+        return 400, {"ok": False, "error": err}, {}
+    code = str(payload.get("code") or "").strip()
+    name = re.sub(r"\s+", " ", str(payload.get("name") or "").strip())[:40] or "Phone"
+    if not code:
+        _note_failure()
+        return 400, {"ok": False, "error": "Missing pairing code."}, {}
+
+    settings = services.ctx.settings
+    now = time.time()
+    invites = settings.get("pairing_invites", [])
+    if not isinstance(invites, list):
+        invites = []
+
+    matched = None
+    kept = []
+    for inv in invites:
+        if not isinstance(inv, dict):
+            continue
+        exp = float(inv.get("expires_at") or 0)
+        if exp <= now:
+            continue
+        inv_code = str(inv.get("code") or "")
+        if matched is None and inv_code and hmac.compare_digest(code, inv_code):
+            matched = inv
+            continue
+        kept.append(inv)
+
+    if matched is None:
+        _note_failure()
+        services.ctx.write_setting("pairing_invites", kept)
+        return 401, {"ok": False, "error": "Pairing code is invalid or expired. Generate a new QR code."}, {}
+
+    _note_success()
+    dev_id = "dev_" + os.urandom(4).hex()
+    token = TOKEN_PREFIX + os.urandom(32).hex()
+    created_at = int(now)
+    devices = _paired_devices(settings)
+    devices.append({
+        "id": dev_id,
+        "name": name,
+        "token": token,
+        "created_at": created_at,
+        "last_seen": created_at,
+    })
+    services.ctx.write_setting("pairing_invites", kept)
+    services.ctx.write_setting("paired_devices", devices)
+    return 200, {
+        "ok": True,
+        "token": token,
+        "device": {"id": dev_id, "name": name, "created_at": created_at},
+    }, {}
+
+
 def authorize(settings, headers: dict) -> tuple[bool, int, str]:
-    """Check the bearer token. Returns ``(ok, http_status, message)``."""
+    """Check the bearer token (master or per-device). Returns ``(ok, http_status, message)``."""
     wait = _rate_limited()
     if wait > 0:
         return False, 429, f"Too many failed attempts; retry in {int(wait) + 1}s."
@@ -197,8 +282,14 @@ def authorize(settings, headers: dict) -> tuple[bool, int, str]:
         _note_success()
         return True, 200, ""
 
+    if presented:
+        for dev in _paired_devices(settings):
+            if hmac.compare_digest(presented, str(dev.get("token") or "")):
+                _note_success()
+                return True, 200, ""
+
     _note_failure()
-    return False, 401, "Console token missing or invalid. Pair the console again from ASSella."
+    return False, 401, "Console token missing or invalid. Pair this device again."
 
 
 # ---------------------------------------------------------------- sanitizers
@@ -360,15 +451,23 @@ def route(services, method: str, route_path: str, query: dict, body: bytes,
     if not console_enabled(settings):
         return 403, {"ok": False, "error": "The AT0-M console API is disabled in Epsilon."}, {}
 
-    ok, status, message = authorize(settings, headers)
-    if not ok:
-        extra = {"WWW-Authenticate": "Bearer"} if status == 401 else {"Retry-After": "60"}
-        return status, {"ok": False, "error": message}, extra
-
     # Writes additionally require a custom header, which forces a CORS preflight
     # so a plain cross-site form POST can never reach them.
     if method == "POST" and not str(headers.get(CLIENT_HEADER, "")).strip():
         return 403, {"ok": False, "error": "Missing X-At0m-Client header."}, {}
+
+    # One-time QR pairing completion uses the invite code instead of a bearer token.
+    if method == "POST" and route_path == "/v1/pair/complete":
+        try:
+            return _complete_pairing(services, body)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Console API pairing failed: %s", exc, exc_info=True)
+            return 500, {"ok": False, "error": "Epsilon hit an unexpected error; see the service log."}, {}
+
+    ok, status, message = authorize(settings, headers)
+    if not ok:
+        extra = {"WWW-Authenticate": "Bearer"} if status == 401 else {"Retry-After": "60"}
+        return status, {"ok": False, "error": message}, extra
 
     try:
         return _route_authorized(services, method, route_path, query, body)
@@ -404,6 +503,56 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
             "sls_active": sls_active,
             "steam_running": steam_running,
         }, {}
+
+    # --- pairing ---------------------------------------------------------
+    if method == "GET" and route_path == "/v1/pair/devices":
+        devs = [
+            {
+                "id": str(d.get("id", "")),
+                "name": str(d.get("name", "Phone")),
+                "created_at": int(d.get("created_at") or 0),
+                "last_seen": int(d.get("last_seen") or 0),
+            }
+            for d in _paired_devices(ctx.settings)
+        ]
+        return 200, {"ok": True, "devices": devs}, {}
+
+    if method == "POST" and route_path == "/v1/pair/start":
+        now = time.time()
+        invites = ctx.settings.get("pairing_invites", [])
+        if not isinstance(invites, list):
+            invites = []
+        invites = [i for i in invites if isinstance(i, dict) and float(i.get("expires_at") or 0) > now]
+        code = os.urandom(16).hex()
+        expires_at = int(now + 600)
+        invites.append({"code": code, "expires_at": expires_at})
+        ctx.write_setting("pairing_invites", invites)
+        if not bool(ctx.settings.get("epsilon_console_lan", False)):
+            ctx.write_setting("epsilon_console_lan", True)
+            _apply_lan_socket(True)
+        lan_ip = _detect_lan_ip()
+        pair_url = f"http://{lan_ip}:1952/#pair={code}"
+        return 200, {
+            "ok": True,
+            "code": code,
+            "expires_at": expires_at,
+            "url": pair_url,
+            "qr_svg": _qr_svg_for(pair_url),
+        }, {}
+
+    if method == "POST" and route_path == "/v1/pair/revoke":
+        payload, err = _json_body(body)
+        if err:
+            return 400, {"ok": False, "error": err}, {}
+        dev_id = str(payload.get("id") or "").strip()
+        if not dev_id:
+            return 400, {"ok": False, "error": "Missing device 'id'."}, {}
+        devices = _paired_devices(ctx.settings)
+        kept = [d for d in devices if str(d.get("id")) != dev_id]
+        if len(kept) == len(devices):
+            return 404, {"ok": False, "error": "Paired device not found."}, {}
+        ctx.write_setting("paired_devices", kept)
+        return 200, {"ok": True, "removed": dev_id}, {}
 
     # --- library ---------------------------------------------------------
     if method == "GET" and route_path == "/v1/library":

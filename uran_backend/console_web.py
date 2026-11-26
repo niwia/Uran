@@ -121,9 +121,17 @@ def render_html() -> str:
 </header>
 
 <main>
+  <div id="pairNameBox" class="pair-box hidden">
+    <div style="font-weight:600;margin-bottom:0.4rem;">Name this instance</div>
+    <p class="muted" style="margin:0 0 0.65rem;">Choose a name for this device (for example: My Phone). It will be saved in your paired devices list.</p>
+    <form id="pairNameForm" class="search-row" style="margin-top:0;">
+      <input id="deviceNameInput" type="search" placeholder="My Phone" maxlength="40" autocomplete="off" />
+      <button id="pairProceedBtn" type="submit" class="primary">Proceed</button>
+    </form>
+  </div>
   <div id="pairBox" class="pair-box hidden">
     <div style="font-weight:600;margin-bottom:0.4rem;">Pair with Epsilon</div>
-    <p class="muted" style="margin:0 0 0.65rem;">Paste the console token from ASSella → Companions → Epsilon (or scan the QR code).</p>
+    <p class="muted" style="margin:0 0 0.65rem;">Scan the QR code in ASSella → Companions → Epsilon (or paste a console token below).</p>
     <div class="search-row" style="margin-top:0;">
       <input id="tokenInput" type="password" placeholder="at0m_..." autocomplete="off" />
       <button id="pairBtn" type="button" class="primary">pair</button>
@@ -150,11 +158,18 @@ def render_html() -> str:
 (() => {
   const $ = (id) => document.getElementById(id);
   let token = localStorage.getItem('at0m.token') || '';
-  const m = location.hash.match(/(?:^#|&)k=([^&]+)/);
-  if (m) {
-    token = decodeURIComponent(m[1]).trim();
-    if (token) localStorage.setItem('at0m.token', token);
+  let pendingPairCode = '';
+  const pm = location.hash.match(/(?:^#|&)pair=([^&]+)/);
+  if (pm) {
+    pendingPairCode = decodeURIComponent(pm[1]).trim();
     history.replaceState(null, '', location.pathname + location.search);
+  } else {
+    const m = location.hash.match(/(?:^#|&)k=([^&]+)/);
+    if (m) {
+      token = decodeURIComponent(m[1]).trim();
+      if (token) localStorage.setItem('at0m.token', token);
+      history.replaceState(null, '', location.pathname + location.search);
+    }
   }
 
   let games = [];
@@ -257,9 +272,17 @@ def render_html() -> str:
   }
 
   async function connect() {
+    if (pendingPairCode) {
+      $('pairNameBox').classList.remove('hidden');
+      $('pairBox').classList.add('hidden');
+      $('statusLine').textContent = 'Ready to pair — name this device to continue.';
+      $('deviceNameInput').focus();
+      return;
+    }
     try {
       const s = await api('/v1/session');
       $('dot').classList.add('ok');
+      $('pairNameBox').classList.add('hidden');
       $('pairBox').classList.add('hidden');
       $('unpairBtn').classList.remove('hidden');
       $('statusLine').textContent = 'Paired · Epsilon ' + (s.version || '') + (s.sls_active ? '' : ' · SLSsteam inactive');
@@ -271,6 +294,27 @@ def render_html() -> str:
       $('statusLine').textContent = e.message;
     }
   }
+
+  $('pairNameForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $('deviceNameInput').value.trim() || 'Phone';
+    $('pairProceedBtn').disabled = true;
+    try {
+      const res = await api('/v1/pair/complete', {
+        method: 'POST',
+        body: JSON.stringify({ code: pendingPairCode, name })
+      });
+      token = res.token || '';
+      if (token) localStorage.setItem('at0m.token', token);
+      pendingPairCode = '';
+      showToast('Paired as ' + name);
+      await connect();
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      $('pairProceedBtn').disabled = false;
+    }
+  };
 
   $('pairBtn').onclick = () => {
     token = $('tokenInput').value.trim();
