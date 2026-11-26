@@ -50,24 +50,41 @@ def _is_dev_origin(origin: str) -> bool:
     return bool(origin) and bool(_DEV_ORIGIN_RE.match(origin))
 
 
-def _is_allowed_tunnel_host(host: str) -> bool:
-    """Allow a temporary Cloudflare Quick Tunnel host only while ASSella's tunnel is active."""
-    if not host or not host.endswith(".trycloudflare.com"):
+def _is_lan_enabled(services=None) -> bool:
+    """True when epsilon_console_lan is enabled in shared settings or lan.conf exists."""
+    try:
+        if services is not None and services.ctx.settings.get("epsilon_console_lan", False):
+            return True
+    except Exception:
+        pass
+    cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.isfile(os.path.join(cfg_home, "systemd", "user", "epsilon.socket.d", "lan.conf"))
+
+
+def _is_private_lan_hostname(hostname: str) -> bool:
+    if not hostname:
+        return False
+    if hostname.endswith(".local"):
+        return True
+    parts = hostname.split(".")
+    if len(parts) != 4:
         return False
     try:
-        import time
-        cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-        marker = os.path.join(cfg_home, "assella-decky", "tunnel_active.json")
-        if not os.path.isfile(marker):
-            return False
-        with open(marker, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return (
-            str(data.get("host") or "") == host
-            and float(data.get("expires_at") or 0) > time.time()
-        )
-    except Exception:
+        octets = [int(p) for p in parts]
+    except ValueError:
         return False
+    if any(o < 0 or o > 255 for o in octets):
+        return False
+    a, b = octets[0], octets[1]
+    return a == 10 or (a == 192 and b == 168) or (a == 172 and 16 <= b <= 31)
+
+
+def _is_allowed_lan_host(host: str, services=None) -> bool:
+    """Allow private LAN / mDNS Host headers only when LAN mode is enabled."""
+    if not host or not _is_lan_enabled(services):
+        return False
+    hostname = host.split(":", 1)[0].strip().lower()
+    return _is_private_lan_hostname(hostname)
 
 
 def is_port_in_use(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> bool:
@@ -113,13 +130,20 @@ def dispatch_request(
     is_console = console_api.is_console_path(route)
 
     # Security Check 1: Host header validation (Defeats DNS-rebinding attacks)
-    if host and host not in ALLOWED_HOSTS and not (is_console and _is_allowed_tunnel_host(host)):
+    if host and host not in ALLOWED_HOSTS and not (is_console and _is_allowed_lan_host(host, services)):
         return 403, {"ok": False, "error": "Forbidden: invalid Host header"}, {}
 
     # Security Check 2: Origin header validation (Defeats arbitrary web page cross-origin requests).
     # A docs preview on loopback may only reach the console namespace, which
     # still needs the token; Photar's routes keep the strict allowlist.
-    origin_allowed = origin in ALLOWED_ORIGINS or (is_console and _is_dev_origin(origin))
+    same_lan_origin = bool(
+        is_console
+        and origin
+        and host
+        and _is_allowed_lan_host(host, services)
+        and origin == f"http://{host}"
+    )
+    origin_allowed = origin in ALLOWED_ORIGINS or (is_console and (_is_dev_origin(origin) or same_lan_origin))
     if origin and not origin_allowed:
         return 403, {"ok": False, "error": "Forbidden: unauthorized Origin"}, {}
 
@@ -353,6 +377,23 @@ class StandaloneHTTPHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._notify_activity()
+        parsed = urllib.parse.urlparse(self.path)
+        route = parsed.path.rstrip("/") or "/"
+        if route in ("/", "/index.html"):
+            host = str(self.headers.get("Host") or "").strip()
+            if host and host not in ALLOWED_HOSTS and not _is_allowed_lan_host(host, self.services):
+                self._send_response_json(403, {"ok": False, "error": "Forbidden: invalid Host header"})
+                return
+            from . import console_web
+
+            html_bytes = console_web.render_html().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html_bytes)))
+            self.end_headers()
+            self.wfile.write(html_bytes)
+            return
+
         code, resp, headers = dispatch_request(
             self.services, "GET", self.path, b"", dict(self.headers)
         )

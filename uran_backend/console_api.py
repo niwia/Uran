@@ -43,7 +43,46 @@ SETTINGS_SCHEMA: dict[str, tuple[str, tuple[str, ...]]] = {
     # stores the switch and reports whether Steam is exposing its CEF
     # debugging port; the DOM patch itself stays in Uran.
     "steam_store_enabled": ("bool", ()),
+    # Shared with ASSella: expose epsilon.socket on 0.0.0.0:1952 for same-Wi-Fi phone access.
+    "epsilon_console_lan": ("bool", ()),
 }
+
+
+def _detect_lan_ip() -> str:
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("1.1.1.1", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def _apply_lan_socket(enabled: bool) -> None:
+    """Write/remove epsilon.socket.d/lan.conf and reload/restart epsilon.socket."""
+    import subprocess
+    from pathlib import Path
+
+    cfg_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    dropin_dir = cfg_home / "systemd" / "user" / "epsilon.socket.d"
+    lan_conf = dropin_dir / "lan.conf"
+    if enabled:
+        dropin_dir.mkdir(parents=True, exist_ok=True)
+        lan_conf.write_text("[Socket]\nListenStream=\nListenStream=0.0.0.0:1952\n", encoding="utf-8")
+    elif lan_conf.exists():
+        lan_conf.unlink()
+
+    def _restart():
+        time.sleep(0.35)
+        try:
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=5)
+            subprocess.run(["systemctl", "--user", "restart", "epsilon.socket"], capture_output=True, timeout=8)
+        except Exception as exc:
+            logger.debug("Failed restarting epsilon.socket for LAN change: %s", exc)
+
+    threading.Thread(target=_restart, daemon=True).start()
 
 _FAIL_WINDOW = 60.0
 _FAIL_LIMIT = 8
@@ -595,7 +634,13 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
 
     # --- settings --------------------------------------------------------
     if method == "GET" and route_path == "/v1/settings":
-        return 200, {"ok": True, "settings": _settings_payload(services.ctx.settings)}, {}
+        payload = _settings_payload(services.ctx.settings)
+        lan_on = bool(services.ctx.settings.get("epsilon_console_lan", False))
+        lan_ip = _detect_lan_ip()
+        payload["epsilon_console_lan"] = lan_on
+        payload["lan_ip"] = lan_ip
+        payload["lan_url"] = f"http://{lan_ip}:1952/"
+        return 200, {"ok": True, "settings": payload}, {}
 
     if method == "POST" and route_path == "/v1/settings":
         payload, err = _json_body(body)
@@ -622,7 +667,15 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
             return 400, {"ok": False, "error": "No settings supplied."}, {}
         for key, value in changes.items():
             services.ctx.write_setting(key, value)
-        return 200, {"ok": True, "settings": _settings_payload(services.ctx.settings)}, {}
+        if "epsilon_console_lan" in changes:
+            _apply_lan_socket(bool(changes["epsilon_console_lan"]))
+        payload_out = _settings_payload(services.ctx.settings)
+        lan_on = bool(services.ctx.settings.get("epsilon_console_lan", False))
+        lan_ip = _detect_lan_ip()
+        payload_out["epsilon_console_lan"] = lan_on
+        payload_out["lan_ip"] = lan_ip
+        payload_out["lan_url"] = f"http://{lan_ip}:1952/"
+        return 200, {"ok": True, "settings": payload_out}, {}
 
     return 404, {
         "ok": False,
