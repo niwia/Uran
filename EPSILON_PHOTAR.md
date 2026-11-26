@@ -45,7 +45,7 @@ Epsilon uses a **hybrid listener architecture** that ensures **0% CPU and 0 MB i
                └──────────────────────┬───────────────────────┘
                                       ▼
                         ┌───────────────────────────┐
-                        │    uran_backend (0.7.5)   │
+                        │    uran_backend (0.7.6)   │
                         │ • Atomic config.yaml lock │
                         │ • Hubcap Keys & AppTokens │
                         │ • SpaceBunny 1.5 config   │
@@ -59,6 +59,33 @@ Epsilon uses a **hybrid listener architecture** that ensures **0% CPU and 0 MB i
 2. **Zero Idle Resource Consumption**: Under `systemd --user` socket activation, `daemon.py` is **not running** until you click a button in your browser. After handling requests, it automatically exits after 120 seconds of inactivity.
 3. **No Port Collisions**: When Uran loads in Decky, it checks if port `1952` is already active. If systemd is running it, Uran defers to it; if systemd is not installed, Uran automatically provides an embedded non-blocking loopback server.
 4. **Shared backend engine**: Both paths execute [`Injector.inject(app_id)`](file:///home/aiwin/Documents/assella-decky/uran_backend/inject.py#L563) with identical file paths, atomic write locks, SpaceBunny bridge sync, and manifest downloads.
+
+### Shared settings (one file per machine)
+
+Uran and Epsilon are the same engine started two ways, and ASSella edits the
+same JSON from Settings → Companions. They therefore resolve **one** settings
+file, with identical rules in all three tools:
+
+| Situation | Settings file |
+| :--- | :--- |
+| Decky has Uran installed | `~/homebrew/settings/Uran/settings.json` |
+| No Decky (desktop Linux, Epsilon only) | `~/.config/assella-decky/settings.json` |
+
+* **Reads are layered**: the file saved most recently wins a conflict, but a
+  key only an older copy has still applies. That is what makes an upgrade keep
+  the existing `epsilon_console_token` instead of minting a second one.
+* **Writes are mirrored**: the canonical file is written first and any older
+  copy already on disk is updated too, so an un-updated ASSella or Decky build
+  keeps showing the same values until it is replaced.
+* **The Hubcap key** is shared further than the settings file: it is synchronized
+  newest-wins across `spacebunny.conf.lua`, `katamari.conf.lua` and ASSella's
+  `ACCELA.conf`, exactly as the Lua plugins expect.
+* **The console token** also resolves newest-wins across the settings copies, so
+  rotating it in ASSella takes effect without restarting the bridge.
+
+`~/.config/assella-decky` is not just a legacy name: it still holds Epsilon's
+manifest and metadata caches, so leave it in place even when the settings file
+lives under Decky's folder.
 
 ---
 
@@ -135,13 +162,15 @@ The installer automatically:
   ./uninstall.sh
   ```
 
-### Option 2: Steam Deck Gaming Mode (Decky Plugin)
+### Option 3: Steam Deck Gaming Mode (Decky Plugin)
 
 If you have Uran installed in Decky:
 - **No manual setup required!**
 - Uran's `Plugin._main()` automatically starts the Epsilon embedded loopback on port `1952` when the plugin loads (if systemd isn't already managing it).
+- The embedded loopback renders its work on a worker thread, so GamepadUI never stutters.
+- Game Mode is Uran's job: the Store button is injected into Steam's own CEF webview by Uran, not by Photar or Epsilon.
 
-### Option 3: Manual Testing in Terminal
+### Option 4: Manual Testing in Terminal
 
 You can run the daemon directly in foreground mode for testing:
 
@@ -174,8 +203,8 @@ python3 epsilon/daemon.py --port 1952
 Epsilon strictly binds to `127.0.0.1:1952` and implements strict security controls:
 - **Host Header Validation**: Rejects requests whose `Host` is not `127.0.0.1:1952` or `localhost:1952` with `403 Forbidden` (defeats DNS rebinding attacks).
 - **Origin Whitelist**: Wildcard CORS is dropped. Only trusted origins (`store.steampowered.com`, `steamdb.info`, and ASSella's docs site `assella.pages.dev` / `assella.niwia.top`) or direct local clients are accepted.
-- **Console Token**: the `/v1` surface used by the AT0-M web console requires a per-install bearer token. CORS is not authentication — any page can POST to loopback — so the token, not the origin, is the boundary. It lives in `settings.json` as `epsilon_console_token`, is generated on first start, and is shown by ASSella (**Settings → Companions → Epsilon → Web console**)
-  and by Uran's Decky settings tab (**Epsilon Bridge**) for Game Mode users.
+- **Console Token**: the `/v1` surface used by the AT0-M web console requires a per-install bearer token. CORS is not authentication — any page can POST to loopback — so the token, not the origin, is the boundary. It lives in the shared `settings.json` as `epsilon_console_token`, is generated on first start, and is shown by ASSella (**Settings → Companions → Epsilon → Web console**)
+  and by Uran's Decky settings tab (**Epsilon Bridge**). A rotation in ASSella applies on the next request: the newest copy wins across the shared settings files.
 - **Private Network Access**: preflights from the docs origin are answered with `Access-Control-Allow-Private-Network: true`, which Chrome requires before a public page may reach loopback.
 - **Async Execution**: Embedded loopback offloads all requests to `asyncio.to_thread` so Decky GamepadUI never stutters.
 - **Dynamic Versioning**: Epsilon reads `epsilon/VERSION`; the Decky plugin keeps `plugin.json`. The two ship from one repository but are released separately.
@@ -191,7 +220,7 @@ Epsilon strictly binds to `127.0.0.1:1952` and implements strict security contro
 {
   "ok": true,
   "service": "epsilon",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "engine": "uran_backend",
   "sls_active": true,
   "has_hubcap_key": true
@@ -257,7 +286,7 @@ games but writes nothing itself. Everything under `/v1` needs
 | :--- | :--- |
 | `GET /v1/session` | Verify the token; report Epsilon version + library size |
 | `GET /v1/library` | Registered AT0-M games (no keys, no paths) |
-| `GET /v1/search?q=` | Steam store search performed by Epsilon |
+| `GET /v1/search?q=` | Steam store search performed by Epsilon. Each result carries `app_id`, `title`, a `thumb` capsule and local `installed` / `registered` flags (no network call per result). |
 | `GET /v1/app/<appid>` | Depots, DLCs and key *presence* (`?network=1` fills in Steam metadata) |
 | `GET /v1/queue` | Recent injections and worker state |
 | `GET /v1/hubcap` | Which key is in use (masked) and its source |
@@ -265,7 +294,18 @@ games but writes nothing itself. Everything under `/v1` needs
 | `POST /v1/unregister` | `{"appid": "620"}` — removes every config trace |
 | `POST /v1/refresh` / `POST /v1/refetch` | Re-project config / force fresh Hubcap bundle |
 | `POST /v1/hubcap` | `{"key": "..."}` — validate and sync a Hubcap key everywhere |
-| `GET` / `POST /v1/settings` | Non-secret knobs: DLC fetching, delisted DLCs, gateway, notifications |
+| `GET` / `POST /v1/settings` | Non-secret knobs: DLC fetching, delisted DLCs, gateway, notifications, `steam_store_enabled` |
+| `GET /v1/store` | Store-button switch + whether Steam is exposing its CEF debugging port |
+
+The Store button is the one feature Epsilon does **not** apply itself: Uran's
+frontend draws it inside Steam's webview. What is shared is the switch and the
+evidence — `steam_store_enabled` lives in `settings.json`, which Uran, Epsilon
+and ASSella all read, and `/v1/store` reports the CEF port, whether a store tab
+is open, and the requirement (`--cef-enable-debugging`). The recent patch trace
+lives in `store_patch.log` **next to the shared settings file** (not in either
+process's home), which is how a root-run Uran in Game Mode and the user's
+Epsilon service can read the same lines. The file keeps its newest lines on
+rollover rather than being truncated.
 
 Design rules worth keeping:
 - **The client never sends keys or depots.** `register` takes an AppID only; Epsilon

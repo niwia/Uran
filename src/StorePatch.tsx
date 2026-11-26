@@ -92,6 +92,19 @@ function slog(msg: string): void {
   try { console.log("[StorePatch] " + msg); } catch {}
 }
 
+// pollCdp retries every 2 s. A dead socket would otherwise write the same
+// "closed" line (and the same journal INFO line) on every pass and roll the
+// shared trace over itself, hiding the failure it was meant to explain.
+let lastCdpFailure = "";
+let lastCdpFailureAt = 0;
+function slogCdpOnce(msg: string): void {
+  const now = Date.now();
+  if (msg === lastCdpFailure && now - lastCdpFailureAt < 30000) return;
+  lastCdpFailure = msg;
+  lastCdpFailureAt = now;
+  slog(msg);
+}
+
 // -- Collection helpers (disabled per user request) --------------------------
 export async function tagInAssellaCollection(_appId: string): Promise<void> {
   // Feature disabled
@@ -856,7 +869,7 @@ async function connect(tab: StoreTab): Promise<void> {
     storeSocket = null;
     wsReady = false;
   }
-  slog("CDP: connecting to " + tab.webSocketDebuggerUrl);
+  slogCdpOnce("CDP: connecting to " + tab.webSocketDebuggerUrl);
   const socket = new WebSocket(tab.webSocketDebuggerUrl);
   storeSocket = socket;
   socket.onopen = () => {
@@ -871,6 +884,7 @@ async function connect(tab: StoreTab): Promise<void> {
       if (!storePatchEnabled || storeSocket !== socket) return;
       wsReady = true;
       const appId = extractAppId(tab.url);
+      slog("CDP socket ready; injecting " + (appId || "(no appid)"));
       if (appId) inject(appId, true);
     }, 1500);
   };
@@ -922,21 +936,30 @@ async function connect(tab: StoreTab): Promise<void> {
   };
   socket.onerror = () => {
     if (storeSocket !== socket) return;
-    slog("CDP: socket error");
+    slogCdpOnce("CDP: socket error");
     wsReady = false;
   };
   socket.onclose = () => {
     if (storeSocket !== socket) return;
-    slog("CDP: socket closed");
+    slogCdpOnce("CDP: socket closed");
     storeSocket = null;
     wsReady = false;
   };
 }
 
+let lastDiscovery: "unknown" | "found" | "none" = "unknown";
+
 async function pollCdp(): Promise<void> {
   if (!storePatchEnabled) return;
   try {
     const res = await discoverStoreTab();
+    // Silence here was the reason a missing button was undiagnosable: "no tab
+    // found" and "tab found but the socket died" looked exactly the same.
+    const state = res ? "found" : "none";
+    if (state !== lastDiscovery) {
+      lastDiscovery = state;
+      slog(state === "found" ? "CDP target discovered: " + (res as StoreTab).url : "no Store tab discoverable (is a Store page open?)");
+    }
     if (!storePatchEnabled) return;
     if (res) {
       if (!storeSocket || storeSocket.readyState !== WebSocket.OPEN) {
@@ -1021,7 +1044,9 @@ export function initStorePatch(): () => void {
   const thisLifecycle = ++lifecycle;
   getSetting("steam_store_enabled", true)
     .then((enabled) => {
-      if (lifecycle === thisLifecycle) setStorePatchEnabled(enabled !== false);
+      if (lifecycle !== thisLifecycle) return;
+      slog("steam_store_enabled = " + String(enabled));
+      setStorePatchEnabled(enabled !== false);
     })
     .catch((error) => {
       slog("could not read Steam Store setting; leaving injection enabled: " + error);

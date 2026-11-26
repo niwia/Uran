@@ -13,9 +13,17 @@ echo "Target directory: $INSTALL_DIR"
 echo ""
 
 if [ -d "$INSTALL_DIR/.git" ] && which git >/dev/null 2>&1; then
-    echo "[+] Git repository detected, pulling latest changes from origin/main..."
+    # A checkout is a development install. Never let the timer touch it while
+    # there is uncommitted work: a pull that conflicted with local edits would
+    # abort halfway through an update and leave the service on mixed code.
     cd "$INSTALL_DIR"
-    git pull origin main
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        echo "[-] This is a git checkout with uncommitted changes; refusing to update it."
+        echo "    Commit or stash the changes, or run the installer from a release copy."
+        exit 1
+    fi
+    echo "[+] Git repository detected, fast-forwarding origin/main..."
+    git pull --ff-only origin main
 else
     echo "[+] Downloading latest release archive from GitHub..."
     TMP_DIR=$(mktemp -d -t epsilon_update_XXXXXX)

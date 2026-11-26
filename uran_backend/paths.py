@@ -6,6 +6,7 @@ ASSella. User locations come from Decky/account/process discovery; install
 locations follow the selected Native or Flatpak Steam installation.
 """
 
+import json
 import logging
 import os
 import pwd
@@ -385,3 +386,143 @@ def write_accela_api_key(
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed creating ACCELA.conf: %s", exc)
     return False, "Could not locate or create a writable ACCELA.conf."
+
+
+# ---------------------------------------------------------------------------
+# Companion settings (Uran and Epsilon are one engine started two ways)
+#
+# Uran runs inside Decky, Epsilon runs as a user service or as Decky's embedded
+# loopback, and ASSella reads and writes the same JSON from Settings ->
+# Companions. One machine should therefore have one settings file, otherwise a
+# toggle flipped in one tool is invisible to the other and the AT0-M console
+# token can differ from the one the bridge actually accepts.
+#
+# Precedence, highest first:
+#   1. DECKY_PLUGIN_SETTINGS_DIR (the Decky runtime's own answer)
+#   2. <decky home>/settings/<plugin folder>/settings.json  (Uran is installed)
+#   3. <config home>/assella-decky/settings.json            (legacy, Epsilon-only)
+#
+# The legacy name is kept because ASSella stores it, and because it is also
+# where Epsilon's manifest and metadata caches live. Renaming it would orphan
+# those caches for no benefit.
+# ---------------------------------------------------------------------------
+LEGACY_CONFIG_DIR = "assella-decky"
+
+_DECKY_UNIT_FILES = (
+    "/etc/systemd/system/plugin_loader.service",
+    "/usr/lib/systemd/system/plugin_loader.service",
+    "/lib/systemd/system/plugin_loader.service",
+)
+
+
+def _runtime_is_own_home(user_home_path: Path) -> bool:
+    """True when we are resolving for the account the process itself runs as.
+
+    Decky runs as root on a Deck and points at the Steam user's home, so XDG
+    variables and host-wide unit files must not leak that account's paths into
+    another user's resolution.
+    """
+    try:
+        return Path.home() == Path(user_home_path)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def legacy_config_dir(user_home_path: Path) -> Path:
+    """Epsilon's own config dir: $XDG_CONFIG_HOME/assella-decky, else ~/.config."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg and Path(xdg).is_absolute() and _runtime_is_own_home(user_home_path):
+        return Path(xdg) / LEGACY_CONFIG_DIR
+    return user_home_path / ".config" / LEGACY_CONFIG_DIR
+
+
+def decky_homes(user_home_path: Path) -> list[Path]:
+    """Decky homebrew folders that exist for this user, most likely first."""
+    candidates: list[Path] = []
+
+    if _runtime_is_own_home(user_home_path):
+        env = os.environ.get("DECKY_HOME")
+        if env:
+            candidates.append(Path(env))
+        for unit in _DECKY_UNIT_FILES:
+            try:
+                text = Path(unit).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for match in re.finditer(r"(/[^\s\"'=]*?/homebrew)(?:/|\b)", text):
+                candidates.append(Path(match.group(1)))
+
+    candidates.append(user_home_path / "homebrew")
+
+    found: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen or not candidate.is_dir():
+            continue
+        seen.add(key)
+        found.append(candidate)
+    return found
+
+
+def decky_plugin_dir(user_home_path: Path) -> Path | None:
+    """The installed Uran folder inside Decky, if there is one.
+
+    Decky store installs can use a different folder name, so the manifest's
+    ``name`` is authoritative; ``plugins/Uran`` is only the common case.
+    """
+    for base in decky_homes(user_home_path):
+        plugins = base / "plugins"
+        if not plugins.is_dir():
+            continue
+        direct = plugins / "Uran"
+        if direct.is_dir():
+            return direct
+        try:
+            for candidate in plugins.iterdir():
+                try:
+                    meta = json.loads((candidate / "plugin.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if str(meta.get("name", "")).lower() == "uran":
+                    return candidate
+        except OSError:
+            continue
+    return None
+
+
+def decky_settings_path(user_home_path: Path) -> Path | None:
+    """Where Decky keeps Uran's settings.json, or None when Uran is absent."""
+    plugin = decky_plugin_dir(user_home_path)
+    if plugin is None:
+        return None
+    return plugin.parent.parent / "settings" / plugin.name / "settings.json"
+
+
+def companion_settings_paths(
+    user_home_path: Path, explicit_settings_dir: Path | None = None
+) -> list[Path]:
+    """Settings files in precedence order, canonical first.
+
+    Callers read the union, newest file winning a conflict, and mirror writes
+    into the files that already exist, so an un-updated ASSella or Decky build
+    keeps seeing the same values until it is replaced.
+    """
+    candidates: list[Path] = []
+    if explicit_settings_dir is not None:
+        candidates.append(Path(explicit_settings_dir) / "settings.json")
+
+    decky = decky_settings_path(user_home_path)
+    if decky is not None:
+        candidates.append(decky)
+
+    candidates.append(legacy_config_dir(user_home_path) / "settings.json")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique

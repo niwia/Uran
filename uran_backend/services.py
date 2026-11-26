@@ -13,7 +13,7 @@ from .keycare import Keycare
 from .library import PluginLibrary
 from .manifests import Manifests
 from .sls_config import SlsConfig
-from .steam_store import StoreDebugger
+from .steam_store import LOG_FILENAME, StoreDebugger
 from .steammeta import SteamMeta
 from .uninstall import AtomUninstallService
 # Parked: plugin deployment is disabled in Uran for now (checks only; ASSella/manual manages plugins).
@@ -68,7 +68,13 @@ def build(decky_module=None):
 
     injector = Injector(ctx, sls, steam, library, manifests, guards)
     keycare = Keycare(ctx)
-    store_debugger = StoreDebugger(requests, logger)
+    # One trace both processes can read. The Settings directory is the only
+    # location Uran-in-Decky (root) and Epsilon (user) resolve identically.
+    store_debugger = StoreDebugger(
+        requests,
+        logger,
+        log_path=ctx.settings.path.parent / LOG_FILENAME,
+    )
     atom = AtomLibrary(ctx, sls, steam, library, manifests, integrations)
     uninstaller = AtomUninstallService(ctx, sls, steam, library, integrations, guards)
     health = Health(ctx, sls)

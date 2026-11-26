@@ -8,7 +8,6 @@ DAEMON_SCRIPT="$SCRIPT_DIR/daemon.py"
 PYTHON_BIN="$(which python3 || echo "/usr/bin/python3")"
 
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-TARGET_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/assella-decky/epsilon"
 
 echo "=========================================================="
 echo "  Epsilon - at0-m and uran companion                      "
@@ -31,7 +30,6 @@ if [ -f "$SCRIPT_DIR/check_prereqs.py" ]; then
 fi
 
 mkdir -p "$SYSTEMD_USER_DIR"
-mkdir -p "$TARGET_CONFIG_DIR"
 
 # Copy socket file
 echo "[+] Installing epsilon.socket to $SYSTEMD_USER_DIR/epsilon.socket"

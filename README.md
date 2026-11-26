@@ -53,6 +53,12 @@ Designed for public use: connects directly to the [Hubcap API](https://hubcapman
 ### Library Menus
 - **Game context menu hooks** in Steam's "Manage" submenu: Add/Remove FakeAppId (480), Fetch DLCs, Fetch/Update Manifest, Remove Pinned Manifests, Why not downloading?
 
+### Companions: Epsilon and Photar
+- **Epsilon** is the same backend as a socket-activated `systemd --user` bridge on `127.0.0.1:1952`, so a *desktop* browser can add games without Game Mode. It exits after 120 s idle and is started on demand.
+- **Photar** is the Tampermonkey userscript that puts an **Add to at0-m** button on Steam Store and SteamDB pages and talks to Epsilon.
+- **AT0-M web console** (`/v1`): the [at0m page](https://assella.pages.dev/at0m) browses and registers games through Epsilon using a per-install console token. Keys and manifests are resolved locally; the page never sends or receives them.
+- **One settings file per machine**: Uran, Epsilon and ASSella resolve the same `settings.json` (Decky's Uran file when installed, otherwise `~/.config/assella-decky`), and the Hubcap key is additionally synced across `katamari.conf.lua` and ASSella's `ACCELA.conf`. See [EPSILON_PHOTAR.md](EPSILON_PHOTAR.md).
+
 ---
 
 ## Requirements
@@ -121,7 +127,10 @@ and receives its collaborators explicitly:
 | `plugin_api.py` | The Decky RPC surface — method names are the plugin's contract |
 | `http.py` | `requests`, or a urllib shim when Decky has no `requests` |
 | `paths.py` | SLSsteam / Steam / ACCELA path discovery and shared INI edits |
-| `settings.py` | Plugin settings and the shared Hubcap key |
+| `settings.py` | Plugin settings, the shared companion settings file, and the shared Hubcap key |
+| `epsilon_server.py` | Epsilon's loopback HTTP engine, Host/Origin checks, and the Photar routes |
+| `console_api.py` | Token-gated `/v1` API for the AT0-M web console |
+| `epsilon_responses.py` | Response shapes shared by the Photar and console routes |
 | `hubcap.py` | Hubcap API client and the blocked-route proxy fallback |
 | `sls_config.py` | Comment- and inode-preserving YAML engine |
 | `library.py` | `plugin_library.json` registry and the local depot key cache |

@@ -78,16 +78,25 @@ def _first_existing(*candidates) -> Path | None:
 
 
 def build_context(decky_module=None) -> Context:
-    """Discover the Decky runtime environment and construct the services."""
-    settings_dir = _first_existing(
+    """Discover the runtime environment and construct the services.
+
+    Settings resolve to one file per machine (see
+    ``paths.companion_settings_paths``): Decky's Uran file when the plugin is
+    installed, else Epsilon's own. Caches stay under a stable state dir so an
+    upgrade does not orphan the manifest and metadata libraries.
+    """
+    home = paths.user_home(getattr(decky_module, "DECKY_USER_HOME", None))
+
+    # Decky hands its settings dir to the plugin directly; a standalone Epsilon
+    # (systemd, no Decky) has to find the shared file itself.
+    explicit_settings_dir = _first_existing(
         getattr(decky_module, "DECKY_PLUGIN_SETTINGS_DIR", None),
         getattr(decky_module, "DECKY_SETTINGS_DIR", None),
         os.environ.get("DECKY_PLUGIN_SETTINGS_DIR"),
         os.environ.get("DECKY_SETTINGS_DIR"),
-        Path.home() / ".config" / "assella-decky",
     )
-    if settings_dir is None:
-        settings_dir = Path.home() / ".config" / "assella-decky"
+    settings_paths = paths.companion_settings_paths(home, explicit_settings_dir)
+    settings_dir = settings_paths[0].parent
     settings_dir.mkdir(parents=True, exist_ok=True)
 
     plugin_dir = _first_existing(
@@ -99,12 +108,11 @@ def build_context(decky_module=None) -> Context:
     runtime_dir = _first_existing(
         getattr(decky_module, "DECKY_PLUGIN_RUNTIME_DIR", None),
         os.environ.get("DECKY_PLUGIN_RUNTIME_DIR"),
-        settings_dir,
-    ) or settings_dir
+        paths.legacy_config_dir(home),
+    ) or paths.legacy_config_dir(home)
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
-    home = paths.user_home(getattr(decky_module, "DECKY_USER_HOME", None))
-    settings = Settings(settings_dir)
+    settings = Settings(settings_dir, mirrors=settings_paths[1:])
 
     return Context(
         home=home,

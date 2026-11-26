@@ -1,8 +1,15 @@
 """Plugin settings and the shared Hubcap API key.
 
-Settings live in Decky's per-plugin settings dir. The Hubcap key is special:
-it is stored in ASSella's own config so both tools always present the same key,
-and this module only keeps an override when it could not write there.
+Uran and Epsilon are the same engine started two ways (inside Decky, or as a
+standalone bridge), so they resolve one settings file: Decky's per-plugin file
+when Uran is installed, otherwise Epsilon's own under ``~/.config/assella-decky``.
+Older builds may still have a copy in the other location; ``Settings`` reads the
+union (the file saved most recently wins a conflict) and mirrors writes into
+copies that already exist, so both tools keep presenting the same values.
+
+The Hubcap key is special: it is stored in ASSella's own config so both tools
+always present the same key, and this module only keeps an override when it
+could not write there.
 """
 
 import json
@@ -13,8 +20,6 @@ from pathlib import Path
 from . import paths
 
 logger = logging.getLogger("Uran")
-
-APP_CONFIG_DIR = "assella-decky"
 
 DEFAULTS: dict = {
     "fetch_dlcs_on_inject": True,
@@ -33,57 +38,129 @@ DEFAULTS: dict = {
 class Settings:
     """JSON-backed settings with an in-process cache.
 
-    Reads are frequent (every Hubcap request consults a setting) and the file
-    is tiny, so it is cached and invalidated on write.
+    Reads are frequent (every Hubcap request consults a setting) and the files
+    are tiny, so the merged view is cached and invalidated when any file's
+    mtime changes.
     """
 
-    def __init__(self, settings_dir: Path):
+    def __init__(self, settings_dir: Path, mirrors: list[Path] | None = None):
         self._dir = settings_dir
         self._path = settings_dir / "settings.json"
+        # Lower-precedence files, highest first (see paths.companion_settings_paths).
+        self._mirrors = [Path(m) for m in (mirrors or []) if Path(m) != self._path]
         # RLock: get+set is often performed as a pair while already holding it.
         self._lock = threading.RLock()
         self._cache: dict | None = None
-        self._cache_mtime = 0.0
+        self._cache_stamp: tuple | None = None
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def _mtime(self) -> float:
+    @property
+    def mirror_paths(self) -> list[Path]:
+        return list(self._mirrors)
+
+    def all_paths(self) -> list[Path]:
+        """Canonical file first, then every lower-precedence copy."""
+        return [self._path, *self._mirrors]
+
+    def _mtime_of(self, path: Path) -> float:
         try:
-            return self._path.stat().st_mtime
+            return path.stat().st_mtime
         except OSError:
             return 0.0
 
+    def _stamp(self) -> tuple:
+        return tuple((str(path), self._mtime_of(path)) for path in self.all_paths())
+
+    @staticmethod
+    def _read_path(path: Path) -> dict:
+        """Read one settings file without going through the cache."""
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:  # noqa: BLE001 - a bad file must not break the bridge
+            logger.warning("failed loading %s: %s", path, exc)
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def local_value(self, key: str):
+        """A value as defined by the canonical file only."""
+        return self._read_path(self._path).get(key)
+
+    def shared_secret(self, key: str) -> str:
+        """Newest file that defines ``key`` wins, like the Hubcap key sync.
+
+        Used for the AT0-M console token: ASSella may rotate it in either file
+        and the bridge must accept whichever was written last. Ties prefer the
+        canonical file because it is listed first.
+        """
+        best = ""
+        best_mtime = -1.0
+        for path in self.all_paths():
+            value = str(self._read_path(path).get(key) or "").strip()
+            if not value:
+                continue
+            mtime = self._mtime_of(path)
+            if mtime > best_mtime:
+                best, best_mtime = value, mtime
+        return best
+
     def load(self) -> dict:
         with self._lock:
-            # ASSella (Settings -> Companions) writes this file too: a changed
-            # mtime drops the cache so its edits apply without reloading Uran.
-            if self._cache is not None and self._mtime() == self._cache_mtime:
+            # ASSella (Settings -> Companions) and the other companion write
+            # these files too: a changed mtime drops the cache so their edits
+            # apply without reloading the plugin.
+            stamp = self._stamp()
+            if self._cache is not None and stamp == self._cache_stamp:
                 return self._cache
-            self._cache_mtime = self._mtime()
+            self._cache_stamp = stamp
+
             cfg = dict(DEFAULTS)
-            if self._path.exists():
-                try:
-                    loaded = json.loads(self._path.read_text())
-                    if isinstance(loaded, dict):
-                        cfg.update(loaded)
-                except Exception as exc:  # noqa: BLE001 - fall back to defaults
-                    logger.warning("failed loading settings.json: %s", exc)
+            # Oldest file first, newest last: the tool that saved most recently
+            # wins, which is the same "newest wins" rule the Hubcap key uses.
+            # Keys that only an older copy has still apply (that is what keeps
+            # an upgrade from losing the console token).
+            for path in self._load_order():
+                cfg.update(self._read_path(path))
             self._cache = cfg
             return cfg
 
+    def _load_order(self) -> list[Path]:
+        """Settings files sorted oldest first; the canonical file wins a tie."""
+        return sorted(
+            self.all_paths(),
+            key=lambda path: (self._mtime_of(path), path == self._path),
+        )
+
     def save(self, data: dict) -> None:
         with self._lock:
-            try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(data, indent=2))
-                tmp.replace(self._path)
+            written = self._write_path(self._path, data)
+            for mirror in self._mirrors:
+                # Keep a copy other tools still read in sync, but never create
+                # files that did not already exist: the canonical file is the
+                # source of truth and an unused path is just noise.
+                if not mirror.exists() and written:
+                    continue
+                merged = self._read_path(mirror)
+                merged.update(data)
+                written = self._write_path(mirror, merged) or written
+            if written:
                 self._cache = dict(data)
-                self._cache_mtime = self._mtime()
-            except Exception as exc:  # noqa: BLE001
-                logger.error("failed saving settings: %s", exc)
+                self._cache_stamp = self._stamp()
+
+    def _write_path(self, path: Path, data: dict) -> bool:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(path)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("failed saving %s: %s", path, exc)
+            return False
 
     def get(self, key: str, default=None):
         value = self.load().get(key, default)
@@ -101,16 +178,13 @@ class Settings:
         """Read the key override straight off disk.
 
         Bypasses the cache on purpose: the key detector runs from inside
-        `load()`, so going through it here would recurse.
+        `load()`, so going through it here would recurse. Canonical file first,
+        then the companion copies an older build may still have written.
         """
-        if not self._path.exists():
-            return ""
-        try:
-            data = json.loads(self._path.read_text())
-            if isinstance(data, dict):
-                return str(data.get("manifest_api_key") or "").strip()
-        except Exception:  # noqa: BLE001 - no override available
-            pass
+        for path in self.all_paths():
+            key = str(self._read_path(path).get("manifest_api_key") or "").strip()
+            if key:
+                return key
         return ""
 
 

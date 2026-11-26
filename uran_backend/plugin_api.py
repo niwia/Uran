@@ -115,8 +115,12 @@ class Plugin:
         return self.s.store_debugger.status(refresh)
 
     async def fe_debug(self, msg: str) -> None:
-        self.s.store_debugger.record_log(msg)
-        logger.debug("[FE] %s", msg)
+        # The Store patch trace can arrive in bursts while GamepadUI is drawing,
+        # so the deque update and the shared-file append run off the loop.
+        await asyncio.to_thread(self.s.store_debugger.record_log, msg)
+        # INFO, not DEBUG: the Store patch trace is the only way to tell "the
+        # switch is off" from "the patch ran and the page refused it".
+        logger.info("[FE] %s", msg)
 
     async def read_clipboard(self) -> dict:
         """Read clipboard text using wl-paste or xclip."""

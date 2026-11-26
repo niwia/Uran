@@ -319,7 +319,11 @@ class SteamMeta:
             if not name:
                 name = self._steamcmd_details(q).get("common", {}).get("name")
             if name:
-                results.append({"app_id": q, "title": name})
+                results.append({
+                    "app_id": q,
+                    "title": name,
+                    "thumb": details.get("header_image") or "",
+                })
 
         try:
             resp = requests.get(
@@ -336,6 +340,9 @@ class SteamMeta:
                         results.append({
                             "app_id": aid,
                             "title": item.get("name") or f"App {aid}",
+                            # The console shows a capsule per result; this is
+                            # the same image the Steam Store search returns.
+                            "thumb": item.get("tiny_image") or "",
                         })
         except Exception as exc:  # noqa: BLE001
             logger.error("Search API error: %s", exc)
@@ -343,6 +350,26 @@ class SteamMeta:
         return {"results": results[:limit]}
 
     # -- library introspection ------------------------------------------------
+    def installed_ids(self) -> set[str]:
+        """AppIDs with an appmanifest in any Steam library.
+
+        One directory listing per library instead of an acf parse per appid:
+        the console asks this once per search to label results.
+        """
+        found: set[str] = set()
+        for lib in self.libraries():
+            steamapps = lib / "steamapps"
+            if not steamapps.is_dir():
+                continue
+            try:
+                for acf in steamapps.glob("appmanifest_*.acf"):
+                    match = re.fullmatch(r"appmanifest_(\d+)\.acf", acf.name)
+                    if match:
+                        found.add(match.group(1))
+            except OSError:
+                continue
+        return found
+
     def libraries(self) -> list[Path]:
         """Steam library folders from the selected installation's libraryfolders.vdf."""
         libs: list[Path] = []

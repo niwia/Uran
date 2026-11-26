@@ -2,6 +2,8 @@
 """Tests for Epsilon bridge server, security filters, and API endpoints."""
 
 import json
+import logging
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,17 +13,21 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from uran_backend.epsilon_server import dispatch_request, is_port_in_use
-from uran_backend import console_api
+from uran_backend import console_api, steam_store
+from uran_backend.steam_store import StoreDebugger
 
 
 class FakeSettings:
-    """Minimal stand-in for Settings: the console only needs get/set."""
+    """Minimal stand-in for Settings: the console only needs get/set/shared_secret."""
 
     def __init__(self, data=None):
         self.data = dict(data or {})
 
     def get(self, key, default=None):
         return self.data.get(key, default)
+
+    def shared_secret(self, key):
+        return str(self.data.get(key) or "")
 
     def set(self, key, value):
         self.data[key] = value
@@ -395,6 +401,74 @@ def test_dev_origin_only_reaches_console():
     print("ok  test_dev_origin_only_reaches_console")
 
 
+def test_console_store_patch_state():
+    _reset_auth_state()
+    mock_services = _console_services()
+
+    root = Path("/tmp/uran-store-patch-test")
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True)
+
+    class _NoCef:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            raise OSError("no CEF debugging port here")
+
+    log_path = root / "store_patch.log"
+    debugger = StoreDebugger(_NoCef(), logging.getLogger("test"), log_path=log_path)
+    for index in range(steam_store.LOG_TAIL + 4):
+        debugger.record_log(f"[StorePatch] line {index}")
+    debugger.record_log("not a store trace")  # filtered out
+
+    mock_services.store_debugger = debugger
+    code, body, _ = dispatch_request(
+        mock_services, "GET", "/v1/store", b"", _console_headers()
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    assert body["cef"]["available"] is False
+    assert "logs" not in body["cef"], "in-memory diagnostics should not ship to the console"
+    assert body["enabled"] is True
+    assert body["patched_by"] == "uran"
+    assert len(body["recent"]) == steam_store.LOG_TAIL, body["recent"]
+    assert body["recent"][-1].endswith("line 15"), body["recent"][-1]
+    assert all("[StorePatch]" in line for line in body["recent"])
+
+    # The shared trace comes from the settings directory, not Path.home():
+    # Decky runs as root, so a home-relative path would land in /root.
+    assert debugger.log_path == log_path
+
+    # A missing file is an empty trace, not an error.
+    absent = StoreDebugger(_NoCef(), logging.getLogger("test"), log_path=root / "absent.log")
+    assert absent.recent_logs() == []
+
+    # Rollover keeps the newest lines instead of wiping the evidence.
+    original_cap = steam_store.LOG_MAX_BYTES
+    steam_store.LOG_MAX_BYTES = 512
+    try:
+        rotating = StoreDebugger(_NoCef(), logging.getLogger("test"), log_path=root / "rotate.log")
+        for index in range(80):
+            rotating.record_log(f"[StorePatch] rotate line {index}")
+        text = (root / "rotate.log").read_text(encoding="utf-8")
+        assert text.strip(), "rollover must not leave an empty trace"
+        assert len(text) < steam_store.LOG_MAX_BYTES + 200, len(text)
+        assert "rotate line 79" in text, text[-200:]
+    finally:
+        steam_store.LOG_MAX_BYTES = original_cap
+
+    # The switch is writable from the console and lands in settings.json.
+    code, body, _ = dispatch_request(
+        mock_services,
+        "POST",
+        "/v1/settings",
+        json.dumps({"steam_store_enabled": False}).encode(),
+        _console_headers(),
+    )
+    assert code == 200, f"Expected 200, got {code}"
+    assert body["settings"]["steam_store_enabled"] is False
+    shutil.rmtree(root, ignore_errors=True)
+    print("ok  test_console_store_patch_state")
+
+
 def test_console_can_be_disabled():
     _reset_auth_state()
     mock_services = _console_services(epsilon_console_enabled=False)
@@ -439,6 +513,7 @@ def main():
     test_console_detail_masks_keys()
     test_console_settings_whitelist()
     test_console_can_be_disabled()
+    test_console_store_patch_state()
     test_dev_origin_only_reaches_console()
     test_photar_inject_still_unauthenticated()
     print("\nAll Epsilon tests passed successfully!")

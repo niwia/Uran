@@ -39,6 +39,10 @@ SETTINGS_SCHEMA: dict[str, tuple[str, tuple[str, ...]]] = {
     "add_delisted_dlcs": ("bool", ()),
     "hubcap_gateway": ("enum", ("auto", "direct", "proxy")),
     "notification_mode": ("enum", ("auto", "steam", "desktop", "none")),
+    # Shared with Uran/ASSella: the Steam Store button patch. Epsilon only
+    # stores the switch and reports whether Steam is exposing its CEF
+    # debugging port; the DOM patch itself stays in Uran.
+    "steam_store_enabled": ("bool", ()),
 }
 
 _FAIL_WINDOW = 60.0
@@ -46,6 +50,12 @@ _FAIL_LIMIT = 8
 _LOCKOUT = 60.0
 _fail_lock = threading.Lock()
 _fail_state = {"count": 0, "first": 0.0, "blocked_until": 0.0}
+
+# An upgrade starts with the token in the old file and a fresh canonical one.
+# Copy it once so the canonical file is self-sufficient; the flag stops a
+# read-only Decky settings dir from retrying a failing write on every request.
+_heal_lock = threading.Lock()
+_heal_attempted: set[str] = set()
 
 
 def is_console_path(route_path: str) -> bool:
@@ -62,12 +72,19 @@ def console_enabled(settings) -> bool:
 
 
 def ensure_console_token(settings) -> str:
-    """Return the console token, creating and persisting one on first use."""
+    """Return the console token, creating and persisting one on first use.
+
+    Uran and Epsilon can each own a copy of the settings file during an
+    upgrade, and ASSella may rotate the token in either one. The newest copy
+    wins (the same rule the Hubcap key uses), so a rotation in ASSella takes
+    effect without restarting the bridge.
+    """
     try:
-        token = str(settings.get(TOKEN_SETTING, "") or "").strip()
-    except Exception:  # noqa: BLE001
+        token = str(settings.shared_secret(TOKEN_SETTING) or "").strip()
+    except Exception:  # noqa: BLE001 - a broken settings file must not open the API
         token = ""
     if token:
+        _adopt_into_canonical(settings, token)
         return token
 
     token = TOKEN_PREFIX + os.urandom(32).hex()
@@ -79,6 +96,22 @@ def ensure_console_token(settings) -> str:
         # settings file is writable again.
         logger.error("Could not persist the AT0-M console token: %s", exc)
     return token
+
+
+def _adopt_into_canonical(settings, token: str) -> None:
+    """Copy a token found only in an older companion file into the canonical one."""
+    canonical = str(getattr(settings, "path", ""))
+    with _heal_lock:
+        if canonical in _heal_attempted:
+            return
+        _heal_attempted.add(canonical)
+    try:
+        if str(settings.local_value(TOKEN_SETTING) or "").strip() == token:
+            return
+        settings.set(TOKEN_SETTING, token)
+        logger.info("Adopted the existing AT0-M console token into %s", getattr(settings, "path", ""))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not adopt the console token: %s", exc)
 
 
 def _presented_token(headers: dict) -> str:
@@ -189,6 +222,10 @@ def _clean_game(item: Any) -> dict:
         "key_count": item.get("key_count", 0),
         "dlc_only": bool(item.get("dlc_only")),
         "dlc_appids": [str(d) for d in (item.get("dlc_appids") or [])],
+        # `source` is how the console tells an AT0-M registration from a Steam
+        # licence; dropping it flattened every tile to the same state.
+        "source": str(item.get("source", "")),
+        "owned": bool(item.get("owned")),
         "updated_at": item.get("updated_at", 0),
         "issues": item.get("issues") or [],
     }
@@ -309,6 +346,14 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
 
     # --- session ---------------------------------------------------------
     if method == "GET" and route_path == "/v1/session":
+        sls_active = False
+        steam_running = False
+        try:
+            readiness = services.guards.check_system_readiness()
+            sls_active = bool(readiness.get("sls_active") or readiness.get("ready"))
+            steam_running = bool(readiness.get("steam_running", sls_active))
+        except Exception:  # noqa: BLE001
+            pass
         return 200, {
             "ok": True,
             "service": "epsilon",
@@ -317,6 +362,8 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
             "write_scope": True,
             "hubcap_key": bool(ctx.hubcap_key.current()),
             "library_count": len(services.guards.get_added_app_ids()),
+            "sls_active": sls_active,
+            "steam_running": steam_running,
         }, {}
 
     # --- library ---------------------------------------------------------
@@ -336,15 +383,35 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
         except ValueError:
             limit = 20
         results = services.steam.search(term, limit, appid=term.isdigit())
-        return 200, {
-            "ok": True,
-            "query": term,
-            "results": [
-                {"app_id": str(r.get("app_id", "")), "title": str(r.get("title", ""))}
-                for r in (results.get("results") or [])
-                if isinstance(r, dict)
-            ],
-        }, {}
+        rows = [r for r in (results.get("results") or []) if isinstance(r, dict)]
+
+        # Label each result once from local state: the console shows installed
+        # and already-registered titles differently, and it should not have to
+        # ask again per tile.
+        installed: set[str] = set()
+        registered: set[str] = set()
+        if rows:
+            try:
+                installed = services.steam.installed_ids()
+            except Exception:  # noqa: BLE001 - labels are optional
+                installed = set()
+            try:
+                registered = set(services.guards.get_added_app_ids())
+            except Exception:  # noqa: BLE001
+                registered = set()
+
+        items = []
+        for row in rows:
+            aid = str(row.get("app_id", ""))
+            entry = {"app_id": aid, "title": str(row.get("title", ""))}
+            for extra in ("thumb", "developer", "year"):
+                if row.get(extra):
+                    entry[extra] = row[extra]
+            entry["installed"] = aid in installed
+            entry["registered"] = aid in registered
+            items.append(entry)
+
+        return 200, {"ok": True, "query": term, "results": items}, {}
 
     # --- one app ---------------------------------------------------------
     if method == "GET" and route_path.startswith("/v1/app/"):
@@ -363,6 +430,42 @@ def _route_authorized(services, method: str, route_path: str, query: dict,
     # --- queue -----------------------------------------------------------
     if method == "GET" and route_path == "/v1/queue":
         return 200, {"ok": True, "items": _clean_queue(services.injector.recent())}, {}
+
+    # --- store patch -----------------------------------------------------
+    if method == "GET" and route_path == "/v1/store":
+        try:
+            cef = services.store_debugger.status()
+        except Exception:  # noqa: BLE001 - a probe failure is a state, not an error
+            cef = {"available": False, "message": "CEF debugging could not be probed."}
+        # The patch itself runs inside Uran's process, so its trace comes from
+        # the shared file rather than this process's buffer.
+        try:
+            recent = services.store_debugger.recent_logs()
+        except Exception:  # noqa: BLE001
+            recent = []
+        sentinel = False
+        try:
+            steam_path = getattr(services.ctx, "steam_path", None)
+            if steam_path:
+                from pathlib import Path
+                sentinel = (Path(steam_path) / ".cef-enable-remote-debugging").exists()
+        except Exception:  # noqa: BLE001
+            sentinel = False
+        return 200, {
+            "ok": True,
+            "enabled": bool(services.ctx.settings.get("steam_store_enabled", True)),
+            "cef": {
+                "available": bool(cef.get("available")),
+                "port": cef.get("port"),
+                "store_tab": bool(cef.get("store_tab")),
+                "url": str(cef.get("url") or ""),
+                "message": str(cef.get("message") or ""),
+                "sentinel": sentinel,
+            },
+            "patched_by": "uran",
+            "requires": ".cef-enable-remote-debugging",
+            "recent": recent,
+        }, {}
 
     # --- hubcap ----------------------------------------------------------
     if method == "GET" and route_path == "/v1/hubcap":
